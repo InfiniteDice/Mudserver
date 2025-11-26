@@ -1,0 +1,12 @@
+{
+  "Id": "knife_basic",
+  "Name": "Basic Knife",
+  "ItemCategory": "Weapon",
+  "Weight": 1.5,
+  "Value": 10,
+  "ShortDesc": "A simple knife",
+  "LongDesc": "A sturdy iron knife, slightly worn but usable.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": []
+}

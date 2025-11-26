@@ -1,0 +1,16 @@
+{
+  
+    "Id": "goblin",
+    "Name": "Goblin",
+    "Alignment": "Neutral",
+    "MaxHealth": 30,
+    "Description": "A small, green goblin lurks here.",
+    "IdleActions": [
+      "scratches its nose",
+      "grumbles quietly",
+      "kicks a rock",
+      "looks around suspiciously"
+    ],
+    "WanderChance": 0.2
+  
+}

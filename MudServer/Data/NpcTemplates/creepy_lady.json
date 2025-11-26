@@ -1,0 +1,16 @@
+{
+  
+    "Id": "creepy_lady",
+    "Name": "Creepy Lady",
+    "Alignment": "Evil",
+    "MaxHealth": 50,
+    "Description": "A strange creepy looking lady stands here, her hunched back and wrinkly hands are disturbing!",
+    "IdleActions": [
+      "picks her nose",
+      "farts loudly",
+      "mumbles about something",
+      "looks at you like you're meat"
+    ],
+    "WanderChance": 0.4
+  
+}

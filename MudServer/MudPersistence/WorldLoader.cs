@@ -29,6 +29,31 @@ namespace MudPersistence
                 world.Rooms.AddRange(area.Rooms);
             }
 
+            // Load persisted NPC instances and associate them with rooms + load their items
+            try
+            {
+                var loadedNpcs = NpcPersistence.LoadAllNpcs(conn, world);
+
+                foreach (var npc in loadedNpcs)
+                {
+                    try
+                    {
+                        // Load items that belong to this NPC (OwnerType = "NPC", OwnerID = npc.NpcID)
+                        var items = ItemPersistence.LoadItemsByOwner(conn, "NPC", npc.NpcID);
+                        if (items != null && items.Count > 0)
+                            npc.Inventory = items;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[NPC] Failed to load items for NPC {npc.NpcID}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NPC] Failed to load NPCs: {ex.Message}");
+            }
+
             return world;
         }
 

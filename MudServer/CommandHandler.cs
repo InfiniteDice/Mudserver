@@ -14,11 +14,13 @@ namespace MudServer
     {
         private readonly World _world;
         private readonly SqliteConnection _dbConnection;
+        private readonly PlayerAuthentication _auth;
 
         public CommandHandler(World world, SqliteConnection dbConnection)
         {
             _world = world;
             _dbConnection = dbConnection;
+            _auth = new PlayerAuthentication(world, dbConnection);
         }
 
         public Message ProcessCommand(Player player, string rawCommand)
@@ -105,6 +107,14 @@ namespace MudServer
                 case string s when s.StartsWith("editroom", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     return HandleEditRoom(player);
+
+                // Handle 'createnpc' admin command (create NPC instance from a JSON template)
+                case string s when s.StartsWith("createnpc", StringComparison.OrdinalIgnoreCase):
+                    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                    var parts = command.Split(' ', 2);
+                    if (parts.Length < 2) return MessageHandler.System("Usage: createnpc <templateId>");
+                    string templateId = parts[1].Trim();
+                    return HandleCreateNpc(player, templateId);
 
                 default:
                     return MessageHandler.System($"Unknown command: {command}");
@@ -351,218 +361,18 @@ namespace MudServer
         {
             if (player.PendingAction == null) return null;
 
+            // Delegate auth flow to PlayerAuthentication
+            var authHandled = _auth.HandleAuthPending(player, rawCommand);
+            if (authHandled != null) return authHandled;
+
+            // The auth handler may have completed the flow and cleared PendingAction (e.g. successful login).
+            // Stop processing further pending-action logic if PendingAction is now null.
+            if (player.PendingAction == null) return null;
+
             string input = ExtractCommandText(rawCommand).Trim();
             var pa = player.PendingAction;
 
-            // -----------------------
-            // AUTH / SIGNUP FLOW
-            // -----------------------
-            if (pa.Command == "Auth")
-            {
-                // ChooseOption -> Login / Signup / ForgotPassword
-                if (pa.Step == "ChooseOption")
-                {
-                    if (input == "1")
-                    {
-                        pa.Step = "LoginName";
-                        return MessageHandler.System("Login selected. Enter player name:");
-                    }
-                    if (input == "2")
-                    {
-                        pa.Step = "SignupName";
-                        return MessageHandler.System("Signup selected. Enter desired player name:");
-                    }
-                    if (input == "3")
-                    {
-                        // not implemented
-                        player.PendingAction = null;
-                        return MessageHandler.System("Password recovery not implemented yet. Returning to main menu.");
-                    }
-
-                    return MessageHandler.System("Invalid option. Type 1 for Login, 2 for Signup, or 3 for Forgot Password.");
-                }
-
-                // LOGIN: ask name then password
-                if (pa.Step == "LoginName")
-                {
-                    pa.Step = "LoginPassword";
-                    pa.Data = new AuthData { Name = input };
-                    return MessageHandler.System("Enter your password:");
-                }
-
-                if (pa.Step == "LoginPassword")
-                {
-                    var data = pa.Data as AuthData;
-                    string name = data?.Name ?? "";
-                    string password = input;
-
-                    try
-                    {
-                        using var cmd = new SqliteCommand("SELECT PlayerID, Password, LastRoomID, IsAdmin FROM Player WHERE Name = @name", _dbConnection);
-                        cmd.Parameters.AddWithValue("@name", name);
-                        using var reader = cmd.ExecuteReader();
-                        if (!reader.Read())
-                        {
-                            player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                            return MessageHandler.System("Username not found. Returning to main menu.");
-                        }
-
-                        int dbId = reader.GetInt32(0);
-                        string storedPassword = reader.IsDBNull(1) ? "" : reader.GetString(1);
-                        int lastRoomId = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
-                        bool isAdmin = !reader.IsDBNull(3) && reader.GetInt32(3) != 0;
-
-                        if (storedPassword != password)
-                        {
-                            player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                            return MessageHandler.System("Incorrect password. Returning to main menu.");
-                        }
-
-                        // Success: mark authenticated and load player state
-                        player.IsAuthenticated = true;
-                        player.Name = name;
-                        player.PlayerID = name;
-                        player.DbPlayerID = dbId;
-                        player.IsAdmin = isAdmin;
-
-                        // Determine start room
-                        Room startRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == lastRoomId) ?? _world.CurrentRoom;
-                        player.CurrentRoom = startRoom ?? _world.CurrentRoom;
-
-                        // Load carried items (use numeric DbPlayerID)
-                        try
-                        {
-                            if (player.DbPlayerID != 0)
-                            {
-                                var carried = ItemPersistence.LoadItemsByOwner(_dbConnection, "Player", player.DbPlayerID);
-                                if (carried != null && carried.Count > 0)
-                                {
-                                    player.Inventory = carried;
-                                    Console.WriteLine($"[ITEM] Loaded {carried.Count} carried item(s) for DBPlayerID={player.DbPlayerID} at login.");
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[ITEM] Failed to load carried items for DBPlayerID={player.DbPlayerID}: {ex.Message}");
-                        }
-
-                        player.PendingAction = null;
-
-                        // Send welcome messages and room
-                        player.PendingMessageQueue.Add(MessageHandler.System($"Welcome back, {player.Name}!"));
-                        var carriedNames = player.Inventory.Select(i => i.Name).ToList();
-                        player.PendingMessageQueue.Add(MessageHandler.PlayerUpdate(player.Name, player.Health, player.MaxHealth, carriedNames));
-                        player.PendingMessageQueue.Add(MessageHandler.Room(player.CurrentRoom,
-                            player.CurrentRoom.Npcs.Select(n => string.IsNullOrEmpty(n.LastAction) ? n.Name : $"{n.Name} {n.LastAction}").ToList(),
-                            player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
-                            _world));
-                        return null;
-                    }
-                    catch (Exception ex)
-                    {
-                        player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                        return MessageHandler.System($"Authentication failed (DB error): {ex.Message}");
-                    }
-                }
-
-                // SIGNUP: Name -> Password -> Email -> create
-                if (pa.Step == "SignupName")
-                {
-                    string name = input;
-                    try
-                    {
-                        using var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM Player WHERE Name = @name", _dbConnection);
-                        checkCmd.Parameters.AddWithValue("@name", name);
-                        long count = (long)checkCmd.ExecuteScalar();
-                        if (count > 0)
-                        {
-                            player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                            return MessageHandler.System("That username is already taken. Returning to main menu.");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                        return MessageHandler.System($"Signup failed (DB error): {ex.Message}");
-                    }
-
-                    pa.Step = "SignupPassword";
-                    pa.Data = new AuthData { Name = name };
-                    return MessageHandler.System("Enter a password for the new account:");
-                }
-
-                if (pa.Step == "SignupPassword")
-                {
-                    var data = pa.Data as AuthData;
-                    data.Password = input;
-                    pa.Step = "SignupEmail";
-                    pa.Data = data;
-                    return MessageHandler.System("Enter your email address (for password recovery):");
-                }
-
-                if (pa.Step == "SignupEmail")
-                {
-                    var data = pa.Data as AuthData;
-                    string name = data?.Name ?? "";
-                    string password = data?.Password ?? "";
-                    string email = input;
-
-                    try
-                    {
-                        // Check email uniqueness
-                        using var checkEmail = new SqliteCommand("SELECT COUNT(*) FROM Player WHERE Email = @mail", _dbConnection);
-                        checkEmail.Parameters.AddWithValue("@mail", email);
-                        long emailCount = (long)checkEmail.ExecuteScalar();
-                        if (emailCount > 0)
-                        {
-                            player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                            return MessageHandler.System("Email already registered. Returning to main menu.");
-                        }
-
-                        // Insert new player row
-                        using var insert = new SqliteCommand("INSERT INTO Player (Name, Password, Email, LastRoomID) VALUES (@name, @pw, @mail, @rid); SELECT last_insert_rowid();", _dbConnection);
-                        insert.Parameters.AddWithValue("@name", name);
-                        insert.Parameters.AddWithValue("@pw", password);
-                        insert.Parameters.AddWithValue("@mail", email);
-                        int startRoomId = _world.CurrentRoom?.RoomID ?? 0;
-                        insert.Parameters.AddWithValue("@rid", startRoomId);
-                        long newId = (long)insert.ExecuteScalar();
-
-                        // Authenticate and place player
-                        player.IsAuthenticated = true;
-                        player.Name = name;
-                        player.PlayerID = name;
-                        player.DbPlayerID = (int)newId;
-                        player.CurrentRoom = _world.CurrentRoom ?? _world.Rooms.FirstOrDefault();
-
-                        player.PendingAction = null;
-
-                        // No carried items yet
-                        player.PendingMessageQueue.Add(MessageHandler.System($"Account created. Welcome, {player.Name}!"));
-                        player.PendingMessageQueue.Add(MessageHandler.PlayerUpdate(player.Name, player.Health, player.MaxHealth, new List<string>()));
-                        player.PendingMessageQueue.Add(MessageHandler.Room(player.CurrentRoom,
-                            player.CurrentRoom.Npcs.Select(n => string.IsNullOrEmpty(n.LastAction) ? n.Name : $"{n.Name} {n.LastAction}").ToList(),
-                            player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
-                            _world));
-
-                        return null;
-                    }
-                    catch (Exception ex)
-                    {
-                        player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                        return MessageHandler.System($"Signup failed (DB error): {ex.Message}");
-                    }
-                }
-
-                // fallback - reset to main menu
-                player.PendingAction = new PendingAction { Command = "Auth", Step = "ChooseOption" };
-                return MessageHandler.System("Auth flow interrupted. Choose 1) Login 2) Signup 3) Forgot Password.");
-            }
-
-            // -----------------------
-            // existing pending action handling (GetItem, DropItem, EditRoom, etc.
-            // -----------------------
+            // existing pending action handling (GetItem, DropItem, EditRoom, CreateArea, CreateRoom, etc.)
             if (pa.Command == "GetItem")
             {
                 var room = player.CurrentRoom;
@@ -788,14 +598,6 @@ namespace MudServer
             public List<MudCore.Entities.Item> Matches { get; set; }
         }
 
-        // Helper class for auth pending data (moved inside CommandHandler)
-        private class AuthData
-        {
-            public string Name { get; set; }
-            public string Password { get; set; }
-            public string Email { get; set; }
-        }
-
         // -------------------------------
         // Admin Commands
         // -------------------------------
@@ -868,6 +670,74 @@ namespace MudServer
                 "2) Description\n" +
                 "Type the option name/number, or type EndEdit to finish."
             );
+        }
+
+        private Message HandleCreateNpc(Player player, string templateId)
+        {
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            try
+            {
+                // Create in-memory NPC via NpcFactory
+                var npc = _world.NpcFactory.CreateNpc(templateId, room);
+
+                // Persist the NPC and assign NpcID
+                int newId = MudPersistence.NpcPersistence.InsertNpc(_dbConnection, npc);
+                npc.NpcID = newId;
+
+                // Ensure world list contains it
+                if (!_world.Npcs.Contains(npc)) _world.Npcs.Add(npc);
+
+                // If template specifies equipment, instantiate items and assign to NPC
+                try
+                {
+                    var equipTemplates = npc.Template?.EquipmentTemplateIds;
+                    if (equipTemplates != null && equipTemplates.Count > 0 && _world.ItemFactory != null)
+                    {
+                        foreach (var equipTemplateId in equipTemplates)
+                        {
+                            try
+                            {
+                                // Create item owned by NPC (OwnerType "NPC", OwnerID = npc.NpcID), RoomID set to current room
+                                var item = _world.ItemFactory.CreateItem(equipTemplateId, "NPC", npc.NpcID, npc.CurrentRoom?.RoomID ?? 0);
+                                // Persist item (assigns ItemID)
+                                MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
+                                // Add to NPC inventory
+                                npc.Inventory.Add(item);
+                            }
+                            catch (Exception iex)
+                            {
+                                Console.WriteLine($"[NPC] Failed to create/equip item '{equipTemplateId}' for NPC {npc.Name}: {iex.Message}");
+                            }
+                        }
+                    }
+                }
+                catch (Exception exEquip)
+                {
+                    Console.WriteLine($"[NPC] Equipment assignment error for NPC {npc.Name}: {exEquip.Message}");
+                }
+
+                // Broadcast updated room so clients immediately see the NPC (and any equipment effect)
+                foreach (var p in room.Players)
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(room,
+                        room.Npcs.Select(n => string.IsNullOrEmpty(n.LastAction) ? n.Name : $"{n.Name} {n.LastAction}").ToList(),
+                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                        _world));
+                }
+
+                return MessageHandler.System($"NPC '{npc.Name}' created (ID {newId}).");
+            }
+            catch (KeyNotFoundException)
+            {
+                return MessageHandler.System($"NPC template not found: {templateId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NPC] Failed to create NPC from template {templateId}: {ex}");
+                return MessageHandler.System($"Failed to create NPC: {ex.Message}");
+            }
         }
 
         private bool IsValidDirection(string dir)

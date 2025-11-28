@@ -1,16 +1,29 @@
 {
-  
-    "Id": "goblin",
-    "Name": "Goblin",
-    "Alignment": "Neutral",
-    "MaxHealth": 30,
-    "Description": "A small, green goblin lurks here.",
-    "IdleActions": [
-      "scratches its nose",
-      "grumbles quietly",
-      "kicks a rock",
-      "looks around suspiciously"
-    ],
-    "WanderChance": 0.2
-  
+  "Id": "goblin",
+  "Name": "Goblin",
+  "Alignment": "Neutral",
+  "Description": "A small, green goblin lurks here.",
+  "IdleActions": [
+    "scratches its nose",
+    "grumbles quietly",
+    "kicks a rock",
+    "looks around suspiciously"
+  ],
+  "WanderChance": 0.2,
+  "HealthMax": 30,
+  "Health": 30,
+  "Flags": [ "Aggressive", "CanFlee" ],
+  "Level": 2,
+  "Mass": 20,
+  "EffMass": 20,
+  "SizeEnum": 3,
+  "CombatSkill": 2,
+  "EffCombatSkill": 2,
+  "BaseDmgDice": "1d4",
+  "BaseArmorClass": 5,
+  "EffArmorClass": 5,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": [ "knife_basic" ],
+  "Debuffs": [],
+  "Buffs": []
 }

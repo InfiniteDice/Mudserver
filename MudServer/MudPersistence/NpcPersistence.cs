@@ -19,8 +19,8 @@ namespace MudPersistence
         public static int InsertNpc(SqliteConnection conn, Npc npc)
         {
             using var cmd = new SqliteCommand(
-                @"INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, Description, IdleActions, WanderChance, CurrentRoomID, IsPersistent, Flags, Level, Mass, CombatSkill, EffCombatSkill, SizeEnum, BaseDmgDice, EffMass, IsHumanoid, BaseArmorClass, EffArmorClass, Debuffs, Buffs)
-                  VALUES (@template, @name, @align, @maxh, @h, @desc, @idle, @wander, @room, @persist, @flags, @level, @mass, @cskill, @ecskill, @size, @bbdice, @effmass, @ishum, @baseac, @effac, @debuffs, @buffs);
+                @"INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, Description, IdleActions, WanderChance, CurrentRoomID, IsPersistent, Flags, Level, Mass, CombatSkill, EffCombatSkill, SizeEnum, BaseDmgDice, EffMass, IsHumanoid, BaseArmorClass, EffArmorClass, Debuffs, Buffs, WanderAreas, AiBehaviors, AiTaskList, CurrentAiTask)
+                  VALUES (@template, @name, @align, @maxh, @h, @desc, @idle, @wander, @room, @persist, @flags, @level, @mass, @cskill, @ecskill, @size, @bbdice, @effmass, @ishum, @baseac, @effac, @debuffs, @buffs, @wanderAreas, @aiBehaviors, @aiTasks, @currentTask);
                   SELECT last_insert_rowid();", conn);
 
             cmd.Parameters.AddWithValue("@template", npc.TemplateID ?? "");
@@ -46,6 +46,12 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@effac", npc.EffArmorClass);
             cmd.Parameters.AddWithValue("@debuffs", JsonSerializer.Serialize(npc.Debuffs ?? new List<string>(), _jsonOpts));
             cmd.Parameters.AddWithValue("@buffs", JsonSerializer.Serialize(npc.Buffs ?? new List<string>(), _jsonOpts));
+
+            // New AI / list fields
+            cmd.Parameters.AddWithValue("@wanderAreas", JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>(), _jsonOpts));
+            cmd.Parameters.AddWithValue("@aiBehaviors", JsonSerializer.Serialize(npc.AiBehaviors ?? new List<string>(), _jsonOpts));
+            cmd.Parameters.AddWithValue("@aiTasks", JsonSerializer.Serialize(npc.AiTaskList ?? new List<string>(), _jsonOpts));
+            cmd.Parameters.AddWithValue("@currentTask", npc.CurrentAiTask ?? "");
 
             long newId = (long)cmd.ExecuteScalar();
             npc.NpcID = (int)newId;
@@ -79,6 +85,10 @@ namespace MudPersistence
                     EffArmorClass=@effac,
                     Debuffs=@debuffs,
                     Buffs=@buffs,
+                    WanderAreas=@wanderAreas,
+                    AiBehaviors=@aiBehaviors,
+                    AiTaskList=@aiTasks,
+                    CurrentAiTask=@currentTask,
                     UpdatedAt = datetime('now')
                   WHERE NpcID = @id", conn);
 
@@ -105,6 +115,13 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@effac", npc.EffArmorClass);
             cmd.Parameters.AddWithValue("@debuffs", JsonSerializer.Serialize(npc.Debuffs ?? new List<string>(), _jsonOpts));
             cmd.Parameters.AddWithValue("@buffs", JsonSerializer.Serialize(npc.Buffs ?? new List<string>(), _jsonOpts));
+
+            // New AI / list fields
+            cmd.Parameters.AddWithValue("@wanderAreas", JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>(), _jsonOpts));
+            cmd.Parameters.AddWithValue("@aiBehaviors", JsonSerializer.Serialize(npc.AiBehaviors ?? new List<string>(), _jsonOpts));
+            cmd.Parameters.AddWithValue("@aiTasks", JsonSerializer.Serialize(npc.AiTaskList ?? new List<string>(), _jsonOpts));
+            cmd.Parameters.AddWithValue("@currentTask", npc.CurrentAiTask ?? "");
+
             cmd.Parameters.AddWithValue("@id", npc.NpcID);
 
             cmd.ExecuteNonQuery();
@@ -162,6 +179,16 @@ namespace MudPersistence
                 var buffJson = reader.IsDBNull(reader.GetOrdinal("Buffs")) ? "[]" : reader.GetString(reader.GetOrdinal("Buffs"));
                 try { npc.Debuffs = JsonSerializer.Deserialize<List<string>>(debJson, _jsonOpts) ?? new List<string>(); } catch { npc.Debuffs = new List<string>(); }
                 try { npc.Buffs = JsonSerializer.Deserialize<List<string>>(buffJson, _jsonOpts) ?? new List<string>(); } catch { npc.Buffs = new List<string>(); }
+
+                // New AI fields (JSON)
+                var wanderJson = reader.IsDBNull(reader.GetOrdinal("WanderAreas")) ? "[]" : reader.GetString(reader.GetOrdinal("WanderAreas"));
+                var aiBehJson = reader.IsDBNull(reader.GetOrdinal("AiBehaviors")) ? "[]" : reader.GetString(reader.GetOrdinal("AiBehaviors"));
+                var aiTasksJson = reader.IsDBNull(reader.GetOrdinal("AiTaskList")) ? "[]" : reader.GetString(reader.GetOrdinal("AiTaskList"));
+                npc.CurrentAiTask = reader.IsDBNull(reader.GetOrdinal("CurrentAiTask")) ? null : reader.GetString(reader.GetOrdinal("CurrentAiTask"));
+
+                try { npc.WanderAreas = JsonSerializer.Deserialize<List<int>>(wanderJson, _jsonOpts) ?? new List<int>(); } catch { npc.WanderAreas = new List<int>(); }
+                try { npc.AiBehaviors = JsonSerializer.Deserialize<List<string>>(aiBehJson, _jsonOpts) ?? new List<string>(); } catch { npc.AiBehaviors = new List<string>(); }
+                try { npc.AiTaskList = JsonSerializer.Deserialize<List<string>>(aiTasksJson, _jsonOpts) ?? new List<string>(); } catch { npc.AiTaskList = new List<string>(); }
 
                 // Resolve template reference
                 try

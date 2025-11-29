@@ -23,7 +23,7 @@ namespace MudServer
             _auth = new PlayerAuthentication(world, dbConnection);
         }
 
-        public Message ProcessCommand(Player player, string rawCommand)
+        public Message? ProcessCommand(Player player, string rawCommand)
         {
             var pendingMsg = CheckPendingAction(player, rawCommand);
             if (pendingMsg != null) return pendingMsg;
@@ -52,19 +52,19 @@ namespace MudServer
             if (IsValidDirection(command))
                 return Move(player, command);
 
-            // Handle 'say' command
+            // Handle 'say' command (delegated to Chat for centralization)
             if (command.StartsWith("say ", StringComparison.OrdinalIgnoreCase))
             {
                 string text = command.Substring(4);
-                Say(player, text);
+                Chat.Say(player, text);
                 return null;
             }
 
-            // Handle 'yell' command
+            // Handle 'yell' command - delegated to Chat.Yell for centralized chat behavior
             if (command.StartsWith("yell ", StringComparison.OrdinalIgnoreCase))
             {
                 string text = command.Substring(5);
-                Yell(player, text);
+                Chat.Yell(player, text, _world);
                 return null;
             }
 
@@ -116,95 +116,34 @@ namespace MudServer
                     string templateId = parts[1].Trim();
                     return HandleCreateNpc(player, templateId);
 
+                // Handle 'inventory' command - show detailed carried items in modal
+                case string s when s.Equals("inventory", StringComparison.OrdinalIgnoreCase) ||
+                                  s.Equals("inv", StringComparison.OrdinalIgnoreCase):
+                    // Map player's Item objects to MessageHandler.InventoryItem DTOs
+                    var invItems = player.Inventory?.Select(i => new MudNetworking.InventoryItem
+                    {
+                        Name = i.Name ?? "",
+                        Weight = i.Weight,
+                        Condition = i.Condition,
+                        ItemCategory = i.ItemCategory ?? "",
+                        ShortDesc = i.ShortDesc ?? ""
+                    }).ToList() ?? new List<MudNetworking.InventoryItem>();
+
+                    return MudNetworking.MessageHandler.Inventory(invItems);
+
                 default:
                     return MessageHandler.System($"Unknown command: {command}");
             }
         }
 
-        private void Say(Player player, string text)
-        {
-            if (player.CurrentRoom == null)
-            {
-                player.PendingMessageQueue.Add(MessageHandler.System("You are lost in the void."));
-                return;
-            }
-
-            text = text.Trim();
-            if (string.IsNullOrEmpty(text))
-            {
-                player.PendingMessageQueue.Add(MessageHandler.System("You must say something."));
-                return;
-            }
-
-            string messageText = $"{player.Name} says: {text}";
-
-            foreach (var p in player.CurrentRoom.Players)
-            {
-                p.PendingMessageQueue.Add(MessageHandler.System(messageText));
-            }
-        }
-
-        private void Yell(Player player, string text)
-        {
-            if (player.CurrentRoom == null)
-            {
-                player.PendingMessageQueue.Add(MessageHandler.System("You are lost in the void."));
-                return;
-            }
-
-            text = text.Trim();
-            if (string.IsNullOrEmpty(text))
-            {
-                player.PendingMessageQueue.Add(MessageHandler.System("You must yell something."));
-                return;
-            }
-
-            string messageText = $"{player.Name} yells: {text}";
-
-            // Broadcast to players in current room
-            foreach (var p in player.CurrentRoom.Players)
-            {
-                p.PendingMessageQueue.Add(MessageHandler.System(messageText));
-            }
-
-            // Broadcast to players in connected rooms
-            foreach (var exit in player.CurrentRoom.Exits)
-            {
-                var targetRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
-                if (targetRoom == null) continue;
-
-                foreach (var p in targetRoom.Players)
-                {
-                    p.PendingMessageQueue.Add(MessageHandler.System($"From {player.CurrentRoom.Name}: {messageText}"));
-                }
-            }
-        }
-
-        private string ExtractCommandText(string rawCommand)
-        {
-            try
-            {
-                var json = JsonSerializer.Deserialize<JsonElement>(rawCommand);
-
-                if (json.TryGetProperty("type", out var typeProp) &&
-                    typeProp.GetString() == "command" &&
-                    json.TryGetProperty("text", out var textProp))
-                {
-                    return textProp.GetString();
-                }
-            }
-            catch { }
-
-            return rawCommand;
-        }
-
-        private Message Look(Player player)
+        private Message? Look(Player player)
         {
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are lost in the void.");
 
+            // Show only NPC names in room payload; action text is delivered as system messages.
             var npcs = room.Npcs
-                .Select(n => string.IsNullOrEmpty(n.LastAction) ? n.Name : $"{n.Name} {n.LastAction}")
+                .Select(n => n.Name)
                 .ToList();
 
             var players = room.Players
@@ -215,7 +154,7 @@ namespace MudServer
             return MessageHandler.Room(room, npcs, players, _world);
         }
 
-        private Message Move(Player player, string rawCommand)
+        private Message? Move(Player player, string rawCommand)
         {
             string dir;
             var parts = rawCommand.Trim().Split(' ', 2);
@@ -237,7 +176,7 @@ namespace MudServer
         // -------------------------------
         // GET / TAKE
         // -------------------------------
-        private Message GetItem(Player player, string requested)
+        private Message? GetItem(Player player, string requested)
         {
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
@@ -287,7 +226,7 @@ namespace MudServer
         // -------------------------------
         // DROP
         // -------------------------------
-        private Message DropItem(Player player, string requested)
+        private Message? DropItem(Player player, string requested)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
             var room = player.CurrentRoom;
@@ -343,13 +282,13 @@ namespace MudServer
         }
 
         // Called when we have a single item to transfer to player
-        private Message TransferItemToPlayer(Player player, MudCore.Entities.Item item)
+        private Message? TransferItemToPlayer(Player player, MudCore.Entities.Item item)
         {
             return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item);
         }
 
         // Called when player drops a single item into current room
-        private Message TransferItemToRoom(Player player, MudCore.Entities.Item item)
+        private Message? TransferItemToRoom(Player player, MudCore.Entities.Item item)
         {
             return InventoryManager.TransferToRoom(_world, _dbConnection, player, item);
         }
@@ -357,7 +296,7 @@ namespace MudServer
         // -------------------------------
         // Pending Actions (extended)
         // -------------------------------
-        private Message CheckPendingAction(Player player, string rawCommand)
+        private Message? CheckPendingAction(Player player, string rawCommand)
         {
             if (player.PendingAction == null) return null;
 
@@ -370,13 +309,18 @@ namespace MudServer
             if (player.PendingAction == null) return null;
 
             string input = ExtractCommandText(rawCommand).Trim();
-            var pa = player.PendingAction;
+            var pa = player.PendingAction!;
 
             // existing pending action handling (GetItem, DropItem, EditRoom, CreateArea, CreateRoom, etc.)
             if (pa.Command == "GetItem")
             {
                 var room = player.CurrentRoom;
                 var data = pa.Data as GetPendingData;
+                if (data == null)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
 
                 if (pa.Step == "SelectIndex")
                 {
@@ -384,7 +328,7 @@ namespace MudServer
                         return MessageHandler.System("Invalid selection. Type the number of the item to take.");
 
                     var chosen = data.Matches[idx - 1];
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return TransferItemToPlayer(player, chosen);
                 }
 
@@ -399,7 +343,7 @@ namespace MudServer
 
                     // Transfer 'quantity' items (they are identical instances)
                     var toTransfer = data.Matches.Take(quantity).ToList();
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
 
                     foreach (var it in toTransfer)
                     {
@@ -416,6 +360,11 @@ namespace MudServer
             {
                 var room = player.CurrentRoom;
                 var data = pa.Data as GetPendingData;
+                if (data == null)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
 
                 if (pa.Step == "SelectIndex")
                 {
@@ -423,7 +372,7 @@ namespace MudServer
                         return MessageHandler.System("Invalid selection. Type the number of the item to drop.");
 
                     var chosen = data.Matches[idx - 1];
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return TransferItemToRoom(player, chosen);
                 }
 
@@ -437,7 +386,7 @@ namespace MudServer
                         return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
 
                     var toTransfer = data.Matches.Take(quantity).ToList();
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
 
                     foreach (var it in toTransfer)
                     {
@@ -453,7 +402,7 @@ namespace MudServer
             {
                 if (!player.IsAdmin)
                 {
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Permission denied. Admins only.");
                 }
 
@@ -461,7 +410,7 @@ namespace MudServer
 
                 if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase))
                 {
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Room editing ended.");
                 }
 
@@ -486,7 +435,7 @@ namespace MudServer
                     room.Name = input;
                     room.IsDirty = true;
                     _world.SaveDirtyRooms(_dbConnection);
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System($"Room name updated to '{room.Name}'.");
                 }
 
@@ -495,7 +444,7 @@ namespace MudServer
                     room.Description = input;
                     room.IsDirty = true;
                     _world.SaveDirtyRooms(_dbConnection);
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Room description updated.");
                 }
             }
@@ -505,7 +454,7 @@ namespace MudServer
             {
                 if (!player.IsAdmin)
                 {
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Permission denied. Admins only.");
                 }
 
@@ -520,7 +469,7 @@ namespace MudServer
                 int dbID = _world.CreateRoomInDB(newRoom, _dbConnection);
                 if (dbID == 0)
                 {
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Failed to create room in database.");
                 }
 
@@ -534,12 +483,14 @@ namespace MudServer
                 newRoom.IsDirty = true;
                 _world.SaveDirtyRooms(_dbConnection);
 
-                player.PendingAction = null;
+                player.PendingAction = null!;
 
-                return MessageHandler.Room(player.CurrentRoom,
-                                           player.CurrentRoom.Npcs.Select(n => string.IsNullOrEmpty(n.LastAction) ? n.Name : $"{n.Name} {n.LastAction}").ToList(),
-                                           player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
-                                           _world); // items now included
+                // 4) Replace CreateArea/CreateRoom return Room calls to use names only (no LastAction formatting)
+                return MessageHandler.Room(
+                    player.CurrentRoom,
+                    player.CurrentRoom.Npcs.Select(n => n.Name).ToList(),
+                    player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
+                    _world);
             }
 
             // CREATE ROOM
@@ -547,7 +498,7 @@ namespace MudServer
             {
                 if (!player.IsAdmin)
                 {
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Permission denied. Admins only.");
                 }
 
@@ -556,7 +507,7 @@ namespace MudServer
                 var currentArea = _world.Areas.FirstOrDefault(a => a.Rooms.Contains(player.CurrentRoom));
                 if (currentArea == null)
                 {
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Current room is not in an area.");
                 }
 
@@ -568,7 +519,7 @@ namespace MudServer
                 int dbID = _world.CreateRoomInDB(newRoom, _dbConnection);
                 if (dbID == 0)
                 {
-                    player.PendingAction = null;
+                    player.PendingAction = null!;
                     return MessageHandler.System("Failed to create room in database.");
                 }
 
@@ -581,12 +532,14 @@ namespace MudServer
                 newRoom.IsDirty = true;
                 _world.SaveDirtyRooms(_dbConnection);
 
-                player.PendingAction = null;
+                player.PendingAction = null!;
 
-                return MessageHandler.Room(player.CurrentRoom,
-                                           player.CurrentRoom.Npcs.Select(n => string.IsNullOrEmpty(n.LastAction) ? n.Name : $"{n.Name} {n.LastAction}").ToList(),
-                                           player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
-                                           _world); // items now included
+                // 4) Replace CreateArea/CreateRoom return Room calls to use names only (no LastAction formatting)
+                return MessageHandler.Room(
+                    player.CurrentRoom,
+                    player.CurrentRoom.Npcs.Select(n => n.Name).ToList(),
+                    player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
+                    _world);
             }
 
             return null;
@@ -595,13 +548,13 @@ namespace MudServer
         // Helper class for GetItem / DropItem pending data
         private class GetPendingData
         {
-            public List<MudCore.Entities.Item> Matches { get; set; }
+            public List<MudCore.Entities.Item> Matches { get; set; } = new List<MudCore.Entities.Item>();
         }
 
         // -------------------------------
         // Admin Commands
         // -------------------------------
-        private Message HandleCreateArea(Player player, string command)
+        private Message? HandleCreateArea(Player player, string command)
         {
             var parts = command.Trim().Split(' ', 2);
             if (parts.Length < 2)
@@ -626,7 +579,7 @@ namespace MudServer
             return MessageHandler.System("Enter name for the new area:");
         }
 
-        private Message HandleCreateRoom(Player player, string command)
+        private Message? HandleCreateRoom(Player player, string command)
         {
             var parts = command.Trim().Split(' ', 2);
             if (parts.Length < 2)
@@ -651,7 +604,7 @@ namespace MudServer
             return MessageHandler.System("Enter name for the new room:");
         }
 
-        private Message HandleEditRoom(Player player)
+        private Message? HandleEditRoom(Player player)
         {
             var room = player.CurrentRoom;
             if (room == null)
@@ -672,7 +625,7 @@ namespace MudServer
             );
         }
 
-        private Message HandleCreateNpc(Player player, string templateId)
+        private Message? HandleCreateNpc(Player player, string templateId)
         {
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
@@ -680,54 +633,65 @@ namespace MudServer
             try
             {
                 // Create in-memory NPC via NpcFactory
-                var npc = _world.NpcFactory.CreateNpc(templateId, room);
+                var newNpc = _world.NpcFactory.CreateNpc(templateId, room);
 
                 // Persist the NPC and assign NpcID
-                int newId = MudPersistence.NpcPersistence.InsertNpc(_dbConnection, npc);
-                npc.NpcID = newId;
+                int newId = MudPersistence.NpcPersistence.InsertNpc(_dbConnection, newNpc);
+                newNpc.NpcID = newId;
 
                 // Ensure world list contains it
-                if (!_world.Npcs.Contains(npc)) _world.Npcs.Add(npc);
+                if (!_world.Npcs.Contains(newNpc)) _world.Npcs.Add(newNpc);
 
                 // If template specifies equipment, instantiate items and assign to NPC
                 try
                 {
-                    var equipTemplates = npc.Template?.EquipmentTemplateIds;
+                    var equipTemplates = newNpc.Template?.EquipmentTemplateIds;
                     if (equipTemplates != null && equipTemplates.Count > 0 && _world.ItemFactory != null)
                     {
                         foreach (var equipTemplateId in equipTemplates)
                         {
                             try
                             {
-                                // Create item owned by NPC (OwnerType "NPC", OwnerID = npc.NpcID), RoomID set to current room
-                                var item = _world.ItemFactory.CreateItem(equipTemplateId, "NPC", npc.NpcID, npc.CurrentRoom?.RoomID ?? 0);
+                                // Create item owned by NPC (OwnerType "NPC", OwnerID = newNpc.NpcID), RoomID set to current room
+                                var item = _world.ItemFactory.CreateItem(equipTemplateId, "NPC", newNpc.NpcID, newNpc.CurrentRoom?.RoomID ?? 0);
                                 // Persist item (assigns ItemID)
                                 MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
                                 // Add to NPC inventory
-                                npc.Inventory.Add(item);
+                                newNpc.Inventory.Add(item);
                             }
                             catch (Exception iex)
                             {
-                                Console.WriteLine($"[NPC] Failed to create/equip item '{equipTemplateId}' for NPC {npc.Name}: {iex.Message}");
+                                Console.WriteLine($"[NPC] Failed to create/equip item '{equipTemplateId}' for NPC {newNpc.Name}: {iex.Message}");
                             }
                         }
                     }
                 }
                 catch (Exception exEquip)
                 {
-                    Console.WriteLine($"[NPC] Equipment assignment error for NPC {npc.Name}: {exEquip.Message}");
+                    Console.WriteLine($"[NPC] Equipment assignment error for NPC {newNpc.Name}: {exEquip.Message}");
                 }
 
                 // Broadcast updated room so clients immediately see the NPC (and any equipment effect)
                 foreach (var p in room.Players)
                 {
-                    p.PendingMessageQueue.Add(MessageHandler.Room(room,
-                        room.Npcs.Select(n => string.IsNullOrEmpty(n.LastAction) ? n.Name : $"{n.Name} {n.LastAction}").ToList(),
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        room,
+                        room.Npcs.Select(n => n.Name).ToList(),
                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                         _world));
                 }
 
-                return MessageHandler.System($"NPC '{npc.Name}' created (ID {newId}).");
+                // send NPC actions to log (separate system messages, no name+action in badges)
+                foreach (var n in room.Npcs)
+                {
+                    if (!string.IsNullOrWhiteSpace(n.LastAction))
+                    {
+                        foreach (var recipient in room.Players)
+                            MessageHandler.SendSystem(recipient, n.LastAction);
+                    }
+                }
+
+                return MessageHandler.System($"NPC '{newNpc.Name}' created (ID {newId}).");
             }
             catch (KeyNotFoundException)
             {
@@ -746,6 +710,48 @@ namespace MudServer
             return valid.Any(v => v.Equals(dir, StringComparison.OrdinalIgnoreCase));
         }
 
+        private string ExtractCommandText(string rawCommand)
+        {
+            if (string.IsNullOrWhiteSpace(rawCommand)) return string.Empty;
+
+            var s = rawCommand.Trim();
+
+            // If client sent a JSON payload (e.g. {"type":"command","text":"s"}), extract the text field.
+            if (s.StartsWith("{") || s.StartsWith("[") || s.StartsWith("\""))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(s);
+                    var root = doc.RootElement;
+
+                    if (root.ValueKind == JsonValueKind.String)
+                        return root.GetString() ?? string.Empty;
+
+                    if (root.ValueKind == JsonValueKind.Object)
+                    {
+                        if (root.TryGetProperty("text", out var prop) && prop.ValueKind == JsonValueKind.String)
+                            return prop.GetString() ?? string.Empty;
+
+                        if (root.TryGetProperty("command", out prop) && prop.ValueKind == JsonValueKind.String)
+                            return prop.GetString() ?? string.Empty;
+
+                        // nested payloads: data.text
+                        if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object &&
+                            data.TryGetProperty("text", out var dataText) && dataText.ValueKind == JsonValueKind.String)
+                        {
+                            return dataText.GetString() ?? string.Empty;
+                        }
+                    }
+                }
+                catch
+                {
+                    // fall through to return trimmed raw string if JSON parsing fails
+                }
+            }
+
+            return s;
+        }
+
         private string OppositeDirection(string dir) => dir.ToUpper() switch
         {
             "N" => "S",
@@ -762,31 +768,106 @@ namespace MudServer
         };
 
         // -------------------------------
-        // Inventory command methods
-        // -------------------------------
-        private Message AddItem(Player player, string itemName)
-        {
-            return InventoryManager.AddItemToRoom(_world, _dbConnection, player, itemName);
-        }
 
-        private Message RemoveItem(Player player, string itemName)
-        {
-            return InventoryManager.RemoveItemFromRoom(_dbConnection, player, itemName);
-        }
-
-        private Message ListItems(Player player)
+        // Admin helpers: add/remove/list items in current room
+        private Message? AddItem(Player player, string itemTemplateId)
         {
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
 
-            var items = InventoryManager.LoadRoomInventory(_dbConnection, room.RoomID);
-            room.Inventory = items;
+            if (_world.ItemFactory == null)
+                return MessageHandler.System("Item factory not available.");
 
-            if (items.Count == 0)
-                return MessageHandler.System("The room contains no items.");
+            try
+            {
+                var item = _world.ItemFactory.CreateItem(itemTemplateId, "ROOM", 0, room.RoomID);
+                MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
+                room.Inventory.Add(item);
+                room.IsDirty = true;
+                _world.SaveDirtyRooms(_dbConnection);
 
-            string itemList = string.Join(", ", items.Select(i => i.Name));
-            return MessageHandler.System($"Items in the room: {itemList}");
+                // Broadcast updated room
+                foreach (var p in room.Players)
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        room,
+                        room.Npcs.Select(n => n.Name).ToList(),
+                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                        _world));
+                }
+
+                // send NPC actions to log
+                foreach (var n in room.Npcs)
+                {
+                    if (!string.IsNullOrWhiteSpace(n.LastAction))
+                    {
+                        foreach (var recipient in room.Players)
+                            MessageHandler.SendSystem(recipient, n.LastAction);
+                    }
+                }
+
+                return MessageHandler.System($"Item '{item.Name}' added to the room.");
+            }
+            catch (Exception ex)
+            {
+                return MessageHandler.System($"Failed to add item: {ex.Message}");
+            }
+        }
+
+        private Message? RemoveItem(Player player, string identifier)
+        {
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            // allow admin only removal
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            var target = room.Inventory.FirstOrDefault(i => i.Name.Equals(identifier, StringComparison.OrdinalIgnoreCase)
+                                                   || i.TemplateID.Equals(identifier, StringComparison.OrdinalIgnoreCase));
+
+            if (target == null)
+                return MessageHandler.System($"No item '{identifier}' found in the room.");
+
+            // Remove from DB and room
+            target.OwnerType = "ROOM";
+            target.OwnerID = 0;
+            MudPersistence.ItemPersistence.SaveItem(_dbConnection, target);
+
+            room.Inventory.Remove(target);
+            room.IsDirty = true;
+            _world.SaveDirtyRooms(_dbConnection);
+
+            foreach (var p in room.Players)
+            {
+                p.PendingMessageQueue.Add(MessageHandler.Room(
+                    room,
+                    room.Npcs.Select(n => n.Name).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                    _world));
+            }
+
+            foreach (var n in room.Npcs)
+            {
+                if (!string.IsNullOrWhiteSpace(n.LastAction))
+                {
+                    foreach (var recipient in room.Players)
+                        MessageHandler.SendSystem(recipient, n.LastAction);
+                }
+            }
+
+            return MessageHandler.System($"Item '{target.Name}' removed from the room.");
+        }
+
+        private Message? ListItems(Player player)
+        {
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            if (room.Inventory == null || room.Inventory.Count == 0)
+                return MessageHandler.System("This room contains no items.");
+
+            var lines = room.Inventory.Select((it, idx) => $"{idx + 1}) {it.Name} (Template: {it.TemplateID})");
+            return MessageHandler.System("Items in room:\n" + string.Join("\n", lines));
         }
     }
 }

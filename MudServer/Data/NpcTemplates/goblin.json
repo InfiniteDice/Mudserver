@@ -10,6 +10,10 @@
     "looks around suspiciously"
   ],
   "WanderChance": 0.2,
+  "WanderAreas": [],
+  "AiBehaviors": [ "Patrol", "Guard" ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
   "HealthMax": 30,
   "Health": 30,
   "Flags": [ "Aggressive", "CanFlee" ],

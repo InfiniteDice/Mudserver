@@ -1,0 +1,12 @@
+{
+  "Id": "mushroom_brown",
+  "Name": "Brown Mushroom",
+  "Category": "Food",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "A plain brown mushroom",
+  "LongDesc": "A brownish mushroom, I bet you could eat this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Heal" ]
+}

@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using MudCore.World;
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 
 namespace MudPersistence
 {
@@ -14,18 +15,41 @@ namespace MudPersistence
         public static void SaveRoom(SqliteConnection conn, Room room)
         {
             var cmd = new SqliteCommand(@"
-                INSERT INTO Room (RoomID, AreaID, Name, Description)
-                VALUES (@rid, @aid, @name, @desc)
+                INSERT INTO Room 
+                    (RoomID, AreaID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage)
+                VALUES 
+                    (@rid, @aid, @name, @desc, @isSpawner, @spawnType, @spawnList, @spawnChance, @spawnDelay, @lastSpawn, @spawnMax, @spawnMsg)
                 ON CONFLICT(RoomID) DO UPDATE SET
                     Name = @name,
                     Description = @desc,
-                    AreaID = @aid;
+                    AreaID = @aid,
+                    IsSpawner = @isSpawner,
+                    SpawnType = @spawnType,
+                    SpawnTemplateList = @spawnList,
+                    SpawnChance = @spawnChance,
+                    SpawnDelayMinutes = @spawnDelay,
+                    LastSpawnTime = @lastSpawn,
+                    SpawnMaxRoom = @spawnMax,
+                    SpawnMessage = @spawnMsg;
             ", conn);
 
-            cmd.Parameters.AddWithValue("@rid", room.ID);
+            cmd.Parameters.AddWithValue("@rid", room.RoomID);
             cmd.Parameters.AddWithValue("@aid", room.AreaID);
-            cmd.Parameters.AddWithValue("@name", room.Name);
+            cmd.Parameters.AddWithValue("@name", room.Name ?? "");
             cmd.Parameters.AddWithValue("@desc", room.Description ?? "");
+
+            // spawn fields
+            cmd.Parameters.AddWithValue("@isSpawner", room.IsSpawner ? 1 : 0);
+            cmd.Parameters.AddWithValue("@spawnType", room.SpawnType ?? "");
+            cmd.Parameters.AddWithValue("@spawnList", JsonSerializer.Serialize(room.SpawnTemplateList ?? new List<string>()));
+            cmd.Parameters.AddWithValue("@spawnChance", room.SpawnChance);
+            cmd.Parameters.AddWithValue("@spawnDelay", room.SpawnDelayMinutes);
+            cmd.Parameters.AddWithValue("@spawnMax", room.SpawnMaxRoom);
+            cmd.Parameters.AddWithValue("@spawnMsg", room.SpawnMessage ?? "");
+
+            // LastSpawnTime: store ISO 8601 UTC string; if MinValue use current time to initialize
+            var last = room.LastSpawnTime == DateTime.MinValue ? DateTime.UtcNow : room.LastSpawnTime;
+            cmd.Parameters.AddWithValue("@lastSpawn", last.ToString("o"));
 
             cmd.ExecuteNonQuery();
 
@@ -44,22 +68,35 @@ namespace MudPersistence
 
             foreach (var exit in room.Exits)
             {
-                var cmd = new SqliteCommand(@"
-                    INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword)
-                    VALUES (@rid, @dir, @toRid, @hidden, @keyword)
-                    ON CONFLICT(RoomID, Direction) DO UPDATE SET
-                        ToRoomID = @toRid,
-                        IsHidden = @hidden,
-                        DiscoverKeyword = @keyword;
-                ", conn);
+                // Try UPDATE first
+                using var updateCmd = conn.CreateCommand();
+                updateCmd.CommandText = @"
+                    UPDATE RoomExit
+                    SET ToRoomID = @toRid, IsHidden = @hidden, DiscoverKeyword = @keyword
+                    WHERE RoomID = @rid AND Direction = @dir;
+                ";
+                updateCmd.Parameters.AddWithValue("@rid", room.ID);
+                updateCmd.Parameters.AddWithValue("@dir", exit.Direction ?? "");
+                updateCmd.Parameters.AddWithValue("@toRid", exit.ToRoomID);
+                updateCmd.Parameters.AddWithValue("@hidden", exit.IsHidden ? 1 : 0);
+                updateCmd.Parameters.AddWithValue("@keyword", exit.DiscoverKeyword ?? "");
+                var rows = updateCmd.ExecuteNonQuery();
 
-                cmd.Parameters.AddWithValue("@rid", room.ID);
-                cmd.Parameters.AddWithValue("@dir", exit.Direction);
-                cmd.Parameters.AddWithValue("@toRid", exit.ToRoomID);
-                cmd.Parameters.AddWithValue("@hidden", exit.IsHidden ? 1 : 0);
-                cmd.Parameters.AddWithValue("@keyword", exit.DiscoverKeyword ?? "");
-
-                cmd.ExecuteNonQuery();
+                if (rows == 0)
+                {
+                    // Insert when no existing row
+                    using var insertCmd = conn.CreateCommand();
+                    insertCmd.CommandText = @"
+                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword)
+                        VALUES (@rid, @dir, @toRid, @hidden, @keyword);
+                    ";
+                    insertCmd.Parameters.AddWithValue("@rid", room.ID);
+                    insertCmd.Parameters.AddWithValue("@dir", exit.Direction ?? "");
+                    insertCmd.Parameters.AddWithValue("@toRid", exit.ToRoomID);
+                    insertCmd.Parameters.AddWithValue("@hidden", exit.IsHidden ? 1 : 0);
+                    insertCmd.Parameters.AddWithValue("@keyword", exit.DiscoverKeyword ?? "");
+                    insertCmd.ExecuteNonQuery();
+                }
             }
         }
 
@@ -86,50 +123,66 @@ namespace MudPersistence
         }
 
         // -------------------
-        // Save room inventory (use Item.OwnerType/OwnerID)
+        // Save room inventory (use ItemPersistence for safe upsert)
         // -------------------
         public static void SaveRoomInventory(SqliteConnection conn, Room room)
         {
             if (room.Inventory == null) return;
 
-            // Remove existing item associations for this room
-            var deleteCmd = new SqliteCommand("DELETE FROM Item WHERE OwnerType = @otype AND OwnerID = @oid", conn);
-            deleteCmd.Parameters.AddWithValue("@otype", "Room");
-            deleteCmd.Parameters.AddWithValue("@oid", room.ID.ToString());
-            deleteCmd.ExecuteNonQuery();
+            // 1) Load existing item IDs for this room (owner type "Room")
+            var existingIds = new HashSet<int>();
+            using (var listCmd = conn.CreateCommand())
+            {
+                listCmd.CommandText = "SELECT ItemID FROM Item WHERE OwnerType = @otype AND OwnerID = @oid";
+                listCmd.Parameters.AddWithValue("@otype", "Room");
+                listCmd.Parameters.AddWithValue("@oid", room.ID);
+                using var reader = listCmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (!reader.IsDBNull(0))
+                        existingIds.Add(reader.GetInt32(0));
+                }
+            }
 
-            // Insert current inventory into Item table
+            // 2) Upsert each item via ItemPersistence (handles insert/update safely)
+            var keptIds = new HashSet<int>();
             foreach (var item in room.Inventory)
             {
-                var cmd = new SqliteCommand(@"
-                    INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags)
-                    VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags)
-                    ON CONFLICT(ItemID) DO UPDATE SET
-                        OwnerType = @otype,
-                        OwnerID = @oid,
-                        RoomID = @rid;
-                ", conn);
+                if (item == null) continue;
 
-                // If Inventory holds Item objects or plain names, handle both
-                string name = item?.Name ?? item?.ToString() ?? "";
-                cmd.Parameters.AddWithValue("@template", (item?.TemplateID) ?? "");
-                cmd.Parameters.AddWithValue("@name", name);
-                cmd.Parameters.AddWithValue("@otype", "Room");
-                cmd.Parameters.AddWithValue("@oid", room.ID.ToString());
-                cmd.Parameters.AddWithValue("@rid", room.ID);
-                cmd.Parameters.AddWithValue("@value", item?.Value ?? 0);
-                cmd.Parameters.AddWithValue("@weight", item?.Weight ?? 0.0);
-                cmd.Parameters.AddWithValue("@wear", item?.WearLoc ?? "");
-                cmd.Parameters.AddWithValue("@hand", item?.HandLoc ?? 1);
-                cmd.Parameters.AddWithValue("@category", item?.ItemCategory ?? "");
-                cmd.Parameters.AddWithValue("@short", item?.ShortDesc ?? "");
-                cmd.Parameters.AddWithValue("@long", item?.LongDesc ?? "");
-                cmd.Parameters.AddWithValue("@creator", item?.Creator ?? "");
-                cmd.Parameters.AddWithValue("@cond", item?.Condition ?? 100);
-                cmd.Parameters.AddWithValue("@flags", item?.FlagsJson ?? "[]");
+                // Ensure ownership fields are set consistently
+                item.OwnerType = "Room";
+                item.OwnerID = room.ID;
+                item.RoomID = room.ID;
 
-                cmd.ExecuteNonQuery();
+                ItemPersistence.SaveItem(conn, item);
+
+                if (item.ItemID != 0)
+                    keptIds.Add(item.ItemID);
             }
+
+            // 3) Remove any DB items for this room that are no longer present in room.Inventory
+            if (existingIds.Count > 0)
+            {
+                // compute ids to delete = existingIds - keptIds
+                var toDelete = new List<int>();
+                foreach (var id in existingIds)
+                    if (!keptIds.Contains(id))
+                        toDelete.Add(id);
+
+                if (toDelete.Count > 0)
+                {
+                    // Build parameterized DELETE ... WHERE ItemID IN (...)
+                    var sql = $"DELETE FROM Item WHERE OwnerType = @otype AND OwnerID = @oid AND ItemID IN ({string.Join(',', toDelete)})";
+                    using var delCmd = conn.CreateCommand();
+                    delCmd.CommandText = sql;
+                    delCmd.Parameters.AddWithValue("@otype", "Room");
+                    delCmd.Parameters.AddWithValue("@oid", room.ID);
+                    delCmd.ExecuteNonQuery();
+                }
+            }
+
+            // Mark as clean — caller SaveRoom already flips IsDirty as appropriate
         }
     }
 }

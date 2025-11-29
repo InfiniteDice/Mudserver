@@ -3,6 +3,7 @@ using MudCore.Entities;
 using MudCore.World;
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 
 namespace MudPersistence
 {
@@ -102,20 +103,56 @@ namespace MudPersistence
         {
             var rooms = new List<Room>();
             var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT RoomID, Name, Description FROM Room WHERE AreaID = @aid";
+            cmd.CommandText = @"
+    SELECT RoomID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage
+    FROM Room
+    WHERE AreaID = @aid";
             cmd.Parameters.AddWithValue("@aid", areaID);
 
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var room = new Room(
-                    reader.GetString(1),                          // Name
-                    reader.IsDBNull(2) ? "" : reader.GetString(2), // Description
-                    areaID,                                        // Correct order: AreaID first
-                    reader.GetInt32(0),                            // RoomID second
-                    null                                           // Keywords loaded separately
-                );
+                var roomId = reader.GetInt32(0);
+                var roomName = reader.GetString(1);
+                var roomDesc = reader.IsDBNull(2) ? "" : reader.GetString(2);
 
+                var room = new Room(roomName, roomDesc, areaID: areaID, roomID: roomId);
+
+                // Spawn fields (safe parsing with defaults)
+                room.IsSpawner = !reader.IsDBNull(3) && reader.GetInt32(3) != 0;
+                room.SpawnType = reader.IsDBNull(4) ? "" : reader.GetString(4);
+
+                var spawnListJson = reader.IsDBNull(5) ? "[]" : reader.GetString(5);
+                try
+                {
+                    room.SpawnTemplateList = JsonSerializer.Deserialize<List<string>>(spawnListJson) ?? new List<string>();
+                }
+                catch
+                {
+                    room.SpawnTemplateList = new List<string>();
+                }
+
+                room.SpawnChance = reader.IsDBNull(6) ? 0 : reader.GetInt32(6);
+                room.SpawnDelayMinutes = reader.IsDBNull(7) ? 0 : reader.GetInt32(7);
+
+                // LastSpawnTime: parse ISO string if present
+                if (!reader.IsDBNull(8))
+                {
+                    var s = reader.GetString(8);
+                    if (DateTime.TryParse(s, out var dt))
+                        room.LastSpawnTime = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+                    else
+                        room.LastSpawnTime = DateTime.MinValue;
+                }
+                else
+                {
+                    room.LastSpawnTime = DateTime.MinValue;
+                }
+
+                room.SpawnMaxRoom = reader.IsDBNull(9) ? 1 : reader.GetInt32(9);
+                room.SpawnMessage = reader.IsDBNull(10) ? "" : reader.GetString(10);
+
+                // existing post-processing: load exits/keywords/inventory happens elsewhere in loader
                 rooms.Add(room);
             }
 

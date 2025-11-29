@@ -190,6 +190,7 @@
         ws.addEventListener('error', e => addLog('WebSocket error', 'error'));
 
         ws.addEventListener('message', evt => {
+            console.log('[WS rx]', evt.data);
             try {
                 const msg = JSON.parse(evt.data);
 
@@ -207,6 +208,15 @@
 
                     roomTitleEl.textContent = title || 'Unknown room';
                     roomDescEl.textContent = desc || '';
+
+                    // Render exits from the room message (server includes exits array)
+                    exitsEl.innerHTML = (msg.exits || [])
+                        .map(e => {
+                            const dir = e.direction ?? e.Direction ?? '';
+                            const t = e.title ?? e.Title ?? '';
+                            return `<span class="badge exit">${dir}${t ? ': ' + t : ''}</span>`;
+                        })
+                        .join(' ');
 
                     // render NPCs
                     if (npcsEl) {

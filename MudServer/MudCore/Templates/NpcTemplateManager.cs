@@ -1,5 +1,7 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -62,10 +64,33 @@ namespace MudCore.Templates
 
             foreach (var file in Directory.GetFiles(folderToUse, "*.json"))
             {
-                var json = File.ReadAllText(file);
-                var tmpl = JsonSerializer.Deserialize<NpcTemplate>(json, options);
+                try
+                {
+                    var json = File.ReadAllText(file);
+                    var tmpl = JsonSerializer.Deserialize<NpcTemplate>(json, options);
 
-                Templates[tmpl.Id] = tmpl;
+                    if (tmpl == null)
+                    {
+                        Console.WriteLine($"[NpcTemplateManager] Skipping {file}: deserialized template is null.");
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(tmpl.Id))
+                    {
+                        Console.WriteLine($"[NpcTemplateManager] Skipping {file}: template Id is missing or empty.");
+                        continue;
+                    }
+
+                    // Add/overwrite template (log duplicate)
+                    if (Templates.ContainsKey(tmpl.Id))
+                        Console.WriteLine($"[NpcTemplateManager] Overwriting template '{tmpl.Id}' from file {file}.");
+
+                    Templates[tmpl.Id] = tmpl;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NpcTemplateManager] Failed to load template from {file}: {ex.Message}");
+                }
             }
         }
 

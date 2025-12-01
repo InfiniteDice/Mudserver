@@ -13,7 +13,6 @@
             <div class="status">
                 <span class="status-item">Player: <strong id="playerName">—</strong></span>
                 <span class="status-item">HP: <strong id="hp">0</strong></span>
-                <span class="status-item">Carried: <span id="carried">—</span></span>
                 <!-- Inventory button (single source of truth) -->
                 <button id="invBtn" class="inv-button">Inventory</button>
             </div>
@@ -110,7 +109,6 @@
 
         const playerNameEl = document.getElementById('playerName');
         const hpEl = document.getElementById('hp');
-        const carriedEl = document.getElementById('carried');
         const roomTitleEl = document.getElementById('roomTitle');
         const roomDescEl = document.getElementById('roomDesc');
         const exitsEl = document.getElementById('exits');
@@ -133,7 +131,16 @@
         function addLog(text, cls = '') {
             const el = document.createElement('div');
             el.className = 'log-line ' + cls;
-            el.textContent = text;
+
+            // Allow trusted HTML only for system messages we generate (contains hp-current span)
+            if (cls === 'system') {
+                // Very minimal sanitization: replace script tags if somehow present
+                const safe = text.replace(/<script/gi, '&lt;script');
+                el.innerHTML = safe;
+            } else {
+                el.textContent = text;
+            }
+
             logEl.appendChild(el);
             logEl.scrollTop = logEl.scrollHeight;
         }
@@ -251,11 +258,10 @@
                     return;
                 }
 
-                // Player update (name, health, carriedItems)
+                // Player update (name, health)
                 if (msg.type === 'player_update') {
                     playerNameEl.textContent = msg.name || '—';
                     hpEl.textContent = `${msg.currentHealth ?? 0}/${msg.maxHealth ?? 0}`;
-                    carriedEl.textContent = (msg.carriedItems && msg.carriedItems.length) ? msg.carriedItems.join(', ') : '(none)';
                     return;
                 }
 

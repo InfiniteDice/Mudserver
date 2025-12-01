@@ -19,8 +19,8 @@ namespace MudPersistence
         public static int InsertNpc(SqliteConnection conn, Npc npc)
         {
             using var cmd = new SqliteCommand(
-                @"INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, Description, IdleActions, WanderChance, CurrentRoomID, IsPersistent, Flags, Level, Mass, CombatSkill, EffCombatSkill, SizeEnum, BaseDmgDice, EffMass, IsHumanoid, BaseArmorClass, EffArmorClass, Debuffs, Buffs, WanderAreas, AiBehaviors, AiTaskList, CurrentAiTask)
-                  VALUES (@template, @name, @align, @maxh, @h, @desc, @idle, @wander, @room, @persist, @flags, @level, @mass, @cskill, @ecskill, @size, @bbdice, @effmass, @ishum, @baseac, @effac, @debuffs, @buffs, @wanderAreas, @aiBehaviors, @aiTasks, @currentTask);
+                @"INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, Description, IdleActions, WanderChance, CurrentRoomID, IsPersistent, Flags, Level, Mass, CombatSkill, EffCombatSkill, SizeEnum, BaseDmgDice, EffMass, IsHumanoid, BaseArmorClass, EffArmorClass, Debuffs, Buffs, VisualTrait, WanderAreas, AiBehaviors, AiTaskList, CurrentAiTask)
+                  VALUES (@template, @name, @align, @maxh, @h, @desc, @idle, @wander, @room, @persist, @flags, @level, @mass, @cskill, @ecskill, @size, @bbdice, @effmass, @ishum, @baseac, @effac, @debuffs, @buffs, @visualTrait, @wanderAreas, @aiBehaviors, @aiTasks, @currentTask);
                   SELECT last_insert_rowid();", conn);
 
             cmd.Parameters.AddWithValue("@template", npc.TemplateID ?? "");
@@ -46,6 +46,9 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@effac", npc.EffArmorClass);
             cmd.Parameters.AddWithValue("@debuffs", JsonSerializer.Serialize(npc.Debuffs ?? new List<string>(), _jsonOpts));
             cmd.Parameters.AddWithValue("@buffs", JsonSerializer.Serialize(npc.Buffs ?? new List<string>(), _jsonOpts));
+
+            // New: VisualTrait parameter
+            cmd.Parameters.AddWithValue("@visualTrait", npc.VisualTrait ?? "");
 
             // New AI / list fields
             cmd.Parameters.AddWithValue("@wanderAreas", JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>(), _jsonOpts));
@@ -85,6 +88,7 @@ namespace MudPersistence
                     EffArmorClass=@effac,
                     Debuffs=@debuffs,
                     Buffs=@buffs,
+                    VisualTrait=@visualTrait,
                     WanderAreas=@wanderAreas,
                     AiBehaviors=@aiBehaviors,
                     AiTaskList=@aiTasks,
@@ -115,6 +119,9 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@effac", npc.EffArmorClass);
             cmd.Parameters.AddWithValue("@debuffs", JsonSerializer.Serialize(npc.Debuffs ?? new List<string>(), _jsonOpts));
             cmd.Parameters.AddWithValue("@buffs", JsonSerializer.Serialize(npc.Buffs ?? new List<string>(), _jsonOpts));
+
+            // New: VisualTrait parameter for update
+            cmd.Parameters.AddWithValue("@visualTrait", npc.VisualTrait ?? "");
 
             // New AI / list fields
             cmd.Parameters.AddWithValue("@wanderAreas", JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>(), _jsonOpts));
@@ -179,6 +186,19 @@ namespace MudPersistence
                 var buffJson = reader.IsDBNull(reader.GetOrdinal("Buffs")) ? "[]" : reader.GetString(reader.GetOrdinal("Buffs"));
                 try { npc.Debuffs = JsonSerializer.Deserialize<List<string>>(debJson, _jsonOpts) ?? new List<string>(); } catch { npc.Debuffs = new List<string>(); }
                 try { npc.Buffs = JsonSerializer.Deserialize<List<string>>(buffJson, _jsonOpts) ?? new List<string>(); } catch { npc.Buffs = new List<string>(); }
+
+                int ordVisual = -1;
+                try { ordVisual = reader.GetOrdinal("VisualTrait"); } catch { ordVisual = -1; }
+
+                if (ordVisual >= 0)
+                {
+                    var vt = reader.IsDBNull(ordVisual) ? null : reader.GetString(ordVisual);
+                    npc.VisualTrait = string.IsNullOrWhiteSpace(vt) ? null : vt.Trim();
+                }
+                else
+                {
+                    npc.VisualTrait = null; // column missing in DB
+                }
 
                 // New AI fields (JSON)
                 var wanderJson = reader.IsDBNull(reader.GetOrdinal("WanderAreas")) ? "[]" : reader.GetString(reader.GetOrdinal("WanderAreas"));

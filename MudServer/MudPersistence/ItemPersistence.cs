@@ -5,12 +5,86 @@ using System.Collections.Generic;
 
 namespace MudPersistence
 {
+    /// <summary>
+    /// Item persistence helpers (insert / update / load by owner).
+    /// NOTE: This class was missing NormalizeOwnerType and LoadItemsByOwner after recent edits;
+    /// they are restored here to fix compilation errors referenced in WorldLoader.
+    /// </summary>
     public static partial class ItemPersistence
     {
+        // Restored: normalizes OwnerType strings to canonical casing used throughout the DB.
+        private static string NormalizeOwnerType(string? ownerType)
+        {
+            if (string.IsNullOrWhiteSpace(ownerType))
+                return string.Empty;
+
+            var s = ownerType.Trim();
+            return s.ToLowerInvariant() switch
+            {
+                "room" or "rooms" or "room " => "Room",
+                "npc" or "npcs" => "NPC",
+                "player" or "players" => "Player",
+                "owner" => "Player",
+                _ => s
+            };
+        }
+
+        /// <summary>
+        /// Load all items owned by (OwnerType, OwnerID).
+        /// Used by WorldLoader to hydrate full room and NPC inventories.
+        /// </summary>
+        public static List<Item> LoadItemsByOwner(SqliteConnection conn, string ownerType, int ownerId)
+        {
+            var list = new List<Item>();
+            if (conn == null) return list;
+
+            var normalized = NormalizeOwnerType(ownerType);
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
+                       Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
+                       LongDesc, Creator, Condition, Flags
+                FROM Item
+                WHERE OwnerType = @otype AND OwnerID = @oid";
+            cmd.Parameters.AddWithValue("@otype", normalized);
+            cmd.Parameters.AddWithValue("@oid", ownerId);
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var it = new Item
+                {
+                    ItemID      = !reader.IsDBNull(0)  ? reader.GetInt32(0)  : 0,
+                    TemplateID  = !reader.IsDBNull(1)  ? reader.GetString(1) : "",
+                    Name        = !reader.IsDBNull(2)  ? reader.GetString(2) : "",
+                    OwnerType   = !reader.IsDBNull(3)  ? reader.GetString(3) : "",
+                    OwnerID     = !reader.IsDBNull(4)  ? reader.GetInt32(4)  : 0,
+                    RoomID      = !reader.IsDBNull(5)  ? reader.GetInt32(5)  : 0,
+                    Value       = !reader.IsDBNull(6)  ? reader.GetInt32(6)  : 0,
+                    Weight      = !reader.IsDBNull(7)  ? reader.GetDouble(7) : 0.0,
+                    WearLoc     = !reader.IsDBNull(8)  ? reader.GetString(8) : "",
+                    HandLoc     = !reader.IsDBNull(9)  ? reader.GetInt32(9)  : 0,
+                    ItemCategory= !reader.IsDBNull(10) ? reader.GetString(10): "",
+                    ShortDesc   = !reader.IsDBNull(11) ? reader.GetString(11): "",
+                    LongDesc    = !reader.IsDBNull(12) ? reader.GetString(12): "",
+                    Creator     = !reader.IsDBNull(13) ? reader.GetString(13): "",
+                    Condition   = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
+                    FlagsJson   = !reader.IsDBNull(15) ? reader.GetString(15): "[]"
+                };
+                list.Add(it);
+            }
+
+            return list;
+        }
+
         public static void SaveItem(SqliteConnection conn, Item item)
         {
             if (conn == null) throw new ArgumentNullException(nameof(conn));
             if (item == null) throw new ArgumentNullException(nameof(item));
+
+            // Uses restored NormalizeOwnerType
+            item.OwnerType = NormalizeOwnerType(item.OwnerType);
 
             using var tran = conn.BeginTransaction();
             try
@@ -20,15 +94,19 @@ namespace MudPersistence
                     using var insertCmd = conn.CreateCommand();
                     insertCmd.CommandText = @"
                         INSERT INTO Item
-                            (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags)
+                            (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight,
+                             WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator,
+                             Condition, Flags)
                         VALUES
-                            (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags);
+                            (@template, @name, @otype, @oid, @rid, @value, @weight,
+                             @wear, @hand, @category, @short, @long, @creator,
+                             @cond, @flags);
                         SELECT last_insert_rowid();
                     ";
                     insertCmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
                     insertCmd.Parameters.AddWithValue("@name", item.Name ?? "");
                     insertCmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
-                    insertCmd.Parameters.AddWithValue("@oid", item.OwnerID); // int
+                    insertCmd.Parameters.AddWithValue("@oid", item.OwnerID);
                     insertCmd.Parameters.AddWithValue("@rid", item.RoomID);
                     insertCmd.Parameters.AddWithValue("@value", item.Value);
                     insertCmd.Parameters.AddWithValue("@weight", item.Weight);
@@ -41,7 +119,6 @@ namespace MudPersistence
                     insertCmd.Parameters.AddWithValue("@cond", item.Condition);
                     insertCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
 
-                    // execute and handle possible null safely (fixes CS8605 / CS8601)
                     var scalarObj = insertCmd.ExecuteScalar();
                     if (scalarObj != null)
                     {
@@ -49,6 +126,8 @@ namespace MudPersistence
                         else if (scalarObj is int i) item.ItemID = i;
                         else if (long.TryParse(scalarObj.ToString(), out var parsed)) item.ItemID = (int)parsed;
                     }
+
+                    Console.WriteLine($"[ItemPersistence] Inserted item (TemplateID='{item.TemplateID}', Name='{item.Name}', ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}).");
                 }
                 else
                 {
@@ -90,40 +169,68 @@ namespace MudPersistence
                     updateCmd.Parameters.AddWithValue("@id", item.ItemID);
 
                     var rows = updateCmd.ExecuteNonQuery();
-
                     if (rows == 0)
                     {
-                        using var insertCmd = conn.CreateCommand();
-                        insertCmd.CommandText = @"
-                            INSERT INTO Item
-                                (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags)
-                            VALUES
-                                (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags);
-                            SELECT last_insert_rowid();
-                        ";
-                        insertCmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
-                        insertCmd.Parameters.AddWithValue("@name", item.Name ?? "");
-                        insertCmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
-                        insertCmd.Parameters.AddWithValue("@oid", item.OwnerID);
-                        insertCmd.Parameters.AddWithValue("@rid", item.RoomID);
-                        insertCmd.Parameters.AddWithValue("@value", item.Value);
-                        insertCmd.Parameters.AddWithValue("@weight", item.Weight);
-                        insertCmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
-                        insertCmd.Parameters.AddWithValue("@hand", item.HandLoc);
-                        insertCmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
-                        insertCmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
-                        insertCmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
-                        insertCmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
-                        insertCmd.Parameters.AddWithValue("@cond", item.Condition);
-                        insertCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        using var existsCmd = conn.CreateCommand();
+                        existsCmd.CommandText = "SELECT 1 FROM Item WHERE ItemID = @id";
+                        existsCmd.Parameters.AddWithValue("@id", item.ItemID);
+                        var exists = existsCmd.ExecuteScalar() != null;
 
-                        var scalarObj = insertCmd.ExecuteScalar();
-                        if (scalarObj != null)
+                        if (!exists)
                         {
-                            if (scalarObj is long l) item.ItemID = (int)l;
-                            else if (scalarObj is int i) item.ItemID = i;
-                            else if (long.TryParse(scalarObj.ToString(), out var parsed)) item.ItemID = (int)parsed;
+                            if (!string.IsNullOrWhiteSpace(item.TemplateID) && !string.IsNullOrWhiteSpace(item.Name))
+                            {
+                                using var insertCmd = conn.CreateCommand();
+                                insertCmd.CommandText = @"
+                                    INSERT INTO Item
+                                        (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight,
+                                         WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator,
+                                         Condition, Flags)
+                                    VALUES
+                                        (@template, @name, @otype, @oid, @rid, @value, @weight,
+                                         @wear, @hand, @category, @short, @long, @creator,
+                                         @cond, @flags);
+                                    SELECT last_insert_rowid();
+                                ";
+                                insertCmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
+                                insertCmd.Parameters.AddWithValue("@name", item.Name ?? "");
+                                insertCmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
+                                insertCmd.Parameters.AddWithValue("@oid", item.OwnerID);
+                                insertCmd.Parameters.AddWithValue("@rid", item.RoomID);
+                                insertCmd.Parameters.AddWithValue("@value", item.Value);
+                                insertCmd.Parameters.AddWithValue("@weight", item.Weight);
+                                insertCmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
+                                insertCmd.Parameters.AddWithValue("@hand", item.HandLoc);
+                                insertCmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
+                                insertCmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
+                                insertCmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
+                                insertCmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
+                                insertCmd.Parameters.AddWithValue("@cond", item.Condition);
+                                insertCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+
+                                var scalarObj = insertCmd.ExecuteScalar();
+                                if (scalarObj != null)
+                                {
+                                    if (scalarObj is long l) item.ItemID = (int)l;
+                                    else if (scalarObj is int i) item.ItemID = i;
+                                    else if (long.TryParse(scalarObj.ToString(), out var parsed)) item.ItemID = (int)parsed;
+                                }
+
+                                Console.WriteLine($"[ItemPersistence] Upsert fallback inserted item (TemplateID='{item.TemplateID}', ItemID={item.ItemID}).");
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[ItemPersistence][WARN] Skipping fallback insert for ItemID={item.ItemID} due to missing TemplateID/Name.");
+                            }
                         }
+                        else
+                        {
+                            Console.WriteLine($"[ItemPersistence][WARN] UPDATE affected 0 rows for existing ItemID={item.ItemID}; skipping duplicate INSERT.");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[ItemPersistence] Updated item ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}.");
                     }
                 }
 
@@ -131,20 +238,10 @@ namespace MudPersistence
             }
             catch (SqliteException sx)
             {
-                // If ON CONFLICT errors appear, log the schema and rethrow for easier diagnosis
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"[ItemPersistence] SQLite error saving item: {sx.Message}");
-                try
-                {
-                    using var infoCmd = conn.CreateCommand();
-                    infoCmd.CommandText = "PRAGMA table_info('Item');";
-                    using var rdr = infoCmd.ExecuteReader();
-                    Console.WriteLine("[ItemPersistence] Item table columns:");
-                    while (rdr.Read())
-                        Console.WriteLine($"  - {rdr.GetString(1)} ({rdr.GetString(2)}) pk={rdr.GetInt32(5)}");
-                }
-                catch { /* swallow */ }
                 Console.ResetColor();
+                try { tran.Rollback(); } catch { }
                 throw;
             }
             catch
@@ -152,48 +249,6 @@ namespace MudPersistence
                 try { tran.Rollback(); } catch { }
                 throw;
             }
-        }
-
-        // New: load items by owner (used by WorldLoader / NPC loader)
-        public static List<Item> LoadItemsByOwner(SqliteConnection conn, string ownerType, int ownerId)
-        {
-            var list = new List<Item>();
-            if (conn == null) return list;
-
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"
-                SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags
-                FROM Item
-                WHERE OwnerType = @otype AND OwnerID = @oid";
-            cmd.Parameters.AddWithValue("@otype", ownerType);
-            cmd.Parameters.AddWithValue("@oid", ownerId);
-
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                var it = new Item();
-
-                it.ItemID = !reader.IsDBNull(0) ? reader.GetInt32(0) : 0;
-                it.TemplateID = !reader.IsDBNull(1) ? reader.GetString(1) : "";
-                it.Name = !reader.IsDBNull(2) ? reader.GetString(2) : "";
-                it.OwnerType = !reader.IsDBNull(3) ? reader.GetString(3) : "";
-                it.OwnerID = !reader.IsDBNull(4) ? reader.GetInt32(4) : 0;
-                it.RoomID = !reader.IsDBNull(5) ? reader.GetInt32(5) : 0;
-                it.Value = !reader.IsDBNull(6) ? reader.GetInt32(6) : 0;
-                it.Weight = !reader.IsDBNull(7) ? reader.GetDouble(7) : 0.0;
-                it.WearLoc = !reader.IsDBNull(8) ? reader.GetString(8) : "";
-                it.HandLoc = !reader.IsDBNull(9) ? reader.GetInt32(9) : 0;
-                it.ItemCategory = !reader.IsDBNull(10) ? reader.GetString(10) : "";
-                it.ShortDesc = !reader.IsDBNull(11) ? reader.GetString(11) : "";
-                it.LongDesc = !reader.IsDBNull(12) ? reader.GetString(12) : "";
-                it.Creator = !reader.IsDBNull(13) ? reader.GetString(13) : "";
-                it.Condition = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100;
-                it.FlagsJson = !reader.IsDBNull(15) ? reader.GetString(15) : "[]";
-
-                list.Add(it);
-            }
-
-            return list;
         }
     }
 }

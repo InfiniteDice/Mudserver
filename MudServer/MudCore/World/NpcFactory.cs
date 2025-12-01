@@ -45,6 +45,12 @@ namespace MudCore.World
                 EffCombatSkill = template.EffCombatSkill
             };
 
+            // Visual trait assignment (50% chance). Requires VisualTraitManager.Load(...) to have been called at startup.
+            if (VisualTraitManager.HasTraits && Random.Shared.NextDouble() < 0.9) //90% chance to have a visual trait
+            {
+                npc.VisualTrait = VisualTraitManager.GetRandomTrait(Random.Shared);
+            }
+
             room.Npcs.Add(npc);
             return npc;
         }

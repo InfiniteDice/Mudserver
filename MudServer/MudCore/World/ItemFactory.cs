@@ -11,7 +11,11 @@ namespace MudCore.World
     {
         public string Id { get; set; } = "";
         public string Name { get; set; } = "";
+
+        // Map JSON field "Category" to this property (DB uses ItemCategory on Item).
+        [JsonPropertyName("Category")]
         public string ItemCategory { get; set; } = "";
+
         public double Weight { get; set; } = 0.0;
         public int Value { get; set; } = 0;
         public string ShortDesc { get; set; } = "";

@@ -23,10 +23,11 @@ namespace MudPersistence
                 {
                     room.Exits = LoadRoomExits(conn, room.RoomID);
                     room.Keywords = LoadRoomKeywords(conn, room.RoomID);
-                    room.Inventory = LoadRoomInventory(conn, room.RoomID); // now List<Item>
+
+                    // IMPORTANT: load full item records for room inventory to avoid partial object overwrites.
+                    room.Inventory = ItemPersistence.LoadItemsByOwner(conn, "Room", room.RoomID);
                 }
 
-                // Add all area rooms to world's master room list
                 world.Rooms.AddRange(area.Rooms);
             }
 
@@ -34,12 +35,10 @@ namespace MudPersistence
             try
             {
                 var loadedNpcs = NpcPersistence.LoadAllNpcs(conn, world);
-
                 foreach (var npc in loadedNpcs)
                 {
                     try
                     {
-                        // Load items that belong to this NPC (OwnerType = "NPC", OwnerID = npc.NpcID)
                         var items = ItemPersistence.LoadItemsByOwner(conn, "NPC", npc.NpcID);
                         if (items != null && items.Count > 0)
                             npc.Inventory = items;

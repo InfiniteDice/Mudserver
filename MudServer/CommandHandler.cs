@@ -90,11 +90,54 @@ namespace MudServer
 
             switch (command.Split(' ')[0].ToLower())
             {
-                case "look": return Look(player);
+                case "look":
+                    {
+                        var lookParts = command.Split(' ', 2);
+                        if (lookParts.Length == 1)
+                            return Look(player); // existing room look
+
+                        var targetExpr = lookParts[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are lost in the void.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0)
+                            return MessageHandler.System($"No NPC matching '{targetExpr}' found here.");
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple matches: {list}");
+                        }
+
+                        var npc = matches[0];
+                        var desc = string.IsNullOrWhiteSpace(npc.Description) ? "No description." : npc.Description;
+
+                        // Append health segment; current in <span class='hp-current'> for client styling.
+                        var healthSegment = $" (<span class='hp-current'>{npc.Health}</span>/{npc.HealthMax})";
+
+                        return MessageHandler.System($"{npc.DisplayName}: {desc}{healthSegment}");
+                    }
                 case "move": return Move(player, command);
 
                 case "attack":
-                    return Combat.Attack(player, _world);   // Logic moved to Combat.cs
+                    {
+                        var attackParts = command.Split(' ', 2);
+                        if (attackParts.Length < 2) return MessageHandler.System("Usage: attack <target>");
+                        var targetExpr = attackParts[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0)
+                            return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple targets: {list}");
+                        }
+
+                        return Combat.Attack(player, _world, matches[0]); // overload accepting target
+                    }
 
                 case string s when s.StartsWith("createarea", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
@@ -143,7 +186,7 @@ namespace MudServer
 
             // Show only NPC names in room payload; action text is delivered as system messages.
             var npcs = room.Npcs
-                .Select(n => n.Name)
+                .Select(n => n.DisplayName)
                 .ToList();
 
             var players = room.Players
@@ -488,7 +531,7 @@ namespace MudServer
                 // 4) Replace CreateArea/CreateRoom return Room calls to use names only (no LastAction formatting)
                 return MessageHandler.Room(
                     player.CurrentRoom,
-                    player.CurrentRoom.Npcs.Select(n => n.Name).ToList(),
+                    player.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(),
                     player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
                     _world);
             }
@@ -537,7 +580,7 @@ namespace MudServer
                 // 4) Replace CreateArea/CreateRoom return Room calls to use names only (no LastAction formatting)
                 return MessageHandler.Room(
                     player.CurrentRoom,
-                    player.CurrentRoom.Npcs.Select(n => n.Name).ToList(),
+                    player.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(),
                     player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
                     _world);
             }
@@ -676,7 +719,7 @@ namespace MudServer
                 {
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
-                        room.Npcs.Select(n => n.Name).ToList(),
+                        room.Npcs.Select(n => n.DisplayName).ToList(),
                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                         _world));
                 }
@@ -791,7 +834,7 @@ namespace MudServer
                 {
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
-                        room.Npcs.Select(n => n.Name).ToList(),
+                        room.Npcs.Select(n => n.DisplayName).ToList(),
                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                         _world));
                 }
@@ -841,7 +884,7 @@ namespace MudServer
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
-                    room.Npcs.Select(n => n.Name).ToList(),
+                    room.Npcs.Select(n => n.DisplayName).ToList(),
                     room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                     _world));
             }

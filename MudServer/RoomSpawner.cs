@@ -93,6 +93,7 @@ namespace MudServer
                         else
                         {
                             var npc = world.NpcFactory.CreateNpc(templateId, room);
+                            npc.CurrentAreaID = room.AreaID;
                             // Persist NPC
                             int newId = NpcPersistence.InsertNpc(conn, npc);
                             npc.NpcID = newId;
@@ -126,8 +127,7 @@ namespace MudServer
                             {
                                 // Create fully populated runtime item
                                 var item = world.ItemFactory.CreateItem(templateId, "Room", room.RoomID, room.RoomID);
-
-                                // Persist (assigns ItemID)
+                                item.OwnerAreaID = room.AreaID; // already present; retain
                                 ItemPersistence.SaveItem(conn, item);
 
                                 if (item.ItemID == 0)

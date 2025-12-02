@@ -85,6 +85,7 @@
                             <th>Condition</th>
                             <th>Category</th>
                             <th>Short Description</th>
+                            <th>Status</th> <!-- NEW -->
                         </tr>
                     </thead>
                     <tbody>
@@ -166,14 +167,28 @@
             invEmpty.style.display = 'none';
             document.querySelector('#invTable').style.display = '';
             items.forEach(it => {
+                // Compute status text: worn/held (held reserved for future)
+                let status = '';
+                const cat = (it.itemCategory || '').toLowerCase();
+                const wearLoc = it.wearLoc || '';
+                const isWorn = !!it.isWorn;
+
+                if (isWorn && wearLoc) {
+                    status = `Worn on ${wearLoc}`;
+                } else if (cat === 'weapon' && it.handLoc) {
+                    // Future: show held when command implemented; placeholder example
+                    status = `Held in ${it.handLoc === 1 ? 'Lefthand' : 'Righthand'}`;
+                }
+
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                  <td>${escapeHtml(it.name)}</td>
-                  <td>${escapeHtml(String(it.weight ?? ''))}</td>
-                  <td>${escapeHtml(String(it.condition ?? ''))}</td>
-                  <td>${escapeHtml(it.itemCategory ?? '')}</td>
-                  <td>${escapeHtml(it.shortDesc ?? '')}</td>
-                `;
+          <td>${escapeHtml(it.name)}</td>
+          <td>${escapeHtml(String(it.weight ?? ''))}</td>
+          <td>${escapeHtml(String(it.condition ?? ''))}</td>
+          <td>${escapeHtml(it.itemCategory ?? '')}</td>
+          <td>${escapeHtml(it.shortDesc ?? '')}</td>
+          <td>${escapeHtml(status)}</td>
+        `;
                 invTableBody.appendChild(tr);
             });
         }

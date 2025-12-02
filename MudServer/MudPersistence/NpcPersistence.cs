@@ -1,239 +1,275 @@
 ﻿using Microsoft.Data.Sqlite;
 using MudCore.Entities;
 using MudCore.World;
-using MudCore.Templates;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
-using System.Linq;
 
 namespace MudPersistence
 {
     public static class NpcPersistence
     {
-        private static readonly JsonSerializerOptions _jsonOpts = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
+        private static HashSet<string> _npcCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static bool _colsLoaded;
 
+        private static void EnsureNpcColumns(SqliteConnection conn)
+        {
+            if (_colsLoaded || conn == null) return;
+            try
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "PRAGMA table_info('Npc');";
+                using var rdr = cmd.ExecuteReader();
+                while (rdr.Read())
+                {
+                    if (!rdr.IsDBNull(1))
+                        _npcCols.Add(rdr.GetString(1));
+                }
+                _colsLoaded = true;
+            }
+            catch { }
+        }
+
+        private static bool Has(string col) => _npcCols.Contains(col);
+
+        // Include CurrentAreaID on insert/update
         public static int InsertNpc(SqliteConnection conn, Npc npc)
         {
-            using var cmd = new SqliteCommand(
-                @"INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, Description, IdleActions, WanderChance, CurrentRoomID, IsPersistent, Flags, Level, Mass, CombatSkill, EffCombatSkill, SizeEnum, BaseDmgDice, EffMass, IsHumanoid, BaseArmorClass, EffArmorClass, Debuffs, Buffs, VisualTrait, WanderAreas, AiBehaviors, AiTaskList, CurrentAiTask)
-                  VALUES (@template, @name, @align, @maxh, @h, @desc, @idle, @wander, @room, @persist, @flags, @level, @mass, @cskill, @ecskill, @size, @bbdice, @effmass, @ishum, @baseac, @effac, @debuffs, @buffs, @visualTrait, @wanderAreas, @aiBehaviors, @aiTasks, @currentTask);
-                  SELECT last_insert_rowid();", conn);
+            EnsureNpcColumns(conn);
 
-            cmd.Parameters.AddWithValue("@template", npc.TemplateID ?? "");
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID)
+                VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area);
+                SELECT last_insert_rowid();";
+            cmd.Parameters.AddWithValue("@tid", npc.TemplateID ?? "");
             cmd.Parameters.AddWithValue("@name", npc.Name ?? "");
-            cmd.Parameters.AddWithValue("@align", npc.Alignment.ToString());
-            cmd.Parameters.AddWithValue("@maxh", npc.HealthMax);
-            cmd.Parameters.AddWithValue("@h", npc.Health);
-            cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
-            cmd.Parameters.AddWithValue("@idle", JsonSerializer.Serialize(npc.IdleActions ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@wander", npc.WanderChance);
-            cmd.Parameters.AddWithValue("@room", npc.CurrentRoom?.RoomID ?? npc.CurrentRoomID);
+            cmd.Parameters.AddWithValue("@align", (int)npc.Alignment);
+            cmd.Parameters.AddWithValue("@maxhp", npc.HealthMax);
+            cmd.Parameters.AddWithValue("@hp", npc.Health);
+            cmd.Parameters.AddWithValue("@room", npc.CurrentRoomID);
             cmd.Parameters.AddWithValue("@persist", npc.IsPersistent ? 1 : 0);
-            cmd.Parameters.AddWithValue("@flags", npc.FlagsJson ?? "[]");
-            cmd.Parameters.AddWithValue("@level", npc.Level.HasValue ? (object)npc.Level.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@mass", npc.Mass.HasValue ? (object)npc.Mass.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@cskill", npc.CombatSkill.HasValue ? (object)npc.CombatSkill.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@ecskill", npc.EffCombatSkill.HasValue ? (object)npc.EffCombatSkill.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@size", npc.SizeEnum.HasValue ? (object)npc.SizeEnum.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@bbdice", npc.BaseDmgDice ?? "");
-            cmd.Parameters.AddWithValue("@effmass", npc.EffMass.HasValue ? (object)npc.EffMass.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@ishum", npc.IsHumanoid ? 1 : 0);
-            cmd.Parameters.AddWithValue("@baseac", npc.BaseArmorClass);
-            cmd.Parameters.AddWithValue("@effac", npc.EffArmorClass);
-            cmd.Parameters.AddWithValue("@debuffs", JsonSerializer.Serialize(npc.Debuffs ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@buffs", JsonSerializer.Serialize(npc.Buffs ?? new List<string>(), _jsonOpts));
+            cmd.Parameters.AddWithValue("@trait", npc.VisualTrait ?? "");
+            cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
 
-            // New: VisualTrait parameter
-            cmd.Parameters.AddWithValue("@visualTrait", npc.VisualTrait ?? "");
+            int newId = (int)(long)cmd.ExecuteScalar();
+            npc.NpcID = newId;
 
-            // New AI / list fields
-            cmd.Parameters.AddWithValue("@wanderAreas", JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@aiBehaviors", JsonSerializer.Serialize(npc.AiBehaviors ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@aiTasks", JsonSerializer.Serialize(npc.AiTaskList ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@currentTask", npc.CurrentAiTask ?? "");
-
-            long newId = (long)cmd.ExecuteScalar();
-            npc.NpcID = (int)newId;
-            return npc.NpcID;
+            SaveNpcCombat(conn, npc);
+            return newId;
         }
 
         public static void UpdateNpc(SqliteConnection conn, Npc npc)
         {
-            using var cmd = new SqliteCommand(
-                @"UPDATE Npc SET
-                    TemplateID=@template,
-                    Name=@name,
-                    Alignment=@align,
-                    MaxHealth=@maxh,
-                    Health=@h,
-                    Description=@desc,
-                    IdleActions=@idle,
-                    WanderChance=@wander,
-                    CurrentRoomID=@room,
-                    IsPersistent=@persist,
-                    Flags=@flags,
-                    Level=@level,
-                    Mass=@mass,
-                    CombatSkill=@cskill,
-                    EffCombatSkill=@ecskill,
-                    SizeEnum=@size,
-                    BaseDmgDice=@bbdice,
-                    EffMass=@effmass,
-                    IsHumanoid=@ishum,
-                    BaseArmorClass=@baseac,
-                    EffArmorClass=@effac,
-                    Debuffs=@debuffs,
-                    Buffs=@buffs,
-                    VisualTrait=@visualTrait,
-                    WanderAreas=@wanderAreas,
-                    AiBehaviors=@aiBehaviors,
-                    AiTaskList=@aiTasks,
-                    CurrentAiTask=@currentTask,
-                    UpdatedAt = datetime('now')
-                  WHERE NpcID = @id", conn);
+            EnsureNpcColumns(conn);
 
-            cmd.Parameters.AddWithValue("@template", npc.TemplateID ?? "");
-            cmd.Parameters.AddWithValue("@name", npc.Name ?? "");
-            cmd.Parameters.AddWithValue("@align", npc.Alignment.ToString());
-            cmd.Parameters.AddWithValue("@maxh", npc.HealthMax);
-            cmd.Parameters.AddWithValue("@h", npc.Health);
-            cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
-            cmd.Parameters.AddWithValue("@idle", JsonSerializer.Serialize(npc.IdleActions ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@wander", npc.WanderChance);
-            cmd.Parameters.AddWithValue("@room", npc.CurrentRoom?.RoomID ?? npc.CurrentRoomID);
-            cmd.Parameters.AddWithValue("@persist", npc.IsPersistent ? 1 : 0);
-            cmd.Parameters.AddWithValue("@flags", npc.FlagsJson ?? "[]");
-            cmd.Parameters.AddWithValue("@level", npc.Level.HasValue ? (object)npc.Level.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@mass", npc.Mass.HasValue ? (object)npc.Mass.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@cskill", npc.CombatSkill.HasValue ? (object)npc.CombatSkill.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@ecskill", npc.EffCombatSkill.HasValue ? (object)npc.EffCombatSkill.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@size", npc.SizeEnum.HasValue ? (object)npc.SizeEnum.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@bbdice", npc.BaseDmgDice ?? "");
-            cmd.Parameters.AddWithValue("@effmass", npc.EffMass.HasValue ? (object)npc.EffMass.Value : DBNull.Value);
-            cmd.Parameters.AddWithValue("@ishum", npc.IsHumanoid ? 1 : 0);
-            cmd.Parameters.AddWithValue("@baseac", npc.BaseArmorClass);
-            cmd.Parameters.AddWithValue("@effac", npc.EffArmorClass);
-            cmd.Parameters.AddWithValue("@debuffs", JsonSerializer.Serialize(npc.Debuffs ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@buffs", JsonSerializer.Serialize(npc.Buffs ?? new List<string>(), _jsonOpts));
-
-            // New: VisualTrait parameter for update
-            cmd.Parameters.AddWithValue("@visualTrait", npc.VisualTrait ?? "");
-
-            // New AI / list fields
-            cmd.Parameters.AddWithValue("@wanderAreas", JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@aiBehaviors", JsonSerializer.Serialize(npc.AiBehaviors ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@aiTasks", JsonSerializer.Serialize(npc.AiTaskList ?? new List<string>(), _jsonOpts));
-            cmd.Parameters.AddWithValue("@currentTask", npc.CurrentAiTask ?? "");
-
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                UPDATE Npc SET
+                    Health = @hp,
+                    MaxHealth = @maxhp,
+                    CurrentRoomID = @room,
+                    VisualTrait = @trait,
+                    CurrentAreaID = @area
+                WHERE NpcID = @id;";
+            cmd.Parameters.AddWithValue("@hp", npc.Health);
+            cmd.Parameters.AddWithValue("@maxhp", npc.HealthMax);
+            cmd.Parameters.AddWithValue("@room", npc.CurrentRoomID);
+            cmd.Parameters.AddWithValue("@trait", npc.VisualTrait ?? "");
+            cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
             cmd.Parameters.AddWithValue("@id", npc.NpcID);
+            try { cmd.ExecuteNonQuery(); } catch { }
 
-            cmd.ExecuteNonQuery();
+            SaveNpcCombat(conn, npc);
         }
 
+        public static void DeleteNpc(SqliteConnection conn, int npcId)
+        {
+            if (conn == null || npcId <= 0) return;
+            try
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "DELETE FROM Npc WHERE NpcID = @id;";
+                cmd.Parameters.AddWithValue("@id", npcId);
+                cmd.ExecuteNonQuery();
+                Console.WriteLine($"[NpcPersistence] Deleted NPC NpcID={npcId} from DB.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NpcPersistence] Failed to delete NPC NpcID={npcId}: {ex.Message}");
+            }
+        }
+
+        private static void SaveNpcCombat(SqliteConnection conn, Npc npc)
+        {
+            EnsureNpcColumns(conn);
+
+            var assignments = new List<string>();
+            if (Has("Mass")) assignments.Add("Mass = @Mass");
+            if (Has("EffMass")) assignments.Add("EffMass = @EffMass");
+            if (Has("CombatSkill")) assignments.Add("CombatSkill = @CombatSkill");
+            if (Has("EffCombatSkill")) assignments.Add("EffCombatSkill = @EffCombatSkill");
+            if (Has("SizeEnum")) assignments.Add("SizeEnum = @SizeEnum");
+            if (Has("BaseDmgDice")) assignments.Add("BaseDmgDice = @BaseDmgDice");
+            if (Has("BaseArmorClass")) assignments.Add("BaseArmorClass = @BaseArmorClass");
+            if (Has("EffArmorClass")) assignments.Add("EffArmorClass = @EffArmorClass");
+            if (Has("Buffs")) assignments.Add("Buffs = @Buffs");
+            if (Has("Debuffs")) assignments.Add("Debuffs = @Debuffs");
+
+            if (assignments.Count == 0) return;
+
+            using var up = conn.CreateCommand();
+            up.CommandText = $"UPDATE Npc SET {string.Join(", ", assignments)} WHERE NpcID = @id;";
+            up.Parameters.AddWithValue("@id", npc.NpcID);
+
+            up.Parameters.AddWithValue("@Mass", npc.Mass ?? 85.0);
+            up.Parameters.AddWithValue("@EffMass", npc.EffMass ?? (npc.Mass ?? 85.0));
+            up.Parameters.AddWithValue("@CombatSkill", npc.CombatSkill ?? 50);
+            up.Parameters.AddWithValue("@EffCombatSkill", npc.EffCombatSkill ?? (npc.CombatSkill ?? 50));
+            up.Parameters.AddWithValue("@SizeEnum", npc.SizeEnum ?? 4);
+            up.Parameters.AddWithValue("@BaseDmgDice", npc.BaseDmgDice);
+            up.Parameters.AddWithValue("@BaseArmorClass", npc.BaseArmorClass);
+            up.Parameters.AddWithValue("@EffArmorClass", npc.EffArmorClass);
+
+            var buffsJson = JsonSerializer.Serialize(npc.Buffs ?? new List<string>());
+            var debuffsJson = JsonSerializer.Serialize(npc.Debuffs ?? new List<string>());
+            up.Parameters.AddWithValue("@Buffs", buffsJson);
+            up.Parameters.AddWithValue("@Debuffs", debuffsJson);
+
+            try { up.ExecuteNonQuery(); } catch { }
+        }
+
+        // Add a harmless consistency warning in loader
         public static List<Npc> LoadAllNpcs(SqliteConnection conn, World world)
         {
-            var list = new List<Npc>();
-            using var cmd = new SqliteCommand("SELECT * FROM Npc", conn);
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            EnsureNpcColumns(conn);
+            var npcs = new List<Npc>();
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT * FROM Npc;";
+            using var rdr = cmd.ExecuteReader();
+            while (rdr.Read())
             {
                 var npc = new Npc();
-
-                npc.NpcID = reader.GetInt32(reader.GetOrdinal("NpcID"));
-                npc.TemplateID = reader.IsDBNull(reader.GetOrdinal("TemplateID")) ? null : reader.GetString(reader.GetOrdinal("TemplateID"));
-                npc.Name = reader.IsDBNull(reader.GetOrdinal("Name")) ? npc.TemplateID : reader.GetString(reader.GetOrdinal("Name"));
-
-                var alignStr = reader.IsDBNull(reader.GetOrdinal("Alignment")) ? "Neutral" : reader.GetString(reader.GetOrdinal("Alignment"));
-                if (Enum.TryParse<Alignment>(alignStr, true, out var align))
-                    npc.Alignment = align;
-                else
-                    npc.Alignment = Alignment.Neutral;
-
-                // read MaxHealth (column renamed from HealthMax)
-                npc.HealthMax = reader.IsDBNull(reader.GetOrdinal("MaxHealth")) ? 0 : reader.GetInt32(reader.GetOrdinal("MaxHealth"));
-                npc.Health = reader.IsDBNull(reader.GetOrdinal("Health")) ? npc.HealthMax : reader.GetInt32(reader.GetOrdinal("Health"));
-                npc.Description = reader.IsDBNull(reader.GetOrdinal("Description")) ? "" : reader.GetString(reader.GetOrdinal("Description"));
-
-                var idleJson = reader.IsDBNull(reader.GetOrdinal("IdleActions")) ? "[]" : reader.GetString(reader.GetOrdinal("IdleActions"));
-                try { npc.IdleActions = JsonSerializer.Deserialize<List<string>>(idleJson, _jsonOpts) ?? new List<string>(); } catch { npc.IdleActions = new List<string>(); }
-
-                npc.WanderChance = reader.IsDBNull(reader.GetOrdinal("WanderChance")) ? 0.0 : reader.GetDouble(reader.GetOrdinal("WanderChance"));
-                npc.CurrentRoomID = reader.IsDBNull(reader.GetOrdinal("CurrentRoomID")) ? 0 : reader.GetInt32(reader.GetOrdinal("CurrentRoomID"));
-                npc.IsPersistent = !reader.IsDBNull(reader.GetOrdinal("IsPersistent")) && reader.GetInt32(reader.GetOrdinal("IsPersistent")) != 0;
-                npc.FlagsJson = reader.IsDBNull(reader.GetOrdinal("Flags")) ? "[]" : reader.GetString(reader.GetOrdinal("Flags"));
-
-                npc.Level = reader.IsDBNull(reader.GetOrdinal("Level")) ? null : reader.GetInt32(reader.GetOrdinal("Level"));
-                npc.Mass = reader.IsDBNull(reader.GetOrdinal("Mass")) ? null : reader.GetInt32(reader.GetOrdinal("Mass"));
-
-                // Combat skills (read by name to avoid index drift)
-                npc.CombatSkill = reader.IsDBNull(reader.GetOrdinal("CombatSkill")) ? null : reader.GetInt32(reader.GetOrdinal("CombatSkill"));
-                npc.EffCombatSkill = reader.IsDBNull(reader.GetOrdinal("EffCombatSkill")) ? null : reader.GetInt32(reader.GetOrdinal("EffCombatSkill"));
-
-                npc.SizeEnum = reader.IsDBNull(reader.GetOrdinal("SizeEnum")) ? null : reader.GetInt32(reader.GetOrdinal("SizeEnum"));
-                npc.BaseDmgDice = reader.IsDBNull(reader.GetOrdinal("BaseDmgDice")) ? "" : reader.GetString(reader.GetOrdinal("BaseDmgDice"));
-                npc.EffMass = reader.IsDBNull(reader.GetOrdinal("EffMass")) ? null : reader.GetInt32(reader.GetOrdinal("EffMass"));
-                npc.IsHumanoid = !reader.IsDBNull(reader.GetOrdinal("IsHumanoid")) && reader.GetInt32(reader.GetOrdinal("IsHumanoid")) != 0;
-
-                // Read BaseArmorClass / EffArmorClass by name to be robust to column ordering
-                npc.BaseArmorClass = reader.IsDBNull(reader.GetOrdinal("BaseArmorClass")) ? 0 : reader.GetInt32(reader.GetOrdinal("BaseArmorClass"));
-                npc.EffArmorClass = reader.IsDBNull(reader.GetOrdinal("EffArmorClass")) ? npc.BaseArmorClass : reader.GetInt32(reader.GetOrdinal("EffArmorClass"));
-
-                var debJson = reader.IsDBNull(reader.GetOrdinal("Debuffs")) ? "[]" : reader.GetString(reader.GetOrdinal("Debuffs"));
-                var buffJson = reader.IsDBNull(reader.GetOrdinal("Buffs")) ? "[]" : reader.GetString(reader.GetOrdinal("Buffs"));
-                try { npc.Debuffs = JsonSerializer.Deserialize<List<string>>(debJson, _jsonOpts) ?? new List<string>(); } catch { npc.Debuffs = new List<string>(); }
-                try { npc.Buffs = JsonSerializer.Deserialize<List<string>>(buffJson, _jsonOpts) ?? new List<string>(); } catch { npc.Buffs = new List<string>(); }
-
-                int ordVisual = -1;
-                try { ordVisual = reader.GetOrdinal("VisualTrait"); } catch { ordVisual = -1; }
-
-                if (ordVisual >= 0)
-                {
-                    var vt = reader.IsDBNull(ordVisual) ? null : reader.GetString(ordVisual);
-                    npc.VisualTrait = string.IsNullOrWhiteSpace(vt) ? null : vt.Trim();
-                }
-                else
-                {
-                    npc.VisualTrait = null; // column missing in DB
-                }
-
-                // New AI fields (JSON)
-                var wanderJson = reader.IsDBNull(reader.GetOrdinal("WanderAreas")) ? "[]" : reader.GetString(reader.GetOrdinal("WanderAreas"));
-                var aiBehJson = reader.IsDBNull(reader.GetOrdinal("AiBehaviors")) ? "[]" : reader.GetString(reader.GetOrdinal("AiBehaviors"));
-                var aiTasksJson = reader.IsDBNull(reader.GetOrdinal("AiTaskList")) ? "[]" : reader.GetString(reader.GetOrdinal("AiTaskList"));
-                npc.CurrentAiTask = reader.IsDBNull(reader.GetOrdinal("CurrentAiTask")) ? null : reader.GetString(reader.GetOrdinal("CurrentAiTask"));
-
-                try { npc.WanderAreas = JsonSerializer.Deserialize<List<int>>(wanderJson, _jsonOpts) ?? new List<int>(); } catch { npc.WanderAreas = new List<int>(); }
-                try { npc.AiBehaviors = JsonSerializer.Deserialize<List<string>>(aiBehJson, _jsonOpts) ?? new List<string>(); } catch { npc.AiBehaviors = new List<string>(); }
-                try { npc.AiTaskList = JsonSerializer.Deserialize<List<string>>(aiTasksJson, _jsonOpts) ?? new List<string>(); } catch { npc.AiTaskList = new List<string>(); }
-
-                // Resolve template reference
                 try
                 {
-                    npc.Template = world.TemplateManager.Get(npc.TemplateID);
-                    npc.ApplyTemplateDefaults();
+                    npc.NpcID = GetInt(rdr, "NpcID", 0);
+                    npc.TemplateID = GetString(rdr, "TemplateID", "");
+                    npc.Name = GetString(rdr, "Name", "");
+                    npc.Alignment = (Alignment)GetInt(rdr, "Alignment", 1);
+                    npc.HealthMax = GetInt(rdr, "MaxHealth", 100);
+                    npc.Health = GetInt(rdr, "Health", npc.HealthMax);
+                    npc.CurrentRoomID = GetInt(rdr, "CurrentRoomID", 0);
+                    npc.IsPersistent = GetInt(rdr, "IsPersistent", 1) != 0;
+                    npc.VisualTrait = GetStringOrNull(rdr, "VisualTrait");
+
+                    // Read CurrentAreaID if present
+                    npc.CurrentAreaID = Has("CurrentAreaID") ? GetInt(rdr, "CurrentAreaID", 0) : 0;
+
+                    // Skip dead or invalid rows (Health <= 0 or HealthMax <= 0)
+                    if (npc.Health <= 0 || npc.HealthMax <= 0)
+                    {
+                        Console.WriteLine($"[NpcPersistence] Skipping NPC NpcID={npc.NpcID} (Health={npc.Health}/{npc.HealthMax}).");
+                        continue;
+                    }
+
+                    npc.Mass = Has("Mass") ? GetNullableDoubleFlexible(rdr, "Mass") : null;
+                    npc.EffMass = Has("EffMass") ? GetNullableDoubleFlexible(rdr, "EffMass") : null;
+                    npc.CombatSkill = Has("CombatSkill") ? GetNullableInt(rdr, "CombatSkill") : null;
+                    npc.EffCombatSkill = Has("EffCombatSkill") ? GetNullableInt(rdr, "EffCombatSkill") : null;
+                    npc.SizeEnum = Has("SizeEnum") ? GetNullableInt(rdr, "SizeEnum") : null;
+                    if (Has("BaseDmgDice"))
+                        npc.BaseDmgDice = GetDoubleFlexible(rdr, "BaseDmgDice", npc.BaseDmgDice);
+                    if (Has("BaseArmorClass"))
+                        npc.BaseArmorClass = GetDoubleFlexible(rdr, "BaseArmorClass", npc.BaseArmorClass);
+                    if (Has("EffArmorClass"))
+                        npc.EffArmorClass = GetDoubleFlexible(rdr, "EffArmorClass", npc.EffArmorClass);
+
+                    if (Has("Buffs"))
+                        npc.Buffs = TryDeserializeList(GetString(rdr, "Buffs", "[]"));
+                    if (Has("Debuffs"))
+                        npc.Debuffs = TryDeserializeList(GetString(rdr, "Debuffs", "[]"));
+
+                    npc.CurrentRoom = world.Rooms.Find(r => r.RoomID == npc.CurrentRoomID);
+
+                    // NEW: warn if area linkage mismatches (do not correct automatically)
+                    if (npc.CurrentRoom != null && npc.CurrentRoom.AreaID > 0 && npc.CurrentAreaID > 0 && npc.CurrentAreaID != npc.CurrentRoom.AreaID)
+                    {
+                        Console.WriteLine($"[NpcPersistence][WARN] Area mismatch for NpcID={npc.NpcID}: CurrentAreaID={npc.CurrentAreaID}, Room.AreaID={npc.CurrentRoom.AreaID}.");
+                        // Keep loading as-is
+                    }
+
+                    MudServer.Combat.InitializeSizeDefaults(npc);
+                    MudServer.Combat.UpdateEffectiveStats(npc);
+
+                    if (npc.CurrentRoom != null)
+                        npc.CurrentRoom.Npcs.Add(npc);
+                    npcs.Add(npc);
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NpcPersistence] Failed to load NPC row: {ex.Message}");
+                }
+            }
+            return npcs;
+        }
+
+        // Helpers
+        private static int GetInt(SqliteDataReader rdr, string name, int def)
+        {
+            try { var i = rdr.GetOrdinal(name); return rdr.IsDBNull(i) ? def : rdr.GetInt32(i); }
+            catch { return def; }
+        }
+        private static int? GetNullableInt(SqliteDataReader rdr, string name)
+        {
+            try { var i = rdr.GetOrdinal(name); return rdr.IsDBNull(i) ? (int?)null : rdr.GetInt32(i); }
+            catch { return null; }
+        }
+        private static double GetDoubleFlexible(SqliteDataReader rdr, string name, double def)
+        {
+            try
+            {
+                var i = rdr.GetOrdinal(name);
+                if (rdr.IsDBNull(i)) return def;
+                // SQLite will coerce if column is numeric; if stored as text, try parse
+                try { return rdr.GetDouble(i); }
                 catch
                 {
-                    npc.Template = null;
+                    var s = rdr.GetString(i);
+                    return double.TryParse(s, out var v) ? v : def;
                 }
-
-                // Resolve room and add NPC to it
-                var room = world.Rooms.FirstOrDefault(r => r.RoomID == npc.CurrentRoomID);
-                if (room != null)
-                {
-                    npc.CurrentRoom = room;
-                    room.Npcs.Add(npc);
-                }
-
-                list.Add(npc);
-                world.Npcs.Add(npc);
             }
-
-            return list;
+            catch { return def; }
+        }
+        private static double? GetNullableDoubleFlexible(SqliteDataReader rdr, string name)
+        {
+            try
+            {
+                var i = rdr.GetOrdinal(name);
+                if (rdr.IsDBNull(i)) return null;
+                try { return rdr.GetDouble(i); }
+                catch
+                {
+                    var s = rdr.GetString(i);
+                    return double.TryParse(s, out var v) ? v : (double?)null;
+                }
+            }
+            catch { return null; }
+        }
+        private static string GetString(SqliteDataReader rdr, string name, string def)
+        {
+            try { var i = rdr.GetOrdinal(name); return rdr.IsDBNull(i) ? def : rdr.GetString(i); }
+            catch { return def; }
+        }
+        private static string? GetStringOrNull(SqliteDataReader rdr, string name)
+        {
+            try { var i = rdr.GetOrdinal(name); return rdr.IsDBNull(i) ? null : rdr.GetString(i); }
+            catch { return null; }
+        }
+        private static List<string> TryDeserializeList(string json)
+        {
+            try { return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>(); }
+            catch { return new List<string>(); }
         }
     }
 }

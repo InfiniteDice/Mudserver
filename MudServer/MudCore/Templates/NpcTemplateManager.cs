@@ -9,11 +9,11 @@ namespace MudCore.Templates
 {
     public class NpcTemplateManager
     {
-        public Dictionary<string, NpcTemplate> Templates { get; private set; } = new();
+        // Make dictionary case-insensitive so createnpc goblin / Goblin both work.
+        public Dictionary<string, NpcTemplate> Templates { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
 
         public void LoadTemplates(string relativeFolder)
         {
-            // 1) Try output directory first
             var baseDir = AppContext.BaseDirectory;
             var outputDir = Path.Combine(baseDir, relativeFolder);
 
@@ -25,14 +25,12 @@ namespace MudCore.Templates
             }
             else
             {
-                // 2) Find the project directory by walking upward until we find the .csproj file
                 var dir = new DirectoryInfo(baseDir);
                 DirectoryInfo? projectDir = null;
 
                 while (dir != null && dir.Exists)
                 {
-                    var csproj = dir.GetFiles("*.csproj").FirstOrDefault();
-                    if (csproj != null)
+                    if (dir.GetFiles("*.csproj").Any())
                     {
                         projectDir = dir;
                         break;
@@ -49,13 +47,8 @@ namespace MudCore.Templates
             }
 
             if (folderToUse == null)
-                throw new DirectoryNotFoundException(
-                    $"NpcTemplates folder not found. Checked:\n" +
-                    $"1) {outputDir}\n" +
-                    $"2) (search for csproj and then relative folder)"
-                );
+                throw new DirectoryNotFoundException($"NpcTemplates folder not found: {outputDir}");
 
-            // Load templates from the selected directory
             var options = new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true,
@@ -68,35 +61,26 @@ namespace MudCore.Templates
                 {
                     var json = File.ReadAllText(file);
                     var tmpl = JsonSerializer.Deserialize<NpcTemplate>(json, options);
-
-                    if (tmpl == null)
-                    {
-                        Console.WriteLine($"[NpcTemplateManager] Skipping {file}: deserialized template is null.");
+                    if (tmpl == null || string.IsNullOrWhiteSpace(tmpl.Id))
                         continue;
-                    }
-
-                    if (string.IsNullOrWhiteSpace(tmpl.Id))
-                    {
-                        Console.WriteLine($"[NpcTemplateManager] Skipping {file}: template Id is missing or empty.");
-                        continue;
-                    }
-
-                    // Add/overwrite template (log duplicate)
-                    if (Templates.ContainsKey(tmpl.Id))
-                        Console.WriteLine($"[NpcTemplateManager] Overwriting template '{tmpl.Id}' from file {file}.");
 
                     Templates[tmpl.Id] = tmpl;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[NpcTemplateManager] Failed to load template from {file}: {ex.Message}");
+                    Console.WriteLine($"[NpcTemplateManager] Failed loading {Path.GetFileName(file)}: {ex.Message}");
                 }
             }
         }
 
-        public NpcTemplate Get(string id)
+        public NpcTemplate Get(string id) => Templates[id];
+
+        // NEW: Safe lookup used by NpcFactory
+        public bool TryGet(string id, out NpcTemplate template)
         {
-            return Templates[id];
+            template = null!;
+            if (string.IsNullOrWhiteSpace(id)) return false;
+            return Templates.TryGetValue(id, out template);
         }
     }
 }

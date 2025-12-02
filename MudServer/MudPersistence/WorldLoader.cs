@@ -26,6 +26,17 @@ namespace MudPersistence
 
                     // IMPORTANT: load full item records for room inventory to avoid partial object overwrites.
                     room.Inventory = ItemPersistence.LoadItemsByOwner(conn, "Room", room.RoomID);
+
+                    // NEW: area linkage validation
+                    foreach (var it in room.Inventory)
+                    {
+                        if (it.OwnerAreaID > 0 && room.AreaID > 0 && it.OwnerAreaID != room.AreaID)
+                        {
+                            Console.WriteLine($"[WorldLoader][WARN] ItemID={it.ItemID} area mismatch: Item.OwnerAreaID={it.OwnerAreaID}, Room.AreaID={room.AreaID}. (TemplateID='{it.TemplateID}', Name='{it.Name}')");
+                            // Non-destructive: keep DB value; optionally align in-memory for consistency
+                            it.OwnerAreaID = room.AreaID;
+                        }
+                    }
                 }
 
                 world.Rooms.AddRange(area.Rooms);
@@ -195,26 +206,26 @@ namespace MudPersistence
             return keywords;
         }
 
-        private static List<Item> LoadRoomInventory(SqliteConnection conn, int roomID)
-        {
-            var inventory = new List<Item>();
-            var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT ItemID, Name FROM Item WHERE OwnerType = @otype AND OwnerID = @oid";
-            cmd.Parameters.AddWithValue("@otype", "Room");
-            cmd.Parameters.AddWithValue("@oid", roomID); // integer OwnerID
+        //private static List<Item> LoadRoomInventory(SqliteConnection conn, int roomID)
+        //{
+        //    var inventory = new List<Item>();
+        //    var cmd = conn.CreateCommand();
+        //    cmd.CommandText = "SELECT ItemID, Name FROM Item WHERE OwnerType = @otype AND OwnerID = @oid";
+        //    cmd.Parameters.AddWithValue("@otype", "Room");
+        //    cmd.Parameters.AddWithValue("@oid", roomID); // integer OwnerID
 
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                inventory.Add(new Item
-                {
-                    ItemID = reader.GetInt32(0),
-                    Name = reader.GetString(1),
-                    RoomID = roomID
-                });
-            }
+        //    using var reader = cmd.ExecuteReader();
+        //    while (reader.Read())
+        //    {
+        //        inventory.Add(new Item
+        //        {
+        //            ItemID = reader.GetInt32(0),
+        //            Name = reader.GetString(1),
+        //            RoomID = roomID
+        //        });
+        //    }
 
-            return inventory;
-        }
+        //    return inventory;
+        //}
     }
 }

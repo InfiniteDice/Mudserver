@@ -15,11 +15,11 @@ namespace MudCore.World
 
         public Npc CreateNpc(string templateId, Room room)
         {
-            var template = _templateManager.Get(templateId);
+            if (!_templateManager.TryGet(templateId, out var template))
+                throw new KeyNotFoundException($"NPC template '{templateId}' not found.");
 
             var npc = new Npc
             {
-                // persistent fields
                 TemplateID = template.Id,
                 Name = template.Name,
                 Alignment = template.Alignment,
@@ -30,7 +30,7 @@ namespace MudCore.World
                 WanderChance = template.WanderChance,
                 CurrentRoom = room,
                 CurrentRoomID = room?.RoomID ?? 0,
-                IsPersistent = true, // createnpc will persist
+                IsPersistent = true,
                 Template = template,
                 LastAction = "stands here",
                 Level = template.Level,
@@ -45,11 +45,14 @@ namespace MudCore.World
                 EffCombatSkill = template.EffCombatSkill
             };
 
-            // Visual trait assignment (50% chance). Requires VisualTraitManager.Load(...) to have been called at startup.
-            if (VisualTraitManager.HasTraits && Random.Shared.NextDouble() < 0.9) //90% chance to have a visual trait
-            {
+            if (VisualTraitManager.HasTraits && Random.Shared.NextDouble() < 0.9)
                 npc.VisualTrait = VisualTraitManager.GetRandomTrait(Random.Shared);
-            }
+
+            npc.ApplyTemplateDefaults();
+            MudServer.Combat.InitializeSizeDefaults(npc);
+            MudServer.Combat.UpdateEffectiveStats(npc);
+
+            npc.CurrentAreaID = room.AreaID; // Set CurrentAreaID after NPC is created and assigned a room
 
             room.Npcs.Add(npc);
             return npc;

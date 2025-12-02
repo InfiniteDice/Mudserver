@@ -44,7 +44,7 @@ namespace MudPersistence
             cmd.CommandText = @"
                 SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
                        Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
-                       LongDesc, Creator, Condition, Flags
+                       LongDesc, Creator, Condition, Flags, BaseACBonus, OwnerAreaID
                 FROM Item
                 WHERE OwnerType = @otype AND OwnerID = @oid";
             cmd.Parameters.AddWithValue("@otype", normalized);
@@ -70,7 +70,9 @@ namespace MudPersistence
                     LongDesc    = !reader.IsDBNull(12) ? reader.GetString(12): "",
                     Creator     = !reader.IsDBNull(13) ? reader.GetString(13): "",
                     Condition   = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
-                    FlagsJson   = !reader.IsDBNull(15) ? reader.GetString(15): "[]"
+                    FlagsJson   = !reader.IsDBNull(15) ? reader.GetString(15): "[]",
+                    BaseACBonus = !reader.IsDBNull(16) ? reader.GetDouble(16) : 0.0,
+                    OwnerAreaID = !reader.IsDBNull(17) ? reader.GetInt32(17) : 0
                 };
                 list.Add(it);
             }
@@ -86,6 +88,17 @@ namespace MudPersistence
             // Uses restored NormalizeOwnerType
             item.OwnerType = NormalizeOwnerType(item.OwnerType);
 
+            // Ensure OwnerAreaID is coherent: Room -> AreaID, else 0
+            if (string.Equals(item.OwnerType, "Room", StringComparison.OrdinalIgnoreCase))
+            {
+                // OwnerAreaID should already be set by callers using room.AreaID; keep as-is.
+                item.OwnerAreaID = item.OwnerAreaID;
+            }
+            else
+            {
+                item.OwnerAreaID = 0;
+            }
+
             using var tran = conn.BeginTransaction();
             try
             {
@@ -96,11 +109,11 @@ namespace MudPersistence
                         INSERT INTO Item
                             (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight,
                              WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator,
-                             Condition, Flags)
+                             Condition, Flags, BaseACBonus, OwnerAreaID)
                         VALUES
                             (@template, @name, @otype, @oid, @rid, @value, @weight,
                              @wear, @hand, @category, @short, @long, @creator,
-                             @cond, @flags);
+                             @cond, @flags, @baseac, @ownerarea);
                         SELECT last_insert_rowid();
                     ";
                     insertCmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
@@ -118,6 +131,8 @@ namespace MudPersistence
                     insertCmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
                     insertCmd.Parameters.AddWithValue("@cond", item.Condition);
                     insertCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                    insertCmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
+                    insertCmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
 
                     var scalarObj = insertCmd.ExecuteScalar();
                     if (scalarObj != null)
@@ -148,7 +163,9 @@ namespace MudPersistence
                             LongDesc = @long,
                             Creator = @creator,
                             Condition = @cond,
-                            Flags = @flags
+                            Flags = @flags,
+                            BaseACBonus = @baseac,
+                            OwnerAreaID = @ownerarea
                         WHERE ItemID = @id;
                     ";
                     updateCmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
@@ -166,7 +183,9 @@ namespace MudPersistence
                     updateCmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
                     updateCmd.Parameters.AddWithValue("@cond", item.Condition);
                     updateCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                    updateCmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
                     updateCmd.Parameters.AddWithValue("@id", item.ItemID);
+                    updateCmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
 
                     var rows = updateCmd.ExecuteNonQuery();
                     if (rows == 0)
@@ -185,11 +204,11 @@ namespace MudPersistence
                                     INSERT INTO Item
                                         (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight,
                                          WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator,
-                                         Condition, Flags)
+                                         Condition, Flags, BaseACBonus)
                                     VALUES
                                         (@template, @name, @otype, @oid, @rid, @value, @weight,
                                          @wear, @hand, @category, @short, @long, @creator,
-                                         @cond, @flags);
+                                         @cond, @flags, @baseac);
                                     SELECT last_insert_rowid();
                                 ";
                                 insertCmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");

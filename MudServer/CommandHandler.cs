@@ -16,6 +16,15 @@ namespace MudServer
         private readonly SqliteConnection _dbConnection;
         private readonly PlayerAuthentication _auth;
 
+        private static readonly HashSet<string> AllowedWearLocs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Head", "Neck", "Body",
+            "Leftleg", "Rightleg",
+            "Leftarm", "Rightarm",
+            "Lefthand", "Righthand",
+            "Leftfoot", "Rightfoot"
+        };
+
         public CommandHandler(World world, SqliteConnection dbConnection)
         {
             _world = world;
@@ -100,9 +109,13 @@ namespace MudServer
                         var room = player.CurrentRoom;
                         if (room == null) return MessageHandler.System("You are lost in the void.");
 
+                        // DEBUG: log tokens/matches
                         var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        Console.WriteLine($"[LOOK] target='{targetExpr}', room='{room.Name}', npcCount={room.Npcs.Count}, matches={matches.Count}");
+
                         if (matches.Count == 0)
                             return MessageHandler.System($"No NPC matching '{targetExpr}' found here.");
+
                         if (matches.Count > 1)
                         {
                             var list = string.Join(", ", matches.Select(m => m.DisplayName));
@@ -114,8 +127,10 @@ namespace MudServer
 
                         // Append health segment; current in <span class='hp-current'> for client styling.
                         var healthSegment = $" (<span class='hp-current'>{npc.Health}</span>/{npc.HealthMax})";
+                        var text = $"{npc.DisplayName}: {desc}{healthSegment}";
+                        Console.WriteLine($"[LOOK] match='{npc.DisplayName}', text='{text}'");
 
-                        return MessageHandler.System($"{npc.DisplayName}: {desc}{healthSegment}");
+                        return MessageHandler.System(text);
                     }
                 case "move": return Move(player, command);
 
@@ -136,7 +151,23 @@ namespace MudServer
                             return MessageHandler.System($"Multiple targets: {list}");
                         }
 
-                        return Combat.Attack(player, _world, matches[0]); // overload accepting target
+                        // Phase 1: start or join a combat state and perform one immediate attack for feedback
+                        return CombatManager.StartOrJoin(player, matches[0], _world, _dbConnection);
+                    }
+
+                // NEW: 'who' command lists currently online, authenticated players
+                case "who":
+                    {
+                        var names = _world.Players
+                            .Where(p => p != null && p.IsAuthenticated)
+                            .Select(p => p.Name)
+                            .ToList();
+
+                        if (names.Count == 0)
+                            return MessageHandler.System("Players currently online: (none)");
+
+                        var list = string.Join(", ", names);
+                        return MessageHandler.System($"Players currently online: {list}");
                     }
 
                 case string s when s.StartsWith("createarea", StringComparison.OrdinalIgnoreCase):
@@ -162,17 +193,55 @@ namespace MudServer
                 // Handle 'inventory' command - show detailed carried items in modal
                 case string s when s.Equals("inventory", StringComparison.OrdinalIgnoreCase) ||
                                   s.Equals("inv", StringComparison.OrdinalIgnoreCase):
-                    // Map player's Item objects to MessageHandler.InventoryItem DTOs
-                    var invItems = player.Inventory?.Select(i => new MudNetworking.InventoryItem
+                {
+                    var invItems = player.Inventory?.Select(i =>
                     {
-                        Name = i.Name ?? "",
-                        Weight = i.Weight,
-                        Condition = i.Condition,
-                        ItemCategory = i.ItemCategory ?? "",
-                        ShortDesc = i.ShortDesc ?? ""
+                        bool isWorn = (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
+                                      || (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                        return new MudNetworking.InventoryItem
+                        {
+                            Name = i.Name ?? "",
+                            Weight = i.Weight,
+                            Condition = i.Condition,
+                            ItemCategory = i.ItemCategory ?? "",
+                            ShortDesc = i.ShortDesc ?? "",
+                            // NEW fields:
+                            WearLoc = i.WearLoc ?? "",
+                            IsWorn = isWorn
+                        };
                     }).ToList() ?? new List<MudNetworking.InventoryItem>();
 
                     return MudNetworking.MessageHandler.Inventory(invItems);
+                }
+
+                // Add handling for 'wear' command
+                case string s when s.StartsWith("wear ", StringComparison.OrdinalIgnoreCase):
+                {
+                    var partsWear = command.Split(' ', 2);
+                    if (partsWear.Length < 2) return MessageHandler.System("Usage: wear <item name>");
+                    var itemName = partsWear[1].Trim();
+                    return WearItem(player, itemName);
+                }
+
+                // Add handling for 'unwear' command
+                case string s when s.StartsWith("unwear ", StringComparison.OrdinalIgnoreCase):
+                {
+                    var partsUnwear = command.Split(' ', 2);
+                    if (partsUnwear.Length < 2) return MessageHandler.System("Usage: unwear <item name or wearloc>");
+                    var arg = partsUnwear[1].Trim();
+                    return UnwearItem(player, arg);
+                }
+
+                // ADD new case inside the main switch (near attack case)
+                case "assist":
+                    {
+                        var partsAssist = command.Split(' ', 2);
+                        if (partsAssist.Length < 2) return MessageHandler.System("Usage: assist <player|npc>");
+                        var targetExpr = partsAssist[1].Trim();
+                        if (player.CurrentRoom == null) return MessageHandler.System("You are not in a valid room.");
+                        return CombatManager.Assist(player, targetExpr, _world, _dbConnection);
+                    }
 
                 default:
                     return MessageHandler.System($"Unknown command: {command}");
@@ -213,7 +282,7 @@ namespace MudServer
                 dir = rawCommand.Trim().ToUpper();
             }
 
-            return Movement.AttemptMove(player, dir, _world);
+            return Movement.AttemptMove(player, dir, _world, _dbConnection); // UPDATED
         }
 
         // -------------------------------
@@ -325,14 +394,22 @@ namespace MudServer
         }
 
         // Called when we have a single item to transfer to player
-        private Message? TransferItemToPlayer(Player player, MudCore.Entities.Item item)
+        private Message? TransferItemToPlayer(Player player, Item item)
         {
+            // Player/NPC owned items have no fixed area
+            if (item != null)
+                item.OwnerAreaID = 0;
+
             return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item);
         }
 
         // Called when player drops a single item into current room
-        private Message? TransferItemToRoom(Player player, MudCore.Entities.Item item)
+        private Message? TransferItemToRoom(Player player, Item item)
         {
+            var room = player.CurrentRoom;
+            if (room != null && item != null)
+                item.OwnerAreaID = room.AreaID;
+
             return InventoryManager.TransferToRoom(_world, _dbConnection, player, item);
         }
 
@@ -591,7 +668,7 @@ namespace MudServer
         // Helper class for GetItem / DropItem pending data
         private class GetPendingData
         {
-            public List<MudCore.Entities.Item> Matches { get; set; } = new List<MudCore.Entities.Item>();
+            public List<Item> Matches { get; set; } = new List<Item>();
         }
 
         // -------------------------------
@@ -747,6 +824,171 @@ namespace MudServer
             }
         }
 
+        private Message? WearItem(Player player, string requested)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+            if (player.Inventory == null || player.Inventory.Count == 0)
+                return MessageHandler.System("You are carrying nothing to wear.");
+
+            // Find candidate by name or template id (case-insensitive starts-with allowed)
+            var candidates = player.Inventory.Where(i =>
+                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            if (candidates.Count == 0)
+                return MessageHandler.System($"You do not carry '{requested}'.");
+
+            // Prefer exact name match if multiple
+            var item = candidates.FirstOrDefault(i => i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)) ?? candidates[0];
+
+            // Validate armor category and WearLoc presence
+            if (!string.Equals(item.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase))
+                return MessageHandler.System($"'{item.Name}' is not armor.");
+            if (string.IsNullOrWhiteSpace(item.WearLoc))
+                return MessageHandler.System($"'{item.Name}' cannot be worn (missing WearLoc).");
+
+            var wearLoc = item.WearLoc.Trim();
+            if (!AllowedWearLocs.Contains(wearLoc))
+            {
+                var allowed = string.Join(", ", AllowedWearLocs.OrderBy(s => s));
+                return MessageHandler.System(
+                    $"'{item.Name}' has unknown WearLoc '{wearLoc}'. Allowed locations: {allowed}.");
+            }
+
+            // Replace any currently worn item at same WearLoc
+            var currentlyWorn = player.Inventory.Where(i =>
+                i != item &&
+                string.Equals(i.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(i.WearLoc, wearLoc, StringComparison.OrdinalIgnoreCase) &&
+                (i.Flags?.Contains("Worn") ?? (i.FlagsJson?.Contains("\"Worn\"") ?? false))
+            ).ToList();
+
+            foreach (var old in currentlyWorn)
+            {
+                // Remove 'Worn' flag from previous item
+                if (old.Flags == null) old.Flags = new List<string>();
+                old.Flags.RemoveAll(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase));
+                old.FlagsJson = System.Text.Json.JsonSerializer.Serialize(old.Flags);
+                MudPersistence.ItemPersistence.SaveItem(_dbConnection, old);
+            }
+
+            // Add 'Worn' flag to the chosen item
+            if (item.Flags == null) item.Flags = new List<string>();
+            if (!item.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
+                item.Flags.Add("Worn");
+            item.FlagsJson = System.Text.Json.JsonSerializer.Serialize(item.Flags);
+
+            // Persist change
+            MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
+
+            // Recompute effective stats for player (Worn armor contributes)
+            MudServer.Combat.UpdateEffectiveStats(player);
+
+            // Broadcast updated room state (so client refreshes badges); simple system confirmation
+            foreach (var p in room.Players)
+            {
+                p.PendingMessageQueue.Add(MessageHandler.Room(
+                    room,
+                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                    _world));
+            }
+
+            return MessageHandler.System($"You wear {item.Name} on {wearLoc}.");
+        }
+
+        private Message? UnwearItem(Player player, string requested)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+            if (player.Inventory == null || player.Inventory.Count == 0)
+                return MessageHandler.System("You are carrying nothing to unwear.");
+
+            // Normalize helper
+            bool IsWorn(Item i) =>
+                (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase))) ||
+                (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            // Update within UnwearItem(...) before resolving by slot to validate WearLoc requests
+            // If the user typed a WearLoc (slot name), validate it first to give a helpful message.
+            if (AllowedWearLocs.Contains(requested))
+            {
+                // proceed to find by slot; if not found later, we will message appropriately
+            }
+            else
+            {
+                // If the argument looks like a WearLoc (single word, not matching any carried item), guide the user
+                var isSingleToken = requested.IndexOf(' ') < 0;
+                var anyArmorNamed = player.Inventory.Any(i => string.Equals(i.Name, requested, StringComparison.OrdinalIgnoreCase));
+                if (isSingleToken && !anyArmorNamed && !AllowedWearLocs.Contains(requested))
+                {
+                    var allowed = string.Join(", ", AllowedWearLocs.OrderBy(s => s));
+                    // Continue to normal resolution, but provide an early hint if no match is found
+                    // (we don't return here to still allow item-name resolution with the same requested string)
+                }
+            }
+
+            // Try resolve by WearLoc slot first (e.g., "Head", "Body", "Leftarm", etc.)
+            var bySlot = AllowedWearLocs.Contains(requested)
+                ? player.Inventory.FirstOrDefault(i =>
+                    string.Equals(i.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrWhiteSpace(i.WearLoc) &&
+                    string.Equals(i.WearLoc, requested, StringComparison.OrdinalIgnoreCase) &&
+                    IsWorn(i))
+                : null;
+
+            Item? target = bySlot;
+
+            // If not found by slot, resolve by item name/templateID (case-insensitive).
+            if (target == null)
+            {
+                var matches = player.Inventory.Where(i =>
+                    string.Equals(i.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase) &&
+                    (string.Equals(i.Name, requested, StringComparison.OrdinalIgnoreCase) ||
+                     (!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, requested, StringComparison.OrdinalIgnoreCase)) ||
+                     (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))))
+                    .ToList();
+
+                if (matches.Count == 0)
+                    return MessageHandler.System($"No worn armor matching '{requested}' was found.");
+                // Prefer a worn item among matches
+                target = matches.FirstOrDefault(IsWorn) ?? matches[0];
+            }
+
+            if (target == null)
+                return MessageHandler.System($"No worn armor matching '{requested}' was found.");
+
+            if (!IsWorn(target))
+                return MessageHandler.System($"'{target.Name}' is not currently worn.");
+
+            // Remove 'Worn' flag and persist
+            var flags = target.Flags ?? new List<string>();
+            flags.RemoveAll(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase));
+            target.Flags = flags; // setter updates FlagsJson
+            MudPersistence.ItemPersistence.SaveItem(_dbConnection, target);
+
+            // Recompute effective stats (worn armor no longer contributes)
+            MudServer.Combat.UpdateEffectiveStats(player);
+
+            // Broadcast updated room payload; send confirmation
+            foreach (var p in room.Players)
+            {
+                p.PendingMessageQueue.Add(MessageHandler.Room(
+                    room,
+                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                    _world));
+            }
+
+            var locText = string.IsNullOrWhiteSpace(target.WearLoc) ? "slot" : target.WearLoc;
+            return MessageHandler.System($"You remove {target.Name} from {locText}.");
+        }
+
         private bool IsValidDirection(string dir)
         {
             string[] valid = { "N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN" };
@@ -756,7 +998,6 @@ namespace MudServer
         private string ExtractCommandText(string rawCommand)
         {
             if (string.IsNullOrWhiteSpace(rawCommand)) return string.Empty;
-
             var s = rawCommand.Trim();
 
             // If client sent a JSON payload (e.g. {"type":"command","text":"s"}), extract the text field.
@@ -792,7 +1033,7 @@ namespace MudServer
                 }
             }
 
-            return s;
+            return s.Trim(); // ensure final trimmed text
         }
 
         private string OppositeDirection(string dir) => dir.ToUpper() switch
@@ -824,6 +1065,10 @@ namespace MudServer
             try
             {
                 var item = _world.ItemFactory.CreateItem(itemTemplateId, "ROOM", 0, room.RoomID);
+                item.OwnerType = "Room";
+                item.OwnerID = room.RoomID;
+                item.RoomID = room.RoomID;
+                item.OwnerAreaID = room.AreaID;
                 MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
                 room.Inventory.Add(item);
                 room.IsDirty = true;

@@ -20,7 +20,7 @@ Examples:
   //CODE REMOVED - 2025-12-02 14:37:00 // 'RoomSpawner.ProcessSpawns(_world, _db);'
 
 Scope:
-- Applies to all files in this repository.
+- Applies to all files in this repository .
 - For larger removals, add a reference line:
   //REF: PR #123 or Issue #456
 

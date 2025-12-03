@@ -38,10 +38,24 @@ namespace MudPersistence
             EnsureNpcColumns(conn);
 
             using var cmd = conn.CreateCommand();
+            // Include optional columns when present
             cmd.CommandText = @"
-                INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID)
-                VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area);
+                INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID"
+                + (Has("Description") ? ", Description" : "")
+                + (Has("IsHumanoid") ? ", IsHumanoid" : "")
+                + (Has("WanderChance") ? ", WanderChance" : "")
+                + (Has("Level") ? ", Level" : "")
+                + (Has("CombatSkill") ? ", CombatSkill" : "")
+                + (Has("EffCombatSkill") ? ", EffCombatSkill" : "") + @")
+                VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area"
+                + (Has("Description") ? ", @desc" : "")
+                + (Has("IsHumanoid") ? ", @isHumanoid" : "")
+                + (Has("WanderChance") ? ", @wc" : "")
+                + (Has("Level") ? ", @lvl" : "")
+                + (Has("CombatSkill") ? ", @cs" : "")
+                + (Has("EffCombatSkill") ? ", @ecs" : "") + @");
                 SELECT last_insert_rowid();";
+
             cmd.Parameters.AddWithValue("@tid", npc.TemplateID ?? "");
             cmd.Parameters.AddWithValue("@name", npc.Name ?? "");
             cmd.Parameters.AddWithValue("@align", (int)npc.Alignment);
@@ -51,6 +65,12 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@persist", npc.IsPersistent ? 1 : 0);
             cmd.Parameters.AddWithValue("@trait", npc.VisualTrait ?? "");
             cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
+            if (Has("Description")) cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
+            if (Has("IsHumanoid")) cmd.Parameters.AddWithValue("@isHumanoid", npc.IsHumanoid ? 1 : 0);
+            if (Has("WanderChance")) cmd.Parameters.AddWithValue("@wc", npc.WanderChance);
+            if (Has("Level")) cmd.Parameters.AddWithValue("@lvl", Math.Max(1, npc.Level ?? 1));
+            if (Has("CombatSkill")) cmd.Parameters.AddWithValue("@cs", npc.CombatSkill ?? 0.0);
+            if (Has("EffCombatSkill")) cmd.Parameters.AddWithValue("@ecs", npc.EffCombatSkill ?? (npc.CombatSkill ?? 0.0));
 
             int newId = (int)(long)cmd.ExecuteScalar();
             npc.NpcID = newId;
@@ -62,7 +82,7 @@ namespace MudPersistence
                 {
                     using var upWander = conn.CreateCommand();
                     upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
-                    var wanderJson = JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
+                    var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
                     upWander.Parameters.AddWithValue("@wander", wanderJson);
                     upWander.Parameters.AddWithValue("@id", npc.NpcID);
                     upWander.ExecuteNonQuery();
@@ -102,7 +122,13 @@ namespace MudPersistence
                     MaxHealth = @maxhp,
                     CurrentRoomID = @room,
                     VisualTrait = @trait,
-                    CurrentAreaID = @area
+                    CurrentAreaID = @area"
+                    + (Has("Description") ? ", Description = @desc" : "")
+                    + (Has("IsHumanoid") ? ", IsHumanoid = @isHumanoid" : "")
+                    + (Has("WanderChance") ? ", WanderChance = @wc" : "")
+                    + (Has("Level") ? ", Level = @lvl" : "")
+                    + (Has("CombatSkill") ? ", CombatSkill = @cs" : "")
+                    + (Has("EffCombatSkill") ? ", EffCombatSkill = @ecs" : "") + @"
                 WHERE NpcID = @id;";
             cmd.Parameters.AddWithValue("@hp", npc.Health);
             cmd.Parameters.AddWithValue("@maxhp", npc.HealthMax);
@@ -110,6 +136,13 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@trait", npc.VisualTrait ?? "");
             cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
             cmd.Parameters.AddWithValue("@id", npc.NpcID);
+            if (Has("Description")) cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
+            if (Has("IsHumanoid")) cmd.Parameters.AddWithValue("@isHumanoid", npc.IsHumanoid ? 1 : 0);
+            if (Has("WanderChance")) cmd.Parameters.AddWithValue("@wc", npc.WanderChance);
+            if (Has("Level")) cmd.Parameters.AddWithValue("@lvl", Math.Max(1, npc.Level ?? 1));
+            if (Has("CombatSkill")) cmd.Parameters.AddWithValue("@cs", npc.CombatSkill ?? 0.0);
+            if (Has("EffCombatSkill")) cmd.Parameters.AddWithValue("@ecs", npc.EffCombatSkill ?? (npc.CombatSkill ?? 0.0));
+
             try { cmd.ExecuteNonQuery(); } catch { }
 
             // Persist WanderAreas if column exists
@@ -119,7 +152,7 @@ namespace MudPersistence
                 {
                     using var upWander = conn.CreateCommand();
                     upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
-                    var wanderJson = JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
+                    var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
                     upWander.Parameters.AddWithValue("@wander", wanderJson);
                     upWander.Parameters.AddWithValue("@id", npc.NpcID);
                     upWander.ExecuteNonQuery();
@@ -179,6 +212,8 @@ namespace MudPersistence
             if (Has("EffArmorClass")) assignments.Add("EffArmorClass = @EffArmorClass");
             if (Has("Buffs")) assignments.Add("Buffs = @Buffs");
             if (Has("Debuffs")) assignments.Add("Debuffs = @Debuffs");
+            // NEW: persist Level if column exists
+            if (Has("Level")) assignments.Add("Level = @Level");
 
             if (assignments.Count == 0) return;
 
@@ -188,12 +223,14 @@ namespace MudPersistence
 
             up.Parameters.AddWithValue("@Mass", npc.Mass ?? 85.0);
             up.Parameters.AddWithValue("@EffMass", npc.EffMass ?? (npc.Mass ?? 85.0));
-            up.Parameters.AddWithValue("@CombatSkill", npc.CombatSkill ?? 50);
-            up.Parameters.AddWithValue("@EffCombatSkill", npc.EffCombatSkill ?? (npc.CombatSkill ?? 50));
+            up.Parameters.AddWithValue("@CombatSkill", npc.CombatSkill ?? 50.0);
+            up.Parameters.AddWithValue("@EffCombatSkill", npc.EffCombatSkill ?? (npc.CombatSkill ?? 50.0));
             up.Parameters.AddWithValue("@SizeEnum", npc.SizeEnum ?? 4);
             up.Parameters.AddWithValue("@BaseDmgDice", npc.BaseDmgDice);
             up.Parameters.AddWithValue("@BaseArmorClass", npc.BaseArmorClass);
             up.Parameters.AddWithValue("@EffArmorClass", npc.EffArmorClass);
+            // NEW: Level persist parameter (with clamp to >=1)
+            up.Parameters.AddWithValue("@Level", Math.Max(1, npc.Level ?? 1));
 
             var buffsJson = JsonSerializer.Serialize(npc.Buffs ?? new List<string>());
             var debuffsJson = JsonSerializer.Serialize(npc.Debuffs ?? new List<string>());
@@ -269,8 +306,11 @@ namespace MudPersistence
 
                     npc.Mass = Has("Mass") ? GetNullableDoubleFlexible(rdr, "Mass") : null;
                     npc.EffMass = Has("EffMass") ? GetNullableDoubleFlexible(rdr, "EffMass") : null;
-                    npc.CombatSkill = Has("CombatSkill") ? GetNullableInt(rdr, "CombatSkill") : null;
-                    npc.EffCombatSkill = Has("EffCombatSkill") ? GetNullableInt(rdr, "EffCombatSkill") : null;
+
+                    // CHANGED: read REAL/int flexibly for combat skills
+                    npc.CombatSkill = Has("CombatSkill") ? GetNullableDoubleFlexible(rdr, "CombatSkill") : null;
+                    npc.EffCombatSkill = Has("EffCombatSkill") ? GetNullableDoubleFlexible(rdr, "EffCombatSkill") : null;
+
                     npc.SizeEnum = Has("SizeEnum") ? GetNullableInt(rdr, "SizeEnum") : null;
                     if (Has("BaseDmgDice"))
                         npc.BaseDmgDice = GetDoubleFlexible(rdr, "BaseDmgDice", npc.BaseDmgDice);
@@ -307,6 +347,10 @@ namespace MudPersistence
                                 // If DB had 0 WanderChance, hydrate from template
                                 if (npc.WanderChance <= 0)
                                     npc.WanderChance = tmpl.WanderChance;
+
+                                // NEW: hydrate Level from template if missing/invalid
+                                if (npc.Level == null || npc.Level <= 0)
+                                    npc.Level = tmpl.Level ?? 1;
                             }
                             else
                             {

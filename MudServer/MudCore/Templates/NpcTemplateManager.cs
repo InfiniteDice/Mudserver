@@ -9,8 +9,7 @@ namespace MudCore.Templates
 {
     public class NpcTemplateManager
     {
-        // Make dictionary case-insensitive so createnpc goblin / Goblin both work.
-        public Dictionary<string, NpcTemplate> Templates { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, NpcTemplate> _byId = new(StringComparer.OrdinalIgnoreCase);
 
         public void LoadTemplates(string relativeFolder)
         {
@@ -64,7 +63,7 @@ namespace MudCore.Templates
                     if (tmpl == null || string.IsNullOrWhiteSpace(tmpl.Id))
                         continue;
 
-                    Templates[tmpl.Id] = tmpl;
+                    _byId[tmpl.Id] = tmpl;
                 }
                 catch (Exception ex)
                 {
@@ -73,14 +72,37 @@ namespace MudCore.Templates
             }
         }
 
-        public NpcTemplate Get(string id) => Templates[id];
+        // Register a single template
+        public void Register(NpcTemplate template)
+        {
+            if (template == null) throw new ArgumentNullException(nameof(template));
+            if (string.IsNullOrWhiteSpace(template.Id)) throw new ArgumentException("Template.Id is required.", nameof(template));
+            _byId[template.Id] = template;
+        }
 
-        // NEW: Safe lookup used by NpcFactory
+        // Register a set of templates
+        public void RegisterRange(IEnumerable<NpcTemplate> templates)
+        {
+            if (templates == null) return;
+            foreach (var t in templates)
+            {
+                if (t != null && !string.IsNullOrWhiteSpace(t.Id))
+                    _byId[t.Id] = t;
+            }
+        }
+
+        // Lookup
         public bool TryGet(string id, out NpcTemplate template)
         {
             template = null!;
             if (string.IsNullOrWhiteSpace(id)) return false;
-            return Templates.TryGetValue(id, out template);
+            return _byId.TryGetValue(id, out template);
         }
+
+        // Diagnostics
+        public int Count => _byId.Count;
+
+        // Optional: clear all
+        public void Clear() => _byId.Clear();
     }
 }

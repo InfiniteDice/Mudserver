@@ -31,12 +31,37 @@ namespace MudPersistence
 
         private static bool Has(string col) => _playerCols.Contains(col);
 
+        // Helper to read REAL/INTEGER/TEXT numeric fields robustly
+        private static double GetDoubleFlexible(SqliteDataReader rdr, int ordinal, double fallback)
+        {
+            try
+            {
+                if (rdr.IsDBNull(ordinal)) return fallback;
+                try { return rdr.GetDouble(ordinal); }
+                catch
+                {
+                    try { return Convert.ToDouble(rdr.GetInt32(ordinal)); }
+                    catch
+                    {
+                        try { return Convert.ToDouble(rdr.GetInt64(ordinal)); }
+                        catch
+                        {
+                            var s = rdr.GetString(ordinal);
+                            return double.TryParse(s, out var v) ? v : fallback;
+                        }
+                    }
+                }
+            }
+            catch { return fallback; }
+        }
+
         public static void LoadExtendedCombat(SqliteConnection conn, Player player)
         {
             if (conn == null || player == null) return;
             EnsureColumns(conn);
 
             var wanted = new List<string>();
+            if (Has("Level")) wanted.Add("Level");
             if (Has("Mass")) wanted.Add("Mass");
             if (Has("EffMass")) wanted.Add("EffMass");
             if (Has("CombatSkill")) wanted.Add("CombatSkill");
@@ -69,10 +94,11 @@ namespace MudPersistence
                         {
                             switch (col)
                             {
+                                case "Level": player.Level = rdr.GetInt32(ordinal); break;
                                 case "Mass": player.Mass = rdr.GetDouble(ordinal); break;
                                 case "EffMass": player.EffMass = rdr.GetDouble(ordinal); break;
-                                case "CombatSkill": player.CombatSkill = rdr.GetInt32(ordinal); break;
-                                case "EffCombatSkill": player.EffCombatSkill = rdr.GetInt32(ordinal); break;
+                                case "CombatSkill": player.CombatSkill = GetDoubleFlexible(rdr, ordinal, player.CombatSkill); break;
+                                case "EffCombatSkill": player.EffCombatSkill = GetDoubleFlexible(rdr, ordinal, player.EffCombatSkill); break;
                                 case "SizeEnum": player.SizeEnum = rdr.GetInt32(ordinal); break;
                                 case "BaseDmgDice": player.BaseDmgDice = rdr.GetDouble(ordinal); break;
                                 case "EffDmgDice": player.EffDmgDice = rdr.GetDouble(ordinal); break;
@@ -110,6 +136,7 @@ namespace MudPersistence
                 "LastRoomID = @room"
             };
 
+            if (Has("Level")) colAssignments.Add("Level = @Level");
             if (Has("LastAreaID")) colAssignments.Add("LastAreaID = @lastAreaId");
             if (Has("Mass")) colAssignments.Add("Mass = @Mass");
             if (Has("EffMass")) colAssignments.Add("EffMass = @EffMass");
@@ -134,6 +161,7 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@room", player.CurrentRoom?.RoomID ?? 0);
             cmd.Parameters.AddWithValue("@lastAreaId", player.CurrentRoom?.AreaID ?? 0);
 
+            cmd.Parameters.AddWithValue("@Level", player.Level);
             cmd.Parameters.AddWithValue("@Mass", player.Mass);
             cmd.Parameters.AddWithValue("@EffMass", player.EffMass);
             cmd.Parameters.AddWithValue("@CombatSkill", player.CombatSkill);

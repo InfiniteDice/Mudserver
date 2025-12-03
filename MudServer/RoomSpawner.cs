@@ -30,8 +30,16 @@ namespace MudServer
                 return;
             }
 
+            if (world.TemplateManager == null)
+            {
+                Console.WriteLine("[Spawner][ERROR] TemplateManager is null; cannot spawn NPCs. Ensure templates are loaded at startup.");
+            }
+            if (world.NpcFactory == null)
+            {
+                Console.WriteLine("[Spawner][ERROR] NpcFactory is null; cannot spawn NPCs. Ensure factory is constructed with the template manager.");
+            }
+
             var now = DateTime.UtcNow;
-            //Console.WriteLine($"[Spawner][TRACE] Tick at {now:o}, Rooms={world.Rooms.Count}");
 
             int spawnerRooms = world.Rooms.Count(r => r.IsSpawner);
             if (spawnerRooms == 0)
@@ -42,10 +50,7 @@ namespace MudServer
                 try
                 {
                     if (!room.IsSpawner)
-                    {
-                        //Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} skipped: IsSpawner=false.");
                         continue;
-                    }
                     if (room.SpawnTemplateList == null || room.SpawnTemplateList.Count == 0)
                     {
                         Console.WriteLine($"[Spawner][WARN] Room {room.RoomID} has empty SpawnTemplateList.");
@@ -58,7 +63,7 @@ namespace MudServer
 
                     if (room.SpawnDelayMinutes > 0 && elapsedMinutes < room.SpawnDelayMinutes)
                     {
-                        //Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delaying: elapsed={elapsedMinutes:F1} < delay={room.SpawnDelayMinutes}.");
+                        Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delaying: elapsed={elapsedMinutes:F1} < delay={room.SpawnDelayMinutes}.");
                         continue;
                     }
 
@@ -73,7 +78,6 @@ namespace MudServer
                     if (roll >= Math.Clamp(room.SpawnChance, 0, 100))
                     {
                         Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} chance roll={roll} >= SpawnChance={room.SpawnChance}; no spawn this tick.");
-                        //DEPRECATED// Old behavior would retry next tick; now delay is consumed, next attempt after full window.
                         continue;
                     }
 
@@ -85,8 +89,6 @@ namespace MudServer
 
                         if (currentCount >= max)
                         {
-                            //CODE REMOVED - 2025-12-02 23:59:00 // 'room.LastSpawnTime = now; RoomPersistence.SaveRoom(conn, room);'
-                            //DEPRECATED// Limit reached: window already consumed above; wait next full delay.
                             Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} at limit; updated LastSpawnTime.");
                             continue;
                         }
@@ -99,8 +101,6 @@ namespace MudServer
 
                         if (currentCount >= max)
                         {
-                            //CODE REMOVED - 2025-12-02 23:59:00 // 'room.LastSpawnTime = now; RoomPersistence.SaveRoom(conn, room);'
-                            //DEPRECATED// Limit reached: window already consumed above; wait next full delay.
                             Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} at NPC limit; updated LastSpawnTime.");
                             continue;
                         }
@@ -118,55 +118,98 @@ namespace MudServer
 
                     if (room.SpawnType.Equals("Npc", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (world.NpcFactory == null)
+                        if (world.NpcFactory == null || world.TemplateManager == null)
                         {
-                            Console.WriteLine("[Spawner][WARN] NpcFactory missing - cannot spawn NPC.");
+                            Console.WriteLine("[Spawner][ERROR] Cannot spawn NPC: NpcFactory or TemplateManager is null.");
+                            continue;
+                        }
+
+                        // Verify template exists before calling factory
+                        if (!world.TemplateManager.TryGet(templateId, out var tmpl))
+                        {
+                            Console.WriteLine($"[Spawner][ERROR] NPC template '{templateId}' not loaded; skipping spawn.");
+                            continue;
+                        }
+
+                        // Extra sanity: log essential template fields
+                        Console.WriteLine($"[Spawner][TRACE] Template '{templateId}' ok: Name='{tmpl.Name}', Level={tmpl.Level ?? 0}, IsHumanoid={tmpl.IsHumanoid}, CS={tmpl.CombatSkill ?? 0}");
+
+                        // Create NPC
+                        var npc = world.NpcFactory.CreateNpc(templateId, room);
+
+                        // Ensure hydrated defaults (redundant but safe)
+                        npc.ApplyTemplateDefaults();
+
+                        // Persist core fields including description/humanoid/CS
+                        npc.CurrentAreaID = room.AreaID;
+                        Console.WriteLine($"[Spawner][TRACE] NPC {npc.Name} WanderAreas={JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>())} CurrentAreaID={npc.CurrentAreaID}");
+                        int newId = NpcPersistence.InsertNpc(conn, npc);
+                        npc.NpcID = newId;
+
+                        // Equip from template and persist to NPC ownership
+                        try
+                        {
+                            var equipTemplates = npc.Template?.EquipmentTemplateIds;
+                            if (equipTemplates != null && equipTemplates.Count > 0 && world.ItemFactory != null)
+                            {
+                                foreach (var equipTemplateId in equipTemplates)
+                                {
+                                    try
+                                    {
+                                        var item = world.ItemFactory.CreateItem(equipTemplateId, "NPC", npc.NpcID, room.RoomID);
+                                        item.OwnerType = "NPC";
+                                        item.OwnerID = npc.NpcID;
+                                        item.RoomID = room.RoomID;
+                                        item.OwnerAreaID = 0;
+                                        ItemPersistence.SaveItem(conn, item);
+                                        npc.Inventory.Add(item);
+                                    }
+                                    catch (Exception iex)
+                                    {
+                                        Console.WriteLine($"[Spawner][NPC] Failed to create/equip item '{equipTemplateId}' for NPC {npc.Name}: {iex.Message}");
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception exEquip)
+                        {
+                            Console.WriteLine($"[Spawner][NPC] Equipment assignment error for NPC {npc.Name}: {exEquip.Message}");
+                        }
+
+                        if (!world.Npcs.Any(n => n.NpcID == npc.NpcID))
+                        {
+                            world.Npcs.Add(npc);
+                            Console.WriteLine($"[WORLD][TRACE] NPC added to world list: NpcID={npc.NpcID} Name='{npc.Name}' RoomID={room.RoomID}");
                         }
                         else
                         {
-                            var npc = world.NpcFactory.CreateNpc(templateId, room);
-                            npc.CurrentAreaID = room.AreaID;
-                            // Verify WanderAreas before persisting
-                            Console.WriteLine($"[Spawner][TRACE] NPC {npc.Name} WanderAreas={JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>())} CurrentAreaID={npc.CurrentAreaID}");
-                            // Persist NPC
-                            int newId = NpcPersistence.InsertNpc(conn, npc);
-                            npc.NpcID = newId;
-                            // After InsertNpc(conn, npc) and npc.NpcID assignment
-                            if (!world.Npcs.Any(n => n.NpcID == npc.NpcID))
-                            {
-                                world.Npcs.Add(npc);
-                                Console.WriteLine($"[WORLD][TRACE] NPC added to world list: NpcID={npc.NpcID} Name='{npc.Name}' RoomID={room.RoomID}");
-                            }
-                            else
-                            {
-                                //DEPRECATED// Duplicate add attempted; already present in world.Npcs.
-                                Console.WriteLine($"[WORLD][TRACE] NPC already present in world list: NpcID={npc.NpcID}");
-                            }
+                            Console.WriteLine($"[WORLD][TRACE] NPC already present in world list: NpcID={npc.NpcID}");
+                        }
 
-                            // Broadcast updated room + spawn message
-                            foreach (var p in room.Players)
-                            {
-                                p.PendingMessageQueue.Add(MessageHandler.Room(
-                                    room,
-                                    room.Npcs.Select(n => n.DisplayName).ToList(),
-                                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-                                    world));
+                        // Broadcast updated room + spawn message
+                        foreach (var p in room.Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(
+                                room,
+                                room.Npcs.Select(n => n.DisplayName).ToList(),
+                                room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                world));
 
-                                var text = string.IsNullOrEmpty(room.SpawnMessage)
-                                    ? $"{npc.DisplayName} appears."
-                                    : room.SpawnMessage;
-                                MessageHandler.SendSystem(p, text);
-                            }
+                            var text = string.IsNullOrEmpty(room.SpawnMessage)
+                                ? $"{npc.DisplayName} appears."
+                                : room.SpawnMessage;
+                            MessageHandler.SendSystem(p, text);
+                        }
 
-                            Console.WriteLine($"[Spawner] NPC '{npc.Name}' spawned in room {room.RoomID}.");
-                            foreach (var p in room.Players)
-                            {
-                                MudNetworking.MessageHandler.SendSystem(p, room.SpawnMessage?.Length > 0 ? room.SpawnMessage : $"An NPC appears: {npc.Name}");
-                            }
+                        Console.WriteLine($"[Spawner] NPC '{npc.Name}' spawned in room {room.RoomID}.");
+                        foreach (var p in room.Players)
+                        {
+                            MudNetworking.MessageHandler.SendSystem(p, room.SpawnMessage?.Length > 0 ? room.SpawnMessage : $"An NPC appears: {npc.Name}");
                         }
                     }
-                    else // Item branch
+                    else
                     {
+                        // Item branch unchanged...
                         if (world.ItemFactory == null)
                         {
                             Console.WriteLine("[Spawner][WARN] ItemFactory missing - cannot spawn Item.");
@@ -176,7 +219,6 @@ namespace MudServer
                             try
                             {
                                 Console.WriteLine($"[Spawner][TRACE] Creating item from template='{templateId}' for RoomID={room.RoomID}, AreaID={room.AreaID}.");
-                                // Create fully populated runtime item
                                 var item = world.ItemFactory.CreateItem(templateId, "Room", room.RoomID, room.RoomID);
                                 item.OwnerType = "Room";
                                 item.OwnerID = room.RoomID;
@@ -208,7 +250,6 @@ namespace MudServer
 
                                 RoomPersistence.SaveRoom(conn, room);
 
-                                // Broadcast updated room + spawn message
                                 foreach (var p in room.Players)
                                 {
                                     p.PendingMessageQueue.Add(MessageHandler.Room(
@@ -236,8 +277,6 @@ namespace MudServer
                         }
                     }
 
-                    // Update last spawn time after successful attempt and persist room metadata
-                    //DEPRECATED// Window was already consumed at delay gate; redundant to set LastSpawnTime here.
                     if ((now - room.LastSpawnTime).TotalSeconds < 1)
                     {
                         room.LastSpawnTime = now;

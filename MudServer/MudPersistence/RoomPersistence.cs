@@ -10,6 +10,7 @@ namespace MudPersistence
 {
     public static class RoomPersistence
     {
+        static bool setVerboseServerLogs = false; // Set to true to enable detailed logging
         public static void SaveRoom(SqliteConnection conn, Room room)
         {
             Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom START RoomID={room.RoomID}, AreaID={room.AreaID}, IsSpawner={room.IsSpawner}, SpawnType='{room.SpawnType}', Templates=[{string.Join(',', room.SpawnTemplateList ?? new List<string>())}]");
@@ -55,7 +56,7 @@ catch { /* ignore */ }
 //DEPRECATED// If in-memory SpawnChance is 0 but DB has non-zero, preserve DB value (avoid accidental reset).
 if (room.SpawnChance == 0 && currentDbChance > 0)
 {
-    Console.WriteLine($"[RoomPersistence][WARN] Preserving DB SpawnChance={currentDbChance} for RoomID={room.RoomID} (in-memory was 0).");
+                if (setVerboseServerLogs) { Console.WriteLine($"[RoomPersistence][WARN] Preserving DB SpawnChance={currentDbChance} for RoomID={room.RoomID} (in-memory was 0)."); }
     cmd.Parameters.AddWithValue("@spawnChance", currentDbChance);
 }
 else
@@ -71,13 +72,19 @@ else
             cmd.Parameters.AddWithValue("@lastSpawn", last.ToString("o"));
 
             var rows = cmd.ExecuteNonQuery();
-            Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom UPSERT rows={rows}, LastSpawnTime={last:o}");
+            if (setVerboseServerLogs)
+            {
+                Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom UPSERT rows={rows}, LastSpawnTime={last:o}");
+            }
 
             SaveRoomExits(conn, room);
             SaveRoomKeywords(conn, room);
             SaveRoomInventory(conn, room);
 
-            Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom END RoomID={room.RoomID}");
+            if (setVerboseServerLogs)
+            {
+                Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom END RoomID={room.RoomID}");
+            }
         }
 
         public static void SaveRoomExits(SqliteConnection conn, Room room)
@@ -141,12 +148,18 @@ else
         {
             if (room.Inventory == null) return;
 
-            Console.WriteLine($"[RoomPersistence][TRACE] SaveRoomInventory START RoomID={room.ID}, ItemsInMemory={room.Inventory.Count}");
+            if (setVerboseServerLogs)
+            {
+                Console.WriteLine($"[RoomPersistence][TRACE] SaveRoomInventory START RoomID={room.ID}, ItemsInMemory={room.Inventory.Count}");
+            }
 
             // If no items in memory, do not remove DB rows blindly (prevents accidental loss)
             if (room.Inventory.Count == 0)
             {
-                Console.WriteLine($"[RoomPersistence][TRACE] Room {room.ID} has empty inventory, skipping DB delete.");
+                if (setVerboseServerLogs)
+                {
+                    Console.WriteLine($"[RoomPersistence][TRACE] Room {room.ID} has empty inventory, skipping DB delete.");
+                }
                 return;
             }
 
@@ -182,9 +195,17 @@ else
                     continue;
                 }
 
-                Console.WriteLine($"[RoomPersistence][TRACE] Pre-SaveItem ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}");
+                if (setVerboseServerLogs)
+                {
+                    Console.WriteLine($"[RoomPersistence][TRACE] Pre-SaveItem ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}");
+                }
+
                 ItemPersistence.SaveItem(conn, item);
-                Console.WriteLine($"[RoomPersistence][TRACE] Post-SaveItem ItemID={item.ItemID}");
+
+                if (setVerboseServerLogs)
+                {
+                    Console.WriteLine($"[RoomPersistence][TRACE] Post-SaveItem ItemID={item.ItemID}");
+                }
 
                 if (item.ItemID == 0)
                 {
@@ -206,11 +227,18 @@ else
                     delCmd.Parameters.AddWithValue("@otype", "Room");
                     delCmd.Parameters.AddWithValue("@oid", room.ID);
                     var delRows = delCmd.ExecuteNonQuery();
-                    Console.WriteLine($"[RoomPersistence][TRACE] Removed {toDelete.Count} stale item(s) from Room {room.ID}, DB rows affected={delRows}.");
+
+                    if (setVerboseServerLogs)
+                    {
+                        Console.WriteLine($"[RoomPersistence][TRACE] Removed {toDelete.Count} stale item(s) from Room {room.ID}, DB rows affected={delRows}.");
+                    }
                 }
             }
 
-            Console.WriteLine($"[RoomPersistence][TRACE] SaveRoomInventory END RoomID={room.ID}");
+            if (setVerboseServerLogs)
+            {
+                Console.WriteLine($"[RoomPersistence][TRACE] SaveRoomInventory END RoomID={room.ID}");
+            }
         }
     }
 }

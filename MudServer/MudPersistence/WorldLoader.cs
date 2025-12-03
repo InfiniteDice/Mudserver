@@ -4,6 +4,7 @@ using MudCore.World;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.IO;
 
 namespace MudPersistence
 {
@@ -12,6 +13,69 @@ namespace MudPersistence
         public static World LoadFromDatabase(SqliteConnection conn)
         {
             World world = LoadWorld(conn);
+
+            // Initialize template manager and factory here
+            try
+            {
+                // Candidate paths (bin and project root)
+                var baseDir = AppContext.BaseDirectory;
+                var candidateDirs = new[]
+                {
+                    Path.Combine(baseDir, "Data", "NpcTemplates"),
+                    Path.Combine(baseDir, "..", "..", "..", "Data", "NpcTemplates"),
+                    Path.Combine(baseDir, "..", "Data", "NpcTemplates")
+                };
+
+                string npcTemplateDir = candidateDirs.FirstOrDefault(Directory.Exists) ?? candidateDirs.Last();
+                Console.WriteLine($"[TEMPLATE] Loading NPC templates from: {npcTemplateDir}");
+
+                var tmplMgr = new MudCore.Templates.NpcTemplateManager();
+                int loaded = 0;
+
+                if (Directory.Exists(npcTemplateDir))
+                {
+                    foreach (var file in Directory.EnumerateFiles(npcTemplateDir, "*.json", SearchOption.TopDirectoryOnly))
+                    {
+                        try
+                        {
+                            var json = File.ReadAllText(file);
+                            // Enable enum string deserialization
+                            var opts = new JsonSerializerOptions
+                            {
+                                PropertyNameCaseInsensitive = true
+                            };
+                            opts.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+
+                            var tmpl = System.Text.Json.JsonSerializer.Deserialize<MudCore.Templates.NpcTemplate>(json, opts);
+                            if (tmpl != null && !string.IsNullOrWhiteSpace(tmpl.Id))
+                            {
+                                tmplMgr.Register(tmpl);
+                                loaded++;
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[TEMPLATE][WARN] Skipped invalid NPC template file: {Path.GetFileName(file)}");
+                            }
+                        }
+                        catch (Exception exFile)
+                        {
+                            Console.WriteLine($"[TEMPLATE][ERROR] Failed to load '{Path.GetFileName(file)}': {exFile.Message}");
+                        }
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[TEMPLATE][ERROR] Directory does not exist: {npcTemplateDir}");
+                }
+
+                world.InitializeTemplates(tmplMgr);
+                Console.WriteLine($"[TEMPLATE] Loaded {loaded} NPC template(s).");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TEMPLATE][ERROR] Failed to initialize NPC templates: {ex.Message}");
+            }
+
             world.Areas = LoadAreas(conn, world.WorldID);
 
             foreach (var area in world.Areas)
@@ -75,6 +139,10 @@ namespace MudPersistence
             {
                 Console.WriteLine($"[NPC] Failed to load NPCs: {ex.Message}");
             }
+
+            // Optional: assert templates present after world load for diagnostics
+            if (world.TemplateManager == null)
+                Console.WriteLine("[WORLD][WARN] TemplateManager is null; NPC template-based features will fail until initialized.");
 
             return world;
         }

@@ -12,8 +12,8 @@ namespace MudCore.World
         public string Id { get; set; } = "";
         public string Name { get; set; } = "";
 
-        // Map JSON field "Category" to this property (DB uses ItemCategory on Item).
-        [JsonPropertyName("Category")]
+        //NEVER DELETE What type of item is this? Weapon, Armor, Tool, Food, etc.
+        [JsonPropertyName("ItemCategory")]
         public string ItemCategory { get; set; } = "";
 
         public double Weight { get; set; } = 0.0;

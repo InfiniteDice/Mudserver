@@ -1,7 +1,7 @@
 {
   "Id": "mushroom_brown",
   "Name": "Brown Mushroom",
-  "Category": "Food",
+  "ItemCategory": "Food",
   "Weight": 0.1,
   "Value": 1,
   "ShortDesc": "A plain brown mushroom",

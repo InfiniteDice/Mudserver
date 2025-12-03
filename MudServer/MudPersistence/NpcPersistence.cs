@@ -55,6 +55,38 @@ namespace MudPersistence
             int newId = (int)(long)cmd.ExecuteScalar();
             npc.NpcID = newId;
 
+            // Persist WanderAreas JSON if column exists
+            if (Has("WanderAreas"))
+            {
+                try
+                {
+                    using var upWander = conn.CreateCommand();
+                    upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
+                    var wanderJson = JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
+                    upWander.Parameters.AddWithValue("@wander", wanderJson);
+                    upWander.Parameters.AddWithValue("@id", npc.NpcID);
+                    upWander.ExecuteNonQuery();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NpcPersistence][WARN] Failed to persist WanderAreas for NpcID={npc.NpcID}: {ex.Message}");
+                }
+            }
+
+            // Persist WanderChance if column exists
+            if (Has("WanderChance"))
+            {
+                try
+                {
+                    using var upChance = conn.CreateCommand();
+                    upChance.CommandText = "UPDATE Npc SET WanderChance = @wc WHERE NpcID = @id;";
+                    upChance.Parameters.AddWithValue("@wc", npc.WanderChance);
+                    upChance.Parameters.AddWithValue("@id", npc.NpcID);
+                    upChance.ExecuteNonQuery();
+                }
+                catch { }
+            }
+
             SaveNpcCombat(conn, npc);
             return newId;
         }
@@ -79,6 +111,38 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
             cmd.Parameters.AddWithValue("@id", npc.NpcID);
             try { cmd.ExecuteNonQuery(); } catch { }
+
+            // Persist WanderAreas if column exists
+            if (Has("WanderAreas"))
+            {
+                try
+                {
+                    using var upWander = conn.CreateCommand();
+                    upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
+                    var wanderJson = JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
+                    upWander.Parameters.AddWithValue("@wander", wanderJson);
+                    upWander.Parameters.AddWithValue("@id", npc.NpcID);
+                    upWander.ExecuteNonQuery();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NpcPersistence][WARN] Failed to update WanderAreas for NpcID={npc.NpcID}: {ex.Message}");
+                }
+            }
+
+            // Persist WanderChance if column exists
+            if (Has("WanderChance"))
+            {
+                try
+                {
+                    using var upChance = conn.CreateCommand();
+                    upChance.CommandText = "UPDATE Npc SET WanderChance = @wc WHERE NpcID = @id;";
+                    upChance.Parameters.AddWithValue("@wc", npc.WanderChance);
+                    upChance.Parameters.AddWithValue("@id", npc.NpcID);
+                    upChance.ExecuteNonQuery();
+                }
+                catch { }
+            }
 
             SaveNpcCombat(conn, npc);
         }
@@ -166,6 +230,36 @@ namespace MudPersistence
                     // Read CurrentAreaID if present
                     npc.CurrentAreaID = Has("CurrentAreaID") ? GetInt(rdr, "CurrentAreaID", 0) : 0;
 
+                    // Read WanderChance (REAL)
+                    npc.WanderChance = Has("WanderChance")
+                        ? GetDoubleFlexible(rdr, "WanderChance", npc.WanderChance)
+                        : npc.WanderChance;
+
+                    // Read WanderAreas (prefer JSON TEXT; fallback to current area)
+                    if (Has("WanderAreas"))
+                    {
+                        try
+                        {
+                            var idx = rdr.GetOrdinal("WanderAreas");
+                            if (!rdr.IsDBNull(idx))
+                            {
+                                string? s = null;
+                                try { s = rdr.GetString(idx); } catch { }
+                                if (!string.IsNullOrWhiteSpace(s))
+                                {
+                                    try
+                                    {
+                                        var list = JsonSerializer.Deserialize<List<int>>(s);
+                                        if (list != null) npc.WanderAreas = list;
+                                    }
+                                    catch { /* malformed JSON, ignore */ }
+                                }
+                                // If not text, fallback later
+                            }
+                        }
+                        catch { }
+                    }
+
                     // Skip dead or invalid rows (Health <= 0 or HealthMax <= 0)
                     if (npc.Health <= 0 || npc.HealthMax <= 0)
                     {
@@ -199,6 +293,40 @@ namespace MudPersistence
                         // Keep loading as-is
                     }
 
+                    // Attach template from world's TemplateManager so AI has behaviors
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(npc.TemplateID) && world?.TemplateManager != null)
+                        {
+                            if (world.TemplateManager.TryGet(npc.TemplateID, out var tmpl))
+                            {
+                                npc.Template = tmpl;
+                                if (string.IsNullOrWhiteSpace(npc.Name) && !string.IsNullOrWhiteSpace(tmpl.Name))
+                                    npc.Name = tmpl.Name;
+
+                                // If DB had 0 WanderChance, hydrate from template
+                                if (npc.WanderChance <= 0)
+                                    npc.WanderChance = tmpl.WanderChance;
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[NpcPersistence][WARN] Template not found for TemplateID='{npc.TemplateID}' NpcID={npc.NpcID}.");
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[NpcPersistence][WARN] Missing TemplateID or TemplateManager for NpcID={npc.NpcID}.");
+                        }
+                    }
+                    catch (Exception tex)
+                    {
+                        Console.WriteLine($"[NpcPersistence][ERROR] Failed to attach template for NpcID={npc.NpcID}: {tex.Message}");
+                    }
+
+                    // Ensure WanderAreas fallback to current room area when empty
+                    if ((npc.WanderAreas == null || npc.WanderAreas.Count == 0) && npc.CurrentRoom != null && npc.CurrentRoom.AreaID > 0)
+                        npc.WanderAreas = new List<int> { npc.CurrentRoom.AreaID };
+
                     MudServer.Combat.InitializeSizeDefaults(npc);
                     MudServer.Combat.UpdateEffectiveStats(npc);
 
@@ -231,7 +359,6 @@ namespace MudPersistence
             {
                 var i = rdr.GetOrdinal(name);
                 if (rdr.IsDBNull(i)) return def;
-                // SQLite will coerce if column is numeric; if stored as text, try parse
                 try { return rdr.GetDouble(i); }
                 catch
                 {

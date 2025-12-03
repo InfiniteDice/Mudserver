@@ -46,18 +46,29 @@ namespace MudPersistence
             try
             {
                 var loadedNpcs = NpcPersistence.LoadAllNpcs(conn, world);
-                foreach (var npc in loadedNpcs)
+
+                // Add to world list so World.Tick can iterate them
+                if (loadedNpcs != null && loadedNpcs.Count > 0)
                 {
-                    try
+                    foreach (var npc in loadedNpcs)
                     {
-                        var items = ItemPersistence.LoadItemsByOwner(conn, "NPC", npc.NpcID);
-                        if (items != null && items.Count > 0)
-                            npc.Inventory = items;
+                        // Load NPC-owned items
+                        try
+                        {
+                            var items = ItemPersistence.LoadItemsByOwner(conn, "NPC", npc.NpcID);
+                            if (items != null && items.Count > 0)
+                                npc.Inventory = items;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[NPC] Failed to load items for NPC {npc.NpcID}: {ex.Message}");
+                        }
+
+                        if (!world.Npcs.Any(n => n.NpcID == npc.NpcID))
+                            world.Npcs.Add(npc);
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[NPC] Failed to load items for NPC {npc.NpcID}: {ex.Message}");
-                    }
+
+                    Console.WriteLine($"[WORLD][TRACE] Loaded NPCs into world list: Count={world.Npcs.Count}");
                 }
             }
             catch (Exception ex)

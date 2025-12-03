@@ -52,7 +52,14 @@ namespace MudCore.World
             MudServer.Combat.InitializeSizeDefaults(npc);
             MudServer.Combat.UpdateEffectiveStats(npc);
 
-            npc.CurrentAreaID = room.AreaID; // Set CurrentAreaID after NPC is created and assigned a room
+            // Ensure NPC inherits area from the room so it can wander within its own area.
+            npc.CurrentAreaID = room.AreaID;
+            // If template does not specify WanderAreas, default to the NPC's current area.
+            if (npc.WanderAreas == null || npc.WanderAreas.Count == 0)
+            {
+                //DEPRECATED// WanderAreas empty at creation; default to room.AreaID for safe local wandering.
+                npc.WanderAreas = new System.Collections.Generic.List<int> { room.AreaID };
+            }
 
             room.Npcs.Add(npc);
             return npc;

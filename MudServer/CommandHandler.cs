@@ -39,6 +39,16 @@ namespace MudServer
 
             string command = ExtractCommandText(rawCommand).Trim();
 
+            // EAT command (new)
+            if (command.StartsWith("eat", StringComparison.OrdinalIgnoreCase))
+            {
+                var partsEat = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (partsEat.Length < 2)
+                    return MessageHandler.System("Usage: eat <food item>");
+                string foodName = partsEat[1].Trim();
+                return EatItem(player, foodName);
+            }
+
             // Handle 'get' or 'take' command
             if (command.StartsWith("get ", StringComparison.OrdinalIgnoreCase) ||
                 command.StartsWith("take ", StringComparison.OrdinalIgnoreCase))
@@ -243,9 +253,115 @@ namespace MudServer
                         return CombatManager.Assist(player, targetExpr, _world, _dbConnection);
                     }
 
+                // Admin command: debugitems (prints all Item rows from the DB on the active connection)
+                case "debugitems":
+                {
+                    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+                    try
+                    {
+                        using var cmd = _dbConnection.CreateCommand();
+                        cmd.CommandText = "SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID, OwnerAreaID FROM Item ORDER BY ItemID DESC";
+                        using var rdr = cmd.ExecuteReader();
+
+                        int n = 0;
+                        while (rdr.Read())
+                        {
+                            n++;
+                            var id = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+                            var tid = rdr.IsDBNull(1) ? "" : rdr.GetString(1);
+                            var name = rdr.IsDBNull(2) ? "" : rdr.GetString(2);
+                            var otype = rdr.IsDBNull(3) ? "" : rdr.GetString(3);
+                            var oid = rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4);
+                            var rid = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5);
+                            var oarea = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6);
+
+                            Console.WriteLine($"[DEBUGITEMS] id={id} tid='{tid}' name='{name}' otype='{otype}' oid={oid} rid={rid} oarea={oarea}");
+                        }
+
+                        return MessageHandler.System($"DebugItems: printed {n} row(s) to server log.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[DEBUGITEMS][ERROR] {ex}");
+                        return MessageHandler.System($"DebugItems failed: {ex.Message}");
+                    }
+                }
+
                 default:
                     return MessageHandler.System($"Unknown command: {command}");
             }
+        }
+
+        // New eat logic
+        private Message? EatItem(Player player, string requested)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (player.Inventory == null || player.Inventory.Count == 0)
+                return MessageHandler.System("You carry nothing edible.");
+
+            // Find candidate items (Food category)
+            var candidates = player.Inventory
+                .Where(i => i.ItemCategory != null &&
+                            i.ItemCategory.Equals("Food", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (candidates.Count == 0)
+                return MessageHandler.System("You have no food items.");
+
+            // Exact match by name or template id first
+            var item = candidates.FirstOrDefault(i =>
+                i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase) ||
+                i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase));
+
+            // Fallback startswith
+            if (item == null)
+            {
+                item = candidates.FirstOrDefault(i =>
+                    i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (item == null)
+                return MessageHandler.System($"No food item matches '{requested}'.");
+
+            // Compute heal if flag present
+            bool canHeal = (item.Flags != null &&
+                            item.Flags.Any(f => f.Equals("Heal", StringComparison.OrdinalIgnoreCase)));
+
+            int healAmount = 0;
+            if (canHeal)
+            {
+                double w = item.Weight <= 0 ? 0.02 : item.Weight; // tiny default weight if zero
+                healAmount = (int)Math.Ceiling(w * 50.0);
+                if (healAmount < 1) healAmount = 1;
+                int oldHealth = player.Health;
+                player.Health = Math.Min(player.Health + healAmount, player.MaxHealth);
+                healAmount = player.Health - oldHealth; // actual applied
+            }
+
+            // Remove item from inventory & persist removal
+            player.Inventory.Remove(item);
+            ItemPersistence.DeleteItem(_dbConnection, item.ItemID);
+
+            string msg = $"You eat {item.Name}.";
+            if (canHeal && healAmount > 0)
+                msg += $" You feel better (+{healAmount} HP).";
+
+            // Persist player health immediately
+            try
+            {
+                using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
+                    "UPDATE Player SET Health = @h WHERE PlayerID = @id", _dbConnection);
+                cmd.Parameters.AddWithValue("@h", player.Health);
+                cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PLAYER] Failed to persist health for {player.Name} (ID {player.DbPlayerID}): {ex.Message}");
+            }
+
+            return MessageHandler.System(msg);
         }
 
         private Message? Look(Player player)
@@ -284,6 +400,7 @@ namespace MudServer
 
             return Movement.AttemptMove(player, dir, _world, _dbConnection); // UPDATED
         }
+
 
         // -------------------------------
         // GET / TAKE
@@ -760,7 +877,16 @@ namespace MudServer
                 newNpc.NpcID = newId;
 
                 // Ensure world list contains it
-                if (!_world.Npcs.Contains(newNpc)) _world.Npcs.Add(newNpc);
+                if (!_world.Npcs.Any(n => n.NpcID == newNpc.NpcID))
+                {
+                    _world.Npcs.Add(newNpc);
+                    Console.WriteLine($"[WORLD][TRACE] NPC created and added: NpcID={newNpc.NpcID} Name='{newNpc.Name}' RoomID={room.RoomID}");
+                }
+                else
+                {
+                    //DEPRECATED// world.Npcs already contains NPC; skipping add.
+                    Console.WriteLine($"[WORLD][TRACE] NPC already in world list: NpcID={newNpc.NpcID}");
+                }
 
                 // If template specifies equipment, instantiate items and assign to NPC
                 try
@@ -797,7 +923,7 @@ namespace MudServer
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
                         room.Npcs.Select(n => n.DisplayName).ToList(),
-                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                        room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                         _world));
                 }
 
@@ -894,7 +1020,7 @@ namespace MudServer
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
                     room.Npcs.Select(n => n.DisplayName).ToList(),
-                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
 
@@ -981,7 +1107,7 @@ namespace MudServer
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
                     room.Npcs.Select(n => n.DisplayName).ToList(),
-                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
 
@@ -1064,27 +1190,62 @@ namespace MudServer
 
             try
             {
+                Console.WriteLine($"[AddItem][TRACE] Creating item from template='{itemTemplateId}' in RoomID={room.RoomID}, AreaID={room.AreaID}.");
                 var item = _world.ItemFactory.CreateItem(itemTemplateId, "ROOM", 0, room.RoomID);
+
+                // Normalize ownership fields consistently
                 item.OwnerType = "Room";
                 item.OwnerID = room.RoomID;
                 item.RoomID = room.RoomID;
                 item.OwnerAreaID = room.AreaID;
+
+                Console.WriteLine($"[AddItem][TRACE] Pre-SaveItem: ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}'.");
+
                 MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
+
+                using var readCmd = _dbConnection.CreateCommand();
+                readCmd.CommandText = "SELECT ItemID, TemplateID, OwnerType, OwnerID, RoomID, OwnerAreaID FROM Item WHERE ItemID=@id";
+                readCmd.Parameters.AddWithValue("@id", item.ItemID);
+                using var r = readCmd.ExecuteReader();
+                if (r.Read())
+                {
+                    Console.WriteLine($"[AddItem][VERIFY] Row: id={r.GetInt32(0)} tid='{r.GetString(1)}' otype='{r.GetString(2)}' oid={r.GetInt32(3)} rid={r.GetInt32(4)} oarea={r.GetInt32(5)}");
+                }
+                else
+                {
+                    Console.WriteLine($"[AddItem][ERROR] Just-inserted ItemID={item.ItemID} not found via SELECT.");
+                }
+
+                Console.WriteLine($"[AddItem][TRACE] Post-SaveItem: ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}.");
+
+                using var verifyCmd = _dbConnection.CreateCommand();
+                verifyCmd.CommandText = "SELECT COUNT(*) FROM Item WHERE OwnerType='Room' AND OwnerID=@rid";
+                verifyCmd.Parameters.AddWithValue("@rid", room.RoomID);
+                var countObj = verifyCmd.ExecuteScalar();
+                long count = countObj is long l ? l : Convert.ToInt64(countObj);
+                Console.WriteLine($"[AddItem][TRACE] DB verify: Room {room.RoomID} now has {count} item(s) persisted as OwnerType='Room'.");
+
                 room.Inventory.Add(item);
                 room.IsDirty = true;
+
+                // Verify DB persistence for this room
+                using var checkCmd = _dbConnection.CreateCommand();
+                checkCmd.CommandText = "SELECT COUNT(*) FROM Item WHERE OwnerType='Room' AND OwnerID=@rid";
+                checkCmd.Parameters.AddWithValue("@rid", room.RoomID);
+                var itemCount = (long)(checkCmd.ExecuteScalar() ?? 0);
+                Console.WriteLine($"[AddItem][TRACE] Verify after add: Room {room.RoomID} has {itemCount} items in DB.");
+
                 _world.SaveDirtyRooms(_dbConnection);
 
-                // Broadcast updated room
                 foreach (var p in room.Players)
                 {
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
                         room.Npcs.Select(n => n.DisplayName).ToList(),
-                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                        room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                         _world));
                 }
 
-                // send NPC actions to log
                 foreach (var n in room.Npcs)
                 {
                     if (!string.IsNullOrWhiteSpace(n.LastAction))
@@ -1098,6 +1259,7 @@ namespace MudServer
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[AddItem][ERROR] AddItem failed: {ex}");
                 return MessageHandler.System($"Failed to add item: {ex.Message}");
             }
         }
@@ -1130,7 +1292,7 @@ namespace MudServer
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
                     room.Npcs.Select(n => n.DisplayName).ToList(),
-                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
 

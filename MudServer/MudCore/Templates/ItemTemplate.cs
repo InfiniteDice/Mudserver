@@ -34,7 +34,7 @@ namespace MudCore.Templates
         // -----------------------
         // Flags (stored as array in JSON)
         // -----------------------
-        public List<string> Flags { get; set; } = new();
+        public List<string>? Flags { get; set; }
 
         // -----------------------
         // Skill / crafting requirements
@@ -59,8 +59,8 @@ namespace MudCore.Templates
         // -----------------------
         // Armor-specific
         // -----------------------
-        public int ArmorRating { get; set; } = 0;
-        public string AbsorbType { get; set; } = ""; // physical, fire, ice, magic
+        public double BaseACBonus { get; set; } = 0.0;
+        //public string AbsorbType { get; set; } = ""; // physical, fire, ice, magic
 
         // -----------------------
         // Consumable / magical items

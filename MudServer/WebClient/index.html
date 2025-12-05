@@ -296,13 +296,13 @@
             }
         });
 
-        cmdForm.addEventListener('submit', e => {
-            e.preventDefault();
-            const text = cmdInput.value.trim();
-            if (!text) return;
-            sendCommand(text);
-            cmdInput.value = '';
-        });
+        //cmdForm.addEventListener('submit', e => {
+        //    e.preventDefault();
+        //    const text = cmdInput.value.trim();
+        //    if (!text) return;
+        //    sendCommand(text);
+        //    cmdInput.value = '';
+        //});
 
         document.querySelectorAll('.quick button').forEach(b => {
             b.addEventListener('click', () => {
@@ -319,6 +319,51 @@
             ws.send(payload);
             addLog('> ' + text, 'you');
         }
+
+        // --- Client-only command history (last 3), ArrowUp/ArrowDown ---
+        const history = [];
+        let cursor = -1;
+
+        function recordCommand(cmd) {
+            if (!cmd || !cmd.trim()) return;
+            if (history.length > 0 && history[0] === cmd) return; // skip adjacent duplicate
+            history.unshift(cmd);
+            if (history.length > 3) history.pop();
+            cursor = -1;
+        }
+
+        function historyPrev() {
+            if (history.length === 0) return;
+            if (cursor < history.length - 1) cursor++;
+            cmdInput.value = history[cursor] || '';
+            cmdInput.setSelectionRange(cmdInput.value.length, cmdInput.value.length);
+        }
+
+        function historyNext() {
+            if (history.length === 0) return;
+            if (cursor <= 0) {
+                cursor = -1;
+                cmdInput.value = '';
+            } else {
+                cursor--;
+                cmdInput.value = history[cursor] || '';
+            }
+            cmdInput.setSelectionRange(cmdInput.value.length, cmdInput.value.length);
+        }
+
+        cmdForm.addEventListener('submit', e => {
+            e.preventDefault();
+            const text = cmdInput.value.trim();
+            if (!text) return;
+            recordCommand(text);            // record locally
+            sendCommand(text);
+            cmdInput.value = '';
+        });
+
+        cmdInput.addEventListener('keydown', e => {
+            if (e.key === 'ArrowUp') { e.preventDefault(); historyPrev(); }
+            if (e.key === 'ArrowDown') { e.preventDefault(); historyNext(); }
+        });
 
         // Inventory button handlers
         invBtn.addEventListener('click', openInventory);

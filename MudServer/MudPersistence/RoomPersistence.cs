@@ -5,15 +5,25 @@ using System;
 using System.Collections.Generic;
 using System.Linq; // added
 using System.Text.Json;
+using System.Data;
 
 namespace MudPersistence
 {
     public static class RoomPersistence
     {
         static bool setVerboseServerLogs = false; // Set to true to enable detailed logging
+
+        private static void EnsureOpen(SqliteConnection conn)
+        {
+            if (conn.State != ConnectionState.Open)
+                conn.Open();
+        }
+
         public static void SaveRoom(SqliteConnection conn, Room room)
         {
-            Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom START RoomID={room.RoomID}, AreaID={room.AreaID}, IsSpawner={room.IsSpawner}, SpawnType='{room.SpawnType}', Templates=[{string.Join(',', room.SpawnTemplateList ?? new List<string>())}]");
+            EnsureOpen(conn);
+
+            if(setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom START RoomID={room.RoomID}, AreaID={room.AreaID}, IsSpawner={room.IsSpawner}, SpawnType='{room.SpawnType}', Templates=[{string.Join(',', room.SpawnTemplateList ?? new List<string>())}]");
 
             var cmd = new SqliteCommand(@"
                 INSERT INTO Room 
@@ -42,27 +52,26 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@spawnType", room.SpawnType ?? "");
             cmd.Parameters.AddWithValue("@spawnList", JsonSerializer.Serialize(room.SpawnTemplateList ?? new List<string>()));
             
-// Before executing the UPSERT, optionally read current DB chance to avoid clobbering non-zero with zero.
-int currentDbChance = -1;
-try
-{
-    using var read = new SqliteCommand("SELECT SpawnChance FROM Room WHERE RoomID=@rid", conn);
-    read.Parameters.AddWithValue("@rid", room.RoomID);
-    var obj = read.ExecuteScalar();
-    currentDbChance = obj is long l ? (int)l : Convert.ToInt32(obj);
-}
-catch { /* ignore */ }
+            int currentDbChance = -1;
+            try
+            {
+                EnsureOpen(conn);
+                using var read = new SqliteCommand("SELECT SpawnChance FROM Room WHERE RoomID=@rid", conn);
+                read.Parameters.AddWithValue("@rid", room.RoomID);
+                var obj = read.ExecuteScalar();
+                currentDbChance = obj is long l ? (int)l : Convert.ToInt32(obj);
+            }
+            catch { /* ignore */ }
 
-//DEPRECATED// If in-memory SpawnChance is 0 but DB has non-zero, preserve DB value (avoid accidental reset).
-if (room.SpawnChance == 0 && currentDbChance > 0)
-{
+            if (room.SpawnChance == 0 && currentDbChance > 0)
+            {
                 if (setVerboseServerLogs) { Console.WriteLine($"[RoomPersistence][WARN] Preserving DB SpawnChance={currentDbChance} for RoomID={room.RoomID} (in-memory was 0)."); }
-    cmd.Parameters.AddWithValue("@spawnChance", currentDbChance);
-}
-else
-{
-    cmd.Parameters.AddWithValue("@spawnChance", room.SpawnChance);
-}
+                cmd.Parameters.AddWithValue("@spawnChance", currentDbChance);
+            }
+            else
+            {
+                cmd.Parameters.AddWithValue("@spawnChance", room.SpawnChance);
+            }
 
             cmd.Parameters.AddWithValue("@spawnDelay", room.SpawnDelayMinutes);
             cmd.Parameters.AddWithValue("@spawnMax", room.SpawnMaxRoom);
@@ -71,6 +80,7 @@ else
             var last = room.LastSpawnTime == DateTime.MinValue ? DateTime.UtcNow : room.LastSpawnTime;
             cmd.Parameters.AddWithValue("@lastSpawn", last.ToString("o"));
 
+            EnsureOpen(conn);
             var rows = cmd.ExecuteNonQuery();
             if (setVerboseServerLogs)
             {
@@ -89,6 +99,7 @@ else
 
         public static void SaveRoomExits(SqliteConnection conn, Room room)
         {
+            EnsureOpen(conn);
             if (room.Exits == null) return;
             foreach (var exit in room.Exits)
             {
@@ -102,6 +113,7 @@ else
                 updateCmd.Parameters.AddWithValue("@toRid", exit.ToRoomID);
                 updateCmd.Parameters.AddWithValue("@hidden", exit.IsHidden ? 1 : 0);
                 updateCmd.Parameters.AddWithValue("@keyword", exit.DiscoverKeyword ?? "");
+                EnsureOpen(conn);
                 var rows = updateCmd.ExecuteNonQuery();
 
                 if (rows == 0)
@@ -115,18 +127,20 @@ else
                     insertCmd.Parameters.AddWithValue("@toRid", exit.ToRoomID);
                     insertCmd.Parameters.AddWithValue("@hidden", exit.IsHidden ? 1 : 0);
                     insertCmd.Parameters.AddWithValue("@keyword", exit.DiscoverKeyword ?? "");
+                    EnsureOpen(conn);
                     insertCmd.ExecuteNonQuery();
-                    Console.WriteLine($"[RoomPersistence][TRACE] Inserted Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID}");
+                    if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] Inserted Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID}");
                 }
                 else
                 {
-                    Console.WriteLine($"[RoomPersistence][TRACE] Updated Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID}");
+                    if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] Updated Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID}");
                 }
             }
         }
 
         public static void SaveRoomKeywords(SqliteConnection conn, Room room)
         {
+            EnsureOpen(conn);
             if (room.Keywords == null) return;
 
             using var deleteCmd = new SqliteCommand("DELETE FROM RoomKeyword WHERE RoomID = @rid", conn);
@@ -141,11 +155,12 @@ else
                 cmd.ExecuteNonQuery();
             }
 
-            Console.WriteLine($"[RoomPersistence][TRACE] Keywords refreshed for RoomID={room.ID}, Count={room.Keywords.Count}");
+            if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] Keywords refreshed for RoomID={room.ID}, Count={room.Keywords.Count}");
         }
 
         public static void SaveRoomInventory(SqliteConnection conn, Room room)
         {
+            EnsureOpen(conn);
             if (room.Inventory == null) return;
 
             if (setVerboseServerLogs)
@@ -153,7 +168,6 @@ else
                 Console.WriteLine($"[RoomPersistence][TRACE] SaveRoomInventory START RoomID={room.ID}, ItemsInMemory={room.Inventory.Count}");
             }
 
-            // If no items in memory, do not remove DB rows blindly (prevents accidental loss)
             if (room.Inventory.Count == 0)
             {
                 if (setVerboseServerLogs)
@@ -182,12 +196,10 @@ else
             {
                 if (item == null) continue;
 
-                // Ensure coherent ownership before save
                 item.OwnerType = "Room";
-                item.OwnerID = room.ID;   // INTEGER OwnerID
+                item.OwnerID = room.ID;
                 item.RoomID = room.ID;
 
-                // Guard: if this runtime item is partial (missing TemplateID) but refers to an existing DB row, skip to avoid wiping fields.
                 if (string.IsNullOrWhiteSpace(item.TemplateID) && item.ItemID != 0)
                 {
                     Console.WriteLine($"[RoomPersistence][WARN] Skipping update for ItemID={item.ItemID} due to empty TemplateID; preventing overwrite. Room={room.ID}");
@@ -200,6 +212,7 @@ else
                     Console.WriteLine($"[RoomPersistence][TRACE] Pre-SaveItem ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}");
                 }
 
+                EnsureOpen(conn);
                 ItemPersistence.SaveItem(conn, item);
 
                 if (setVerboseServerLogs)
@@ -226,6 +239,7 @@ else
                     delCmd.CommandText = sql;
                     delCmd.Parameters.AddWithValue("@otype", "Room");
                     delCmd.Parameters.AddWithValue("@oid", room.ID);
+                    EnsureOpen(conn);
                     var delRows = delCmd.ExecuteNonQuery();
 
                     if (setVerboseServerLogs)

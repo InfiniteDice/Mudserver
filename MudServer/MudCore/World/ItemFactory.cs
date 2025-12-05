@@ -23,6 +23,10 @@ namespace MudCore.World
         public string WearLoc { get; set; } = "";
         public int HandLoc { get; set; } = 1;
         public List<string> Flags { get; set; } = new List<string>();
+
+        // Example new properties
+        public int Condition { get; set; } = 100; // default condition
+        public double BaseACBonus { get; set; } = 0.0; // default AC bonus
     }
 
     public class ItemTemplateManager
@@ -111,6 +115,8 @@ namespace MudCore.World
         {
             var template = _templateManager.Get(templateId);
 
+            var flags = template.Flags != null ? new List<string>(template.Flags) : new List<string>();
+
             var item = new Item
             {
                 ItemID = 0, // DB will assign autoincrement
@@ -122,9 +128,10 @@ namespace MudCore.World
                 ShortDesc = template.ShortDesc,
                 LongDesc = template.LongDesc,
                 WearLoc = template.WearLoc,
+                BaseACBonus = template.BaseACBonus,
                 HandLoc = template.HandLoc,
-                Flags = template.Flags,
-                FlagsJson = JsonSerializer.Serialize(template.Flags),
+                Flags = flags,
+                FlagsJson = JsonSerializer.Serialize(flags),
                 OwnerType = ownerType,
                 OwnerID = ownerId,
                 RoomID = roomId,

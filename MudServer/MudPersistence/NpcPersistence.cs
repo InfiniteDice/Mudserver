@@ -4,6 +4,7 @@ using MudCore.World;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Data;
 
 namespace MudPersistence
 {
@@ -12,11 +13,18 @@ namespace MudPersistence
         private static HashSet<string> _npcCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static bool _colsLoaded;
 
+        private static void EnsureOpen(SqliteConnection conn)
+        {
+            if (conn.State != ConnectionState.Open)
+                conn.Open();
+        }
+
         private static void EnsureNpcColumns(SqliteConnection conn)
         {
             if (_colsLoaded || conn == null) return;
             try
             {
+                EnsureOpen(conn);
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = "PRAGMA table_info('Npc');";
                 using var rdr = cmd.ExecuteReader();
@@ -35,6 +43,7 @@ namespace MudPersistence
         // Include CurrentAreaID on insert/update
         public static int InsertNpc(SqliteConnection conn, Npc npc)
         {
+            EnsureOpen(conn);
             EnsureNpcColumns(conn);
 
             using var cmd = conn.CreateCommand();
@@ -80,6 +89,7 @@ namespace MudPersistence
             {
                 try
                 {
+                    EnsureOpen(conn);
                     using var upWander = conn.CreateCommand();
                     upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
                     var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
@@ -98,6 +108,7 @@ namespace MudPersistence
             {
                 try
                 {
+                    EnsureOpen(conn);
                     using var upChance = conn.CreateCommand();
                     upChance.CommandText = "UPDATE Npc SET WanderChance = @wc WHERE NpcID = @id;";
                     upChance.Parameters.AddWithValue("@wc", npc.WanderChance);
@@ -113,6 +124,7 @@ namespace MudPersistence
 
         public static void UpdateNpc(SqliteConnection conn, Npc npc)
         {
+            EnsureOpen(conn);
             EnsureNpcColumns(conn);
 
             using var cmd = conn.CreateCommand();
@@ -150,6 +162,7 @@ namespace MudPersistence
             {
                 try
                 {
+                    EnsureOpen(conn);
                     using var upWander = conn.CreateCommand();
                     upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
                     var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
@@ -168,6 +181,7 @@ namespace MudPersistence
             {
                 try
                 {
+                    EnsureOpen(conn);
                     using var upChance = conn.CreateCommand();
                     upChance.CommandText = "UPDATE Npc SET WanderChance = @wc WHERE NpcID = @id;";
                     upChance.Parameters.AddWithValue("@wc", npc.WanderChance);
@@ -185,6 +199,7 @@ namespace MudPersistence
             if (conn == null || npcId <= 0) return;
             try
             {
+                EnsureOpen(conn);
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = "DELETE FROM Npc WHERE NpcID = @id;";
                 cmd.Parameters.AddWithValue("@id", npcId);
@@ -199,6 +214,7 @@ namespace MudPersistence
 
         private static void SaveNpcCombat(SqliteConnection conn, Npc npc)
         {
+            EnsureOpen(conn);
             EnsureNpcColumns(conn);
 
             var assignments = new List<string>();
@@ -243,6 +259,7 @@ namespace MudPersistence
         // Add a harmless consistency warning in loader
         public static List<Npc> LoadAllNpcs(SqliteConnection conn, World world)
         {
+            EnsureOpen(conn);
             EnsureNpcColumns(conn);
             var npcs = new List<Npc>();
 

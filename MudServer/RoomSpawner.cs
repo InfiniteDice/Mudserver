@@ -21,6 +21,7 @@ namespace MudServer
     public static class RoomSpawner
     {
         private static readonly Random _rng = new Random();
+        static bool useVerboseLogging = true;
 
         public static void ProcessSpawns(World world, SqliteConnection conn)
         {
@@ -63,7 +64,7 @@ namespace MudServer
 
                     if (room.SpawnDelayMinutes > 0 && elapsedMinutes < room.SpawnDelayMinutes)
                     {
-                        Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delaying: elapsed={elapsedMinutes:F1} < delay={room.SpawnDelayMinutes}.");
+                        if(useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delaying: elapsed={elapsedMinutes:F1} < delay={room.SpawnDelayMinutes}.");
                         continue;
                     }
 
@@ -72,12 +73,12 @@ namespace MudServer
                     room.LastSpawnTime = now;
                     RoomPersistence.SaveRoom(conn, room);
 
-                    Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} check: Type={room.SpawnType}, Chance={room.SpawnChance}, DelayMin={room.SpawnDelayMinutes}, ElapsedMin={elapsedMinutes:F1}, Templates=[{string.Join(',', room.SpawnTemplateList)}]");
+                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} check: Type={room.SpawnType}, Chance={room.SpawnChance}, DelayMin={room.SpawnDelayMinutes}, ElapsedMin={elapsedMinutes:F1}, Templates=[{string.Join(',', room.SpawnTemplateList)}]");
 
                     int roll = _rng.Next(100);
                     if (roll >= Math.Clamp(room.SpawnChance, 0, 100))
                     {
-                        Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} chance roll={roll} >= SpawnChance={room.SpawnChance}; no spawn this tick.");
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} chance roll={roll} >= SpawnChance={room.SpawnChance}; no spawn this tick.");
                         continue;
                     }
 
@@ -85,11 +86,11 @@ namespace MudServer
                     {
                         int currentCount = room.Inventory.Count(i => room.SpawnTemplateList.Contains(i.TemplateID));
                         int max = Math.Max(1, room.SpawnMaxRoom);
-                        Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} item count for templates={currentCount}, limit={max}.");
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} item count for templates={currentCount}, limit={max}.");
 
                         if (currentCount >= max)
                         {
-                            Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} at limit; updated LastSpawnTime.");
+                            if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} at limit; updated LastSpawnTime.");
                             continue;
                         }
                     }
@@ -97,11 +98,11 @@ namespace MudServer
                     {
                         int currentCount = room.Npcs.Count(n => room.SpawnTemplateList.Contains(n.TemplateID));
                         int max = Math.Max(1, room.SpawnMaxRoom);
-                        Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} NPC count for templates={currentCount}, limit={max}.");
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} NPC count for templates={currentCount}, limit={max}.");
 
                         if (currentCount >= max)
                         {
-                            Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} at NPC limit; updated LastSpawnTime.");
+                            if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} at NPC limit; updated LastSpawnTime.");
                             continue;
                         }
                     }
@@ -114,7 +115,7 @@ namespace MudServer
                     }
 
                     var templateId = room.SpawnTemplateList[_rng.Next(room.SpawnTemplateList.Count)];
-                    Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} attempting spawn of '{templateId}' as {room.SpawnType}");
+                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} attempting spawn of '{templateId}' as {room.SpawnType}");
 
                     if (room.SpawnType.Equals("Npc", StringComparison.OrdinalIgnoreCase))
                     {
@@ -132,7 +133,7 @@ namespace MudServer
                         }
 
                         // Extra sanity: log essential template fields
-                        Console.WriteLine($"[Spawner][TRACE] Template '{templateId}' ok: Name='{tmpl.Name}', Level={tmpl.Level ?? 0}, IsHumanoid={tmpl.IsHumanoid}, CS={tmpl.CombatSkill ?? 0}");
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Template '{templateId}' ok: Name='{tmpl.Name}', Level={tmpl.Level ?? 0}, IsHumanoid={tmpl.IsHumanoid}, CS={tmpl.CombatSkill ?? 0}");
 
                         // Create NPC
                         var npc = world.NpcFactory.CreateNpc(templateId, room);
@@ -142,7 +143,7 @@ namespace MudServer
 
                         // Persist core fields including description/humanoid/CS
                         npc.CurrentAreaID = room.AreaID;
-                        Console.WriteLine($"[Spawner][TRACE] NPC {npc.Name} WanderAreas={JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>())} CurrentAreaID={npc.CurrentAreaID}");
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] NPC {npc.Name} WanderAreas={JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>())} CurrentAreaID={npc.CurrentAreaID}");
                         int newId = NpcPersistence.InsertNpc(conn, npc);
                         npc.NpcID = newId;
 
@@ -179,11 +180,11 @@ namespace MudServer
                         if (!world.Npcs.Any(n => n.NpcID == npc.NpcID))
                         {
                             world.Npcs.Add(npc);
-                            Console.WriteLine($"[WORLD][TRACE] NPC added to world list: NpcID={npc.NpcID} Name='{npc.Name}' RoomID={room.RoomID}");
+                            if (useVerboseLogging) Console.WriteLine($"[WORLD][TRACE] NPC added to world list: NpcID={npc.NpcID} Name='{npc.Name}' RoomID={room.RoomID}");
                         }
                         else
                         {
-                            Console.WriteLine($"[WORLD][TRACE] NPC already present in world list: NpcID={npc.NpcID}");
+                            if (useVerboseLogging) Console.WriteLine($"[WORLD][TRACE] NPC already present in world list: NpcID={npc.NpcID}");
                         }
 
                         // Broadcast updated room + spawn message
@@ -218,18 +219,18 @@ namespace MudServer
                         {
                             try
                             {
-                                Console.WriteLine($"[Spawner][TRACE] Creating item from template='{templateId}' for RoomID={room.RoomID}, AreaID={room.AreaID}.");
+                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Creating item from template='{templateId}' for RoomID={room.RoomID}, AreaID={room.AreaID}.");
                                 var item = world.ItemFactory.CreateItem(templateId, "Room", room.RoomID, room.RoomID);
                                 item.OwnerType = "Room";
                                 item.OwnerID = room.RoomID;
                                 item.RoomID = room.RoomID;
                                 item.OwnerAreaID = room.AreaID;
 
-                                Console.WriteLine($"[Spawner][TRACE] Pre-SaveItem: ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}'.");
+                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Pre-SaveItem: ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}'.");
 
                                 ItemPersistence.SaveItem(conn, item);
 
-                                Console.WriteLine($"[Spawner][TRACE] Post-SaveItem: ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}.");
+                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Post-SaveItem: ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}.");
 
                                 if (item.ItemID == 0)
                                 {
@@ -245,7 +246,7 @@ namespace MudServer
                                     verifyCmd.Parameters.AddWithValue("@rid", room.RoomID);
                                     var countObj = verifyCmd.ExecuteScalar();
                                     long count = countObj is long l ? l : Convert.ToInt64(countObj);
-                                    Console.WriteLine($"[Spawner][TRACE] DB verify: Room {room.RoomID} now has {count} item(s) persisted as OwnerType='Room'.");
+                                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] DB verify: Room {room.RoomID} now has {count} item(s) persisted as OwnerType='Room'.");
                                 }
 
                                 RoomPersistence.SaveRoom(conn, room);

@@ -3,6 +3,7 @@ using MudCore.Entities;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Data;
 
 namespace MudPersistence
 {
@@ -11,11 +12,18 @@ namespace MudPersistence
         private static HashSet<string> _playerCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static bool _colsLoaded = false;
 
+        private static void EnsureOpen(SqliteConnection conn)
+        {
+            if (conn.State != ConnectionState.Open)
+                conn.Open();
+        }
+
         private static void EnsureColumns(SqliteConnection conn)
         {
             if (_colsLoaded || conn == null) return;
             try
             {
+                EnsureOpen(conn);
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = "PRAGMA table_info('Player');";
                 using var rdr = cmd.ExecuteReader();
@@ -58,6 +66,7 @@ namespace MudPersistence
         public static void LoadExtendedCombat(SqliteConnection conn, Player player)
         {
             if (conn == null || player == null) return;
+            EnsureOpen(conn);
             EnsureColumns(conn);
 
             var wanted = new List<string>();
@@ -127,6 +136,7 @@ namespace MudPersistence
         public static void SavePlayer(SqliteConnection conn, Player player)
         {
             if (conn == null || player == null) return;
+            EnsureOpen(conn);
             EnsureColumns(conn);
 
             var colAssignments = new List<string>

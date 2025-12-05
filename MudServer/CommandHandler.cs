@@ -225,14 +225,20 @@ namespace MudServer
                     return MudNetworking.MessageHandler.Inventory(invItems);
                 }
 
-                // Add handling for 'wear' command
-                case string s when s.StartsWith("wear ", StringComparison.OrdinalIgnoreCase):
-                {
-                    var partsWear = command.Split(' ', 2);
-                    if (partsWear.Length < 2) return MessageHandler.System("Usage: wear <item name>");
-                    var itemName = partsWear[1].Trim();
-                    return WearItem(player, itemName);
-                }
+                case string s when s.StartsWith("wear", StringComparison.OrdinalIgnoreCase):
+                    {
+                        // Handles: "wear item", "wear   item", "wear\titem"
+                        var trimmed = command.Trim();
+                        var arg = trimmed.Length > 4 ? trimmed.Substring(4).Trim() : "";
+                        if (string.IsNullOrWhiteSpace(arg))
+                            return MessageHandler.System("Usage: wear <item name>");
+                        return WearItem(player, arg);
+                    }
+
+                case string s when s.Equals("wear", StringComparison.OrdinalIgnoreCase):
+                    {
+                        return MessageHandler.System("Usage: wear <item name>");
+                    }
 
                 // Add handling for 'unwear' command
                 case string s when s.StartsWith("unwear ", StringComparison.OrdinalIgnoreCase):
@@ -1002,14 +1008,35 @@ namespace MudServer
                 MudPersistence.ItemPersistence.SaveItem(_dbConnection, old);
             }
 
-            // Add 'Worn' flag to the chosen item
-            if (item.Flags == null) item.Flags = new List<string>();
-            if (!item.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
-                item.Flags.Add("Worn");
-            item.FlagsJson = System.Text.Json.JsonSerializer.Serialize(item.Flags);
+            // Add/Wear: use setter so Item syncs FlagsJson internally
+            var flags = item.Flags ?? new List<string>();
+            if (!flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
+            {
+                flags.Add("Worn");
+            }
+
+            // IMPORTANT: use the setter (not mutating the getter’s list) to keep FlagsJson in sync
+            item.Flags = flags;
+
+            // Pre-save trace to confirm item carries Worn
+            Console.WriteLine($"[WEAR][TRACE] Pre-save Flags list={string.Join(",", item.Flags ?? new List<string>())} FlagsJson={item.FlagsJson ?? "null"}");
 
             // Persist change
             MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
+
+            // Verify persisted Flags
+            try
+            {
+                using var verify = _dbConnection.CreateCommand();
+                verify.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
+                verify.Parameters.AddWithValue("@id", item.ItemID);
+                var flagsText = verify.ExecuteScalar() as string ?? "";
+                Console.WriteLine($"[WEAR][VERIFY] ItemID={item.ItemID} Flags='{flagsText}'");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WEAR][VERIFY][WARN] Failed to verify Flags: {ex.Message}");
+            }
 
             // Recompute effective stats for player (Worn armor contributes)
             MudServer.Combat.UpdateEffectiveStats(player);

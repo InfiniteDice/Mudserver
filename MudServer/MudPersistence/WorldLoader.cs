@@ -5,13 +5,21 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.IO;
+using System.Data;
 
 namespace MudPersistence
 {
     public static class WorldLoader
     {
+        private static void EnsureOpen(SqliteConnection conn)
+        {
+            if (conn.State != ConnectionState.Open)
+                conn.Open();
+        }
+
         public static World LoadFromDatabase(SqliteConnection conn)
         {
+            EnsureOpen(conn);
             World world = LoadWorld(conn);
 
             // Initialize template manager and factory here
@@ -109,6 +117,7 @@ namespace MudPersistence
             // Load persisted NPC instances and associate them with rooms + load their items
             try
             {
+                EnsureOpen(conn);
                 var loadedNpcs = NpcPersistence.LoadAllNpcs(conn, world);
 
                 // Add to world list so World.Tick can iterate them
@@ -149,6 +158,7 @@ namespace MudPersistence
 
         private static World LoadWorld(SqliteConnection conn)
         {
+            EnsureOpen(conn);
             var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT WorldID, Name FROM World LIMIT 1";
 
@@ -165,6 +175,7 @@ namespace MudPersistence
 
         private static List<Area> LoadAreas(SqliteConnection conn, int worldID)
         {
+            EnsureOpen(conn);
             var areas = new List<Area>();
             var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT AreaID, Name, Description, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner FROM Area WHERE WorldID = @wid";
@@ -190,6 +201,7 @@ namespace MudPersistence
 
         private static List<Room> LoadRooms(SqliteConnection conn, int areaID)
         {
+            EnsureOpen(conn);
             var rooms = new List<Room>();
             var cmd = conn.CreateCommand();
             cmd.CommandText = @"

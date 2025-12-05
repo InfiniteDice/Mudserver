@@ -3,17 +3,26 @@ using MudCore.Entities;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Data;
 
 namespace MudPersistence
 {
-    /// <summary>
-    /// Item persistence helpers (insert / update / load by owner).
-    /// NOTE: This class was missing NormalizeOwnerType and LoadItemsByOwner after recent edits;
-    /// they are restored here to fix compilation errors referenced in WorldLoader.
-    /// </summary>
     public static partial class ItemPersistence
     {
-        // Canonicalize OwnerType values ("Room", "Player", "NPC")
+        static bool setVerboseServerLogs = false;
+        private static readonly object DbLock = new();
+        private static bool? hasBaseAcBonus;
+
+        private static void EnsureOpen(SqliteConnection conn)
+        {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (conn.State != ConnectionState.Open)
+            {
+                if (setVerboseServerLogs) Console.WriteLine("[ItemPersistence][TRACE] Connection not open. Opening now...");
+                conn.Open();
+            }
+        }
+
         private static string NormalizeOwnerType(string? ownerType)
         {
             if (string.IsNullOrWhiteSpace(ownerType)) return string.Empty;
@@ -27,140 +36,135 @@ namespace MudPersistence
             };
         }
 
-        // Save or update an item, ensuring OwnerType casing and integer OwnerID/RoomID are persisted correctly.
-        // Add verbose logging inside SaveItem to trace parameters, SQL, and results
-        public static void SaveItem(SqliteConnection conn, Item item)
+        public static void SaveItem(SqliteConnection conn, Item item, SqliteTransaction? tx = null)
         {
             if (conn == null) throw new ArgumentNullException(nameof(conn));
             if (item == null) throw new ArgumentNullException(nameof(item));
 
-            // Normalize OwnerType casing — canonical values: "Room","Player","NPC"
             if (string.Equals(item.OwnerType, "ROOM", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "Room";
             if (string.Equals(item.OwnerType, "PLAYER", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "Player";
             if (string.Equals(item.OwnerType, "NPC", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "NPC";
 
-            // Ensure FlagsJson aligns with Flags list if provided
+            // Only synchronize FlagsJson from Flags when Flags is non-null AND differs
             if (item.Flags != null)
-                item.FlagsJson = JsonSerializer.Serialize(item.Flags);
+            {
+                var serialized = JsonSerializer.Serialize(item.Flags);
+                if (!string.Equals(item.FlagsJson ?? "[]", serialized, StringComparison.Ordinal))
+                {
+                    item.FlagsJson = serialized;
+                }
+            }
 
-            // If not Room, OwnerAreaID should be 0; otherwise keep value
-            // Only force OwnerAreaID=0 if not Room; otherwise leave as provided
             if (!string.Equals(item.OwnerType, "Room", StringComparison.OrdinalIgnoreCase))
             {
                 item.OwnerAreaID = 0;
             }
-            // else: keep item.OwnerAreaID as set by caller (InventoryManager/CommandHandler/RoomSpawner)
 
             try
             {
-                Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}'");
-
-                if (item.ItemID <= 0)
+                lock (DbLock)
                 {
-                    // DEPRECATED: legacy INSERT without OwnerAreaID (left for reference; do not use)
-                    // using var cmdLegacy = new SqliteCommand(
-                    //     @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags)
-                    //       VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags);
-                    //       SELECT last_insert_rowid();", conn);
+                    EnsureOpen(conn);
 
-                    using var cmd = new SqliteCommand(
-                        @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags, OwnerAreaID)
-                          VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags, @ownerarea);
-                          SELECT last_insert_rowid();", conn);
+                    if (!hasBaseAcBonus.HasValue)
+                        hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus");
 
-                    cmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
-                    cmd.Parameters.AddWithValue("@name", item.Name ?? "");
-                    cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "Room");
-                    cmd.Parameters.AddWithValue("@oid", item.OwnerID);   // INTEGER
-                    cmd.Parameters.AddWithValue("@rid", item.RoomID);    // INTEGER
-                    cmd.Parameters.AddWithValue("@value", item.Value);
-                    cmd.Parameters.AddWithValue("@weight", item.Weight);
-                    cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
-                    cmd.Parameters.AddWithValue("@hand", item.HandLoc);
-                    cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
-                    cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
-                    cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
-                    cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
-                    cmd.Parameters.AddWithValue("@cond", item.Condition);
-                    cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
-                    cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
+                    if (setVerboseServerLogs)
+                        Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ConnState={conn.State}, ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}'");
 
-                    Console.WriteLine("[ItemPersistence][TRACE] INSERT parameters: " +
-                        $"template='{item.TemplateID}', name='{item.Name}', otype='{item.OwnerType}', oid={item.OwnerID}, rid={item.RoomID}, ownerarea={item.OwnerAreaID}, value={item.Value}, weight={item.Weight}, wear='{item.WearLoc}', hand={item.HandLoc}, category='{item.ItemCategory}', short='{item.ShortDesc}', long='{item.LongDesc}', creator='{item.Creator}', cond={item.Condition}, flags='{item.FlagsJson}'");
+                    if (item.ItemID <= 0)
+                    {
+                        using var cmd = new SqliteCommand(
+                            @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags, OwnerAreaID"
+                            + (hasBaseAcBonus == true ? ", BaseACBonus" : string.Empty) + @")
+                              VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags, @ownerarea"
+                            + (hasBaseAcBonus == true ? ", @baseac" : string.Empty) + @");
+                              SELECT last_insert_rowid();", conn);
 
-                    long newId = (long)cmd.ExecuteScalar();
-                    item.ItemID = (int)newId;
+                        if (tx != null) cmd.Transaction = tx;
 
-                    Console.WriteLine($"[ItemPersistence][TRACE] INSERT result: ItemID={item.ItemID}");
+                        cmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
+                        cmd.Parameters.AddWithValue("@name", item.Name ?? "");
+                        cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "Room");
+                        cmd.Parameters.AddWithValue("@oid", item.OwnerID);
+                        cmd.Parameters.AddWithValue("@rid", item.RoomID);
+                        cmd.Parameters.AddWithValue("@value", item.Value);
+                        cmd.Parameters.AddWithValue("@weight", item.Weight);
+                        cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
+                        cmd.Parameters.AddWithValue("@hand", item.HandLoc);
+                        cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
+                        cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
+                        cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
+                        cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
+                        cmd.Parameters.AddWithValue("@cond", item.Condition);
+                        cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
+                        if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
+
+                        if (setVerboseServerLogs)
+                        {
+                            Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (INSERT): " + (item.FlagsJson ?? "null"));
+                            Console.WriteLine($"[ItemPersistence][TRACE] INSERT Exec: ConnState={conn.State}");
+                        }
+
+                        long newId = (long)cmd.ExecuteScalar();
+                        item.ItemID = (int)newId;
+
+                        if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] INSERT result: ItemID={item.ItemID}");
+                    }
+                    else
+                    {
+                        using var cmd = new SqliteCommand(
+                            @"UPDATE Item SET
+                                Name = @name,
+                                OwnerType = @otype,
+                                OwnerID = @oid,
+                                RoomID = @rid,
+                                OwnerAreaID = @ownerarea,
+                                Value = @value,
+                                Weight = @weight,
+                                WearLoc = @wear,
+                                HandLoc = @hand,
+                                ItemCategory = @category,
+                                ShortDesc = @short,
+                                LongDesc = @long,
+                                Creator = @creator,
+                                Condition = @cond,
+                                Flags = @flags"
+                            + (hasBaseAcBonus == true ? ", BaseACBonus = @baseac" : string.Empty) + @"
+                            WHERE ItemID = @id;", conn);
+
+                        if (tx != null) cmd.Transaction = tx;
+
+                        cmd.Parameters.AddWithValue("@name", item.Name ?? "");
+                        cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
+                        cmd.Parameters.AddWithValue("@oid", item.OwnerID);
+                        cmd.Parameters.AddWithValue("@rid", item.RoomID);
+                        cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
+                        cmd.Parameters.AddWithValue("@value", item.Value);
+                        cmd.Parameters.AddWithValue("@weight", item.Weight);
+                        cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
+                        cmd.Parameters.AddWithValue("@hand", item.HandLoc);
+                        cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
+                        cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
+                        cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
+                        cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
+                        cmd.Parameters.AddWithValue("@cond", item.Condition);
+                        cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
+                        cmd.Parameters.AddWithValue("@id", item.ItemID);
+
+                        if (setVerboseServerLogs)
+                        {
+                            Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (UPDATE): " + (item.FlagsJson ?? "null"));
+                            Console.WriteLine($"[ItemPersistence][TRACE] UPDATE Exec: ConnState={conn.State}, ItemID={item.ItemID}");
+                        }
+
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] SaveItem END: ConnState={conn.State}, ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}");
                 }
-                else
-                {
-                    // DEPRECATED: legacy UPDATE without OwnerAreaID (left for reference; do not use)
-                    // using var cmdLegacy = new SqliteCommand(
-                    //     @"UPDATE Item SET
-                    //         TemplateID=@template,
-                    //         Name=@name,
-                    //         OwnerType=@otype,
-                    //         OwnerID=@oid,
-                    //         RoomID=@rid,
-                    //         Value=@value,
-                    //         Weight=@weight,
-                    //         WearLoc=@wear,
-                    //         HandLoc=@hand,
-                    //         ItemCategory=@category,
-                    //         ShortDesc=@short,
-                    //         LongDesc=@long,
-                    //         Creator=@creator,
-                    //         Condition=@cond,
-                    //         Flags=@flags
-                    //       WHERE ItemID = @id", conn);
-
-                    using var cmd = new SqliteCommand(
-                        @"UPDATE Item SET
-                    TemplateID=@template,
-                    Name=@name,
-                    OwnerType=@otype,
-                    OwnerID=@oid,
-                    RoomID=@rid,
-                    Value=@value,
-                    Weight=@weight,
-                    WearLoc=@wear,
-                    HandLoc=@hand,
-                    ItemCategory=@category,
-                    ShortDesc=@short,
-                    LongDesc=@long,
-                    Creator=@creator,
-                    Condition=@cond,
-                    Flags=@flags,
-                    OwnerAreaID=@ownerarea
-                  WHERE ItemID = @id", conn);
-
-                    cmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
-                    cmd.Parameters.AddWithValue("@name", item.Name ?? "");
-                    cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "Room");
-                    cmd.Parameters.AddWithValue("@oid", item.OwnerID);
-                    cmd.Parameters.AddWithValue("@rid", item.RoomID);
-                    cmd.Parameters.AddWithValue("@value", item.Value);
-                    cmd.Parameters.AddWithValue("@weight", item.Weight);
-                    cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
-                    cmd.Parameters.AddWithValue("@hand", item.HandLoc);
-                    cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
-                    cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
-                    cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
-                    cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
-                    cmd.Parameters.AddWithValue("@cond", item.Condition);
-                    cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
-                    cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
-                    cmd.Parameters.AddWithValue("@id", item.ItemID);
-
-                    Console.WriteLine("[ItemPersistence][TRACE] UPDATE parameters: " +
-                        $"id={item.ItemID}, template='{item.TemplateID}', name='{item.Name}', otype='{item.OwnerType}', oid={item.OwnerID}, rid={item.RoomID}, ownerarea={item.OwnerAreaID}, value={item.Value}, weight={item.Weight}, wear='{item.WearLoc}', hand={item.HandLoc}, category='{item.ItemCategory}', short='{item.ShortDesc}', long='{item.LongDesc}', creator='{item.Creator}', cond={item.Condition}, flags='{item.FlagsJson}'");
-
-                    var rows = cmd.ExecuteNonQuery();
-                    Console.WriteLine($"[ItemPersistence][TRACE] UPDATE affected rows: {rows}");
-                }
-
-                Console.WriteLine($"[ItemPersistence][TRACE] SaveItem END: ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}");
             }
             catch (SqliteException sx)
             {
@@ -177,72 +181,98 @@ namespace MudPersistence
         public static void DeleteItem(SqliteConnection conn, int itemId)
         {
             if (itemId <= 0) return;
-            using var cmd = new SqliteCommand("DELETE FROM Item WHERE ItemID = @id", conn);
-            cmd.Parameters.AddWithValue("@id", itemId);
-            cmd.ExecuteNonQuery();
+            lock (DbLock)
+            {
+                EnsureOpen(conn);
+                using var cmd = new SqliteCommand("DELETE FROM Item WHERE ItemID = @id", conn);
+                cmd.Parameters.AddWithValue("@id", itemId);
+                cmd.ExecuteNonQuery();
+            }
         }
 
-        /// <summary>
-        /// Load all items owned by (OwnerType, OwnerID).
-        /// Matches the columns currently persisted by SaveItem.
-        /// </summary>
+        private static bool EnsureHasBaseAc(SqliteConnection conn)
+        {
+            if (!hasBaseAcBonus.HasValue) hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus");
+            return hasBaseAcBonus == true;
+        }
+
         public static List<Item> LoadItemsByOwner(SqliteConnection conn, string ownerType, int ownerId)
         {
             var list = new List<Item>();
             if (conn == null) return list;
 
-            var normalized = NormalizeOwnerType(ownerType);
-
-            using var cmd = new SqliteCommand(@"
-                SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
-                       Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
-                       LongDesc, Creator, Condition, Flags
-                FROM Item
-                WHERE OwnerType = @otype AND OwnerID = @oid;", conn);
-
-            cmd.Parameters.AddWithValue("@otype", normalized);
-            cmd.Parameters.AddWithValue("@oid", ownerId);
-
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            lock (DbLock)
             {
-                var it = new Item
-                {
-                    ItemID      = !reader.IsDBNull(0)  ? reader.GetInt32(0)  : 0,
-                    TemplateID  = !reader.IsDBNull(1)  ? reader.GetString(1) : "",
-                    Name        = !reader.IsDBNull(2)  ? reader.GetString(2) : "",
-                    OwnerType   = !reader.IsDBNull(3)  ? reader.GetString(3) : "",
-                    OwnerID     = !reader.IsDBNull(4)  ? reader.GetInt32(4)  : 0,
-                    RoomID      = !reader.IsDBNull(5)  ? reader.GetInt32(5)  : 0,
-                    Value       = !reader.IsDBNull(6)  ? reader.GetInt32(6)  : 0,
-                    Weight      = !reader.IsDBNull(7)  ? reader.GetDouble(7) : 0.0,
-                    WearLoc     = !reader.IsDBNull(8)  ? reader.GetString(8) : "",
-                    HandLoc     = !reader.IsDBNull(9)  ? reader.GetInt32(9)  : 0,
-                    ItemCategory= !reader.IsDBNull(10) ? reader.GetString(10): "",
-                    ShortDesc   = !reader.IsDBNull(11) ? reader.GetString(11): "",
-                    LongDesc    = !reader.IsDBNull(12) ? reader.GetString(12): "",
-                    Creator     = !reader.IsDBNull(13) ? reader.GetString(13): "",
-                    Condition   = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
-                    FlagsJson   = !reader.IsDBNull(15) ? reader.GetString(15): "[]"
-                };
+                EnsureOpen(conn);
+                var normalized = NormalizeOwnerType(ownerType);
+                bool includeBaseAc = EnsureHasBaseAc(conn);
 
-                // Hydrate Flags list from FlagsJson
-                try
+                using var cmd = new SqliteCommand(@"
+                    SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
+                           Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
+                           LongDesc, Creator, Condition, Flags"
+                           + (includeBaseAc ? ", BaseACBonus" : ""), conn);
+
+                cmd.CommandText += " FROM Item WHERE OwnerType = @otype AND OwnerID = @oid;";
+                cmd.Parameters.AddWithValue("@otype", normalized);
+                cmd.Parameters.AddWithValue("@oid", ownerId);
+
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
                 {
-                    it.Flags = JsonSerializer.Deserialize<List<string>>(it.FlagsJson ?? "[]") ?? new List<string>();
+                    var it = new Item
+                    {
+                        ItemID      = !reader.IsDBNull(0)  ? reader.GetInt32(0)  : 0,
+                        TemplateID  = !reader.IsDBNull(1)  ? reader.GetString(1) : "",
+                        Name        = !reader.IsDBNull(2)  ? reader.GetString(2) : "",
+                        OwnerType   = !reader.IsDBNull(3)  ? reader.GetString(3) : "",
+                        OwnerID     = !reader.IsDBNull(4)  ? reader.GetInt32(4)  : 0,
+                        RoomID      = !reader.IsDBNull(5)  ? reader.GetInt32(5)  : 0,
+                        Value       = !reader.IsDBNull(6)  ? reader.GetInt32(6)  : 0,
+                        Weight      = !reader.IsDBNull(7)  ? reader.GetDouble(7) : 0.0,
+                        WearLoc     = !reader.IsDBNull(8)  ? reader.GetString(8) : "",
+                        HandLoc     = !reader.IsDBNull(9)  ? reader.GetInt32(9)  : 0,
+                        ItemCategory= !reader.IsDBNull(10) ? reader.GetString(10): "",
+                        ShortDesc   = !reader.IsDBNull(11) ? reader.GetString(11): "",
+                        LongDesc    = !reader.IsDBNull(12) ? reader.GetString(12): "",
+                        Creator     = !reader.IsDBNull(13) ? reader.GetString(13): "",
+                        Condition   = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
+                        FlagsJson   = !reader.IsDBNull(15) ? reader.GetString(15): "[]"
+                    };
+
+                    if (includeBaseAc)
+                    {
+                        int baseAcOrd = 16; // after Flags
+                        if (!reader.IsDBNull(baseAcOrd))
+                            it.BaseACBonus = reader.GetDouble(baseAcOrd);
+                    }
+
+                    try
+                    {
+                        it.Flags = JsonSerializer.Deserialize<List<string>>(it.FlagsJson ?? "[]") ?? new List<string>();
+                    }
+                    catch { it.Flags = new List<string>(); }
+
+                    it.OwnerType = NormalizeOwnerType(it.OwnerType);
+                    list.Add(it);
                 }
-                catch
-                {
-                    it.Flags = new List<string>();
-                }
-
-                // Normalize OwnerType casing
-                it.OwnerType = NormalizeOwnerType(it.OwnerType);
-
-                list.Add(it);
             }
-
             return list;
+        }
+
+        private static bool TryHasColumn(SqliteConnection conn, string column)
+        {
+            EnsureOpen(conn);
+            using var c = conn.CreateCommand();
+            c.CommandText = "PRAGMA table_info(Item);";
+            using var r = c.ExecuteReader();
+            while (r.Read())
+            {
+                var name = r.GetString(1);
+                if (string.Equals(name, column, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
     }
 }

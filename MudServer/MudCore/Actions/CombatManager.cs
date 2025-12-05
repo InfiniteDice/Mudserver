@@ -94,7 +94,7 @@ namespace MudServer
                     Console.WriteLine($"[COMBAT] State {state.Id} created in Room {room.RoomID}. TeamA=[{pA.DisplayName}] TeamB=[{pD.DisplayName}]");
 
                 var msg = PerformImmediateAttack(attacker, defender, world, conn);
-                BroadcastSystem(room, $"{attacker.Name} engages {defender.DisplayName}!");
+                Combat.Messaging.Engage(attacker.CurrentRoom, attacker, defender);
                 return msg ?? MessageHandler.System($"{attacker.Name} engages {defender.DisplayName}!");
             }
             else
@@ -181,7 +181,7 @@ namespace MudServer
             if (DebugCombat)
                 Console.WriteLine($"[COMBAT] Assist: {joiner.Name} joined Team{desiredTeam.Id} in State={state.Id} (target={GetEntityName(targetEntity)})");
 
-            BroadcastSystem(room, $"{joiner.Name} joins the combat!");
+            Combat.Messaging.Assist(room, joiner, targetPlayer != null ? targetPlayer.Name : GetEntityName(targetEntity), assistingPlayer: targetPlayer != null);
 
             // Provide personal confirmation
             string perspective = targetPlayer != null
@@ -335,20 +335,22 @@ namespace MudServer
                 // Record last hitter for defender
                 defender.LastHitByEntity = attacker.Entity;
 
-                string attackTextAttacker = $"You attack {defender.DisplayName}, {defender.DisplayName} takes {Math.Round(dmg,1)}. ({defender.CurrentHealth}/{defender.MaxHealth})";
-                string attackTextDefender = $"{attacker.DisplayName} hits you for {Math.Round(dmg,1)}. ({defender.CurrentHealth}/{defender.MaxHealth})";
-                string attackTextOthers = $"{attacker.DisplayName} attacks {defender.DisplayName} for {Math.Round(dmg,1)}.";
+                // Replace attacker/defender/others texts and send loops
+                var defName = defender.DisplayName;
+                var atkName = attacker.DisplayName;
+                var defCurr = defender.CurrentHealth;
+                var defMax = defender.MaxHealth;
 
-                // Send messages
-                foreach (var roomPlayer in state.Room.Players)
-                {
-                    if (roomPlayer == attacker.AsPlayer)
-                        MessageHandler.SendSystem(roomPlayer, attackTextAttacker);
-                    else if (roomPlayer == defender.AsPlayer)
-                        MessageHandler.SendSystem(roomPlayer, attackTextDefender);
-                    else
-                        MessageHandler.SendSystem(roomPlayer, attackTextOthers);
-                }
+                Combat.Messaging.Attack(state.Room,
+                    attacker.AsPlayer,
+                    atkName,
+                    defName,
+                    dmg,
+                    defCurr,
+                    defMax,
+                    defender.AsPlayer);
+
+
 
                 if (DebugCombat)
                 {
@@ -362,7 +364,15 @@ namespace MudServer
                 if (!defender.IsPlayer && defender.AsNpc != null && defender.AsNpc.Health <= 0)
                 {
                     if (DebugCombat) Console.WriteLine($"[COMBAT] Death NPC {defender.DisplayName}");
-                    CombatManager_EndNpc(state, attackers, attacker.AsPlayer ?? state.Room.Players.FirstOrDefault(), defender.AsNpc, world, conn);
+
+                    var winners = attackers.Members
+                        .Where(m => m.IsPlayer && m.AsPlayer != null && m.Alive && m.AsPlayer.CurrentRoom == state.Room)
+                        .Select(m => m.AsPlayer!)
+                        .ToList();
+
+                    // Route to central Combat.HandleNpcDeath with contributors and the 'world' parameter
+                    Combat.HandleNpcDeath(attacker.AsPlayer ?? state.Room.Players.FirstOrDefault(), defender.AsNpc, world, conn, winners);
+
                     defenders.Members.Remove(defender);
                     break;
                 }
@@ -370,7 +380,7 @@ namespace MudServer
                 // Player KO handling
                 if (defender.IsPlayer && defender.AsPlayer != null && defender.AsPlayer.Health <= 0)
                 {
-                    MessageHandler.SendSystem(defender.AsPlayer, $"You have been killed by {attacker.DisplayName}.");
+                    Combat.Messaging.PlayerKo(defender.AsPlayer, attacker.DisplayName);
                     if (DebugCombat) Console.WriteLine($"[COMBAT] Player KO {defender.DisplayName}");
                     defenders.Members.Remove(defender);
                     break;
@@ -470,97 +480,101 @@ namespace MudServer
         }
 
         // NEW: end NPC with team share for combat skill awards
-        private static void CombatManager_EndNpc(CombatState state, CombatTeam winningTeam, Player killer, Npc npc, World world, SqliteConnection conn)
-        {
-            var room = npc.CurrentRoom;
-            if (room == null)
-            {
-                world.Npcs.Remove(npc);
-                try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
-                return;
-            }
+//        private static void CombatManager_EndNpc(CombatState state, CombatTeam winningTeam, Player killer, Npc npc, World world, SqliteConnection conn)
+//        {
+//            var room = npc.CurrentRoom;
+//            if (room == null)
+//            {
+//                world.Npcs.Remove(npc);
+//                try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
+//                return;
+//            }
 
-            // Drops (unchanged)
-            if (npc.Inventory != null && npc.Inventory.Count > 0)
-            {
-                foreach (var it in npc.Inventory)
-                {
-                    it.OwnerType = "Room";
-                    it.OwnerID = room.RoomID;
-                    it.RoomID = room.RoomID;
+//            // Drops (unchanged)
+//            if (npc.Inventory != null && npc.Inventory.Count > 0)
+//            {
+//                foreach (var it in npc.Inventory)
+//                {
+//                    it.OwnerType = "Room";
+//                    it.OwnerID = room.RoomID;
+//                    it.RoomID = room.RoomID;
 
-                    try { if (conn != null) ItemPersistence.SaveItem(conn, it); } catch (Exception ex) { Console.WriteLine($"[COMBAT] Item drop persist failed: {ex.Message}"); }
+//                    try { if (conn != null) ItemPersistence.SaveItem(conn, it); } catch (Exception ex) { Console.WriteLine($"[COMBAT] Item drop persist failed: {ex.Message}"); }
 
-                    if (!room.Inventory.Contains(it))
-                        room.Inventory.Add(it);
-                }
+//                    if (!room.Inventory.Contains(it))
+//                        room.Inventory.Add(it);
+//                }
 
-                room.IsDirty = true;
-                try { if (conn != null) RoomPersistence.SaveRoom(conn, room); } catch { }
-            }
+//                room.IsDirty = true;
+//                try { if (conn != null) RoomPersistence.SaveRoom(conn, room); } catch { }
+//            }
 
-            // XP award (unchanged baseline)
-            double mass = npc.Mass ?? 85.0;
-            double vSkill = npc.CombatSkill ?? 50.0;
-            int xpGain = (int)Math.Round(mass * vSkill);
-            if (killer != null)
-            {
-                killer.Experience += xpGain;
-                try { if (conn != null) PlayerPersistence.SavePlayer(conn, killer); } catch { }
-            }
+//            // XP award (unchanged baseline)
+//            double mass = npc.Mass ?? 85.0;
+//            double vSkill = npc.CombatSkill ?? 50.0;
+//            int xpGain = (int)Math.Round(mass * vSkill);
+//            if (killer != null)
+//            {
+//                killer.Experience += xpGain;
+//                try { if (conn != null) PlayerPersistence.SavePlayer(conn, killer); } catch { }
+//            }
 
-            // NEW: Combat skill base award (victim-based)
-            double victimCs = npc.CombatSkill ?? 1.0;
-            int victimLvl = npc.Level ?? 1;
-            int victimSize = npc.SizeEnum ?? 4;
-            double baseAward = victimCs * victimLvl * victimSize * Combat.CombatSkillScalar;
+//            // NEW: Combat skill base award (victim-based)
+//            double victimCs = npc.CombatSkill ?? 1.0;
+//            int victimLvl = npc.Level ?? 1;
+//            int victimSize = npc.SizeEnum ?? 4;
+//            double baseAward = victimCs * victimLvl * victimSize * Combat.CombatSkillScalar;
 
-            // Team share: collect players on winning team (alive, in room)
-            var winners = winningTeam.Members
-                .Where(m => m.IsPlayer && m.AsPlayer != null && m.Alive && m.AsPlayer.CurrentRoom == room)
-                .Select(m => m.AsPlayer!)
-                .ToList();
+//            // Team share: collect players on winning team (alive, in room)
+//            var winners = winningTeam.Members
+//                .Where(m => m.IsPlayer && m.AsPlayer != null && m.Alive && m.AsPlayer.CurrentRoom == room)
+//                .Select(m => m.AsPlayer!)
+//                .ToList();
 
-            if (winners.Count == 0 && killer != null)
-            {
-                winners = new List<Player> { killer };
-            }
+//            if (winners.Count == 0 && killer != null)
+//            {
+//                winners = new List<Player> { killer };
+//            }
 
-            int totalLevels = Math.Max(1, winners.Sum(p => Math.Max(1, p.Level)));
-            foreach (var p in winners)
-            {
-                var share = (double)Math.Max(1, p.Level) / totalLevels;
-                var award = baseAward * share;
+//            int totalLevels = Math.Max(1, winners.Sum(p => Math.Max(1, p.Level)));
+//            foreach (var p in winners)
+//            {
+//                var share = (double)Math.Max(1, p.Level) / totalLevels;
+//                var award = baseAward * share;
 
-                p.CombatSkill += award;
-                Combat.UpdateEffectiveStats(p);
-                try { if (conn != null) PlayerPersistence.SavePlayer(conn, p); } catch { }
+//                p.CombatSkill += award;
+//                Combat.UpdateEffectiveStats(p);
+//                try { if (conn != null) PlayerPersistence.SavePlayer(conn, p); } catch { }
 
-                // Notify the player of skill increase
-                var suffix = winners.Count > 1 ? " (team share)" : "";
-                MessageHandler.SendSystem(p, $"+{award:F3} Combat Skill{suffix}");
-            }
+//                // Notify the player of skill increase
+//                var suffix = winners.Count > 1 ? " (team share)" : "";
+//                MessageHandler.SendSystem(p, $"+{award:F3} Combat Skill{suffix}");
+//            }
 
-            // Remove NPC and delete from DB
-            room.Npcs.Remove(npc);
-            world.Npcs.Remove(npc);
-            try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
+//            // Remove NPC and delete from DB
+//            room.Npcs.Remove(npc);
+//            world.Npcs.Remove(npc);
+//            try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
 
-            foreach (var p in room.Players)
-            {
-                if (killer != null && p == killer) MessageHandler.SendSystem(p, $"You killed {npc.DisplayName}! (+{xpGain} XP)");
-                else MessageHandler.SendSystem(p, $"{npc.DisplayName} has been killed.");
-            }
+//            foreach (var p in room.Players)
+//            {
+//                if (killer != null && p == killer) MessageHandler.SendSystem(p, $"You killed {npc.DisplayName}! (+{xpGain} XP)");
+//                else MessageHandler.SendSystem(p, $"{npc.DisplayName} has been killed.");
+//            }
 
-            foreach (var p in room.Players)
-            {
-                p.PendingMessageQueue.Add(MessageHandler.Room(
-                    room,
-                    room.Npcs.Select(n => n.DisplayName).ToList(),
-                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-                    world));
-            }
-        }
+//            foreach (var p in room.Players)
+//            {
+//                p.PendingMessageQueue.Add(MessageHandler.Room(
+//                    room,
+//                    room.Npcs.Select(n => n.DisplayName).ToList(),
+//                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+//                    world));
+//            }
+
+//            // after computing xpGain and baseAward per player and updating states,
+//// replace the foreach that sends "+XP" kill messages:
+//Combat.Messaging.NpcDeath(room, killer, npc, xpGain, baseAward, includeCs: true);
+//        }
 
         // Phase 1 immediate attack helper (updated to solo CS award fallback through new method)
         private static Message? PerformImmediateAttack(Player attacker, Npc defender, World world, SqliteConnection conn)
@@ -581,22 +595,10 @@ namespace MudServer
             if (defender.Health <= 0)
             {
                 if (DebugCombat) Console.WriteLine($"[COMBAT] ImmediateAttack(death) → {defender.DisplayName} died.");
-                // No state/teams yet, treat as solo killer for CS award
-                // Build a temporary team with the attacker only
-                var tempState = new CombatState { RoomID = attacker.CurrentRoom.RoomID, Room = attacker.CurrentRoom };
-                var tempTeam = new CombatTeam { Id = 0 };
-                tempTeam.Members.Add(new CombatParticipant
-                {
-                    Entity = attacker,
-                    IsPlayer = true,
-                    AsPlayer = attacker,
-                    SizeEnum = attacker.SizeEnum,
-                    EffMass = attacker.EffMass,
-                    EffCombatSkill = attacker.EffCombatSkill,
-                    EffDmgDice = attacker.EffDmgDice,
-                    EffArmorClass = attacker.EffArmorClass
-                });
-                CombatManager_EndNpc(tempState, tempTeam, attacker, defender, world, conn);
+
+                // Solo kill path: contributors = attacker only
+                var soloContributors = new List<Player> { attacker };
+                Combat.HandleNpcDeath(attacker, defender, world, conn, soloContributors);
             }
             return MessageHandler.System(msg);
         }
@@ -684,83 +686,7 @@ namespace MudServer
             if (DebugCombat) Console.WriteLine($"[COMBAT] End State={state.Id} Reason={reason}");
         }
 
-        //DEPRECATED// Legacy solo NPC end handler kept for history; team-share version above is used.
-        //private static void CombatManager_EndNpc(Player killer, Npc npc, World world, SqliteConnection conn)
-        //{
-        //    var room = npc.CurrentRoom;
-        //    if (room == null)
-        //    {
-        //        world.Npcs.Remove(npc);
-        //        try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
-        //        return;
-        //    }
-        //
-        //    // Persist dropped items with verification
-        //    if (npc.Inventory != null && npc.Inventory.Count > 0)
-        //    {
-        //        foreach (var it in npc.Inventory)
-        //        {
-        //            it.OwnerType = "Room";
-        //            it.OwnerID = room.RoomID;
-        //            it.RoomID = room.RoomID;
-        //
-        //            try
-        //            {
-        //                if (conn != null)
-        //                {
-        //                    ItemPersistence.SaveItem(conn, it);
-        //                    if (it.ItemID == 0)
-        //                        Console.WriteLine($"[COMBAT][ERROR] Item drop persist failed (TemplateID='{it.TemplateID}', Name='{it.Name}', RoomID={room.RoomID}).");
-        //                }
-        //                else
-        //                {
-        //                    Console.WriteLine("[COMBAT][WARN] No DB connection provided; dropped item not persisted.");
-        //                }
-        //            }
-        //            catch (Exception ex)
-        //            {
-        //                Console.WriteLine($"[COMBAT] Item drop persist failed: {ex.Message}");
-        //            }
-        //
-        //            if (!room.Inventory.Contains(it))
-        //                room.Inventory.Add(it);
-        //        }
-        //
-        //        room.IsDirty = true;
-        //        try { if (conn != null) RoomPersistence.SaveRoom(conn, room); } catch { }
-        //    }
-        //
-        //    // Award XP
-        //    double mass = npc.Mass ?? 85.0;
-        //    int skill = npc.CombatSkill ?? 50;
-        //    int xpGain = (int)Math.Round(mass * skill);
-        //    if (killer != null)
-        //    {
-        //        killer.Experience += xpGain;
-        //        try { if (conn != null) PlayerPersistence.SavePlayer(conn, killer); } catch { }
-        //    }
-        //
-        //    // Remove NPC and delete from DB
-        //    room.Npcs.Remove(npc);
-        //    world.Npcs.Remove(npc);
-        //    try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
-        //
-        //    foreach (var p in room.Players)
-        //    {
-        //        if (killer != null && p == killer) MessageHandler.SendSystem(p, $"You killed {npc.DisplayName}! (+{xpGain} XP)");
-        //        else MessageHandler.SendSystem(p, $"{npc.DisplayName} has been killed.");
-        //    }
-        //
-        //    foreach (var p in room.Players)
-        //    {
-        //        p.PendingMessageQueue.Add(MessageHandler.Room(
-        //            room,
-        //            room.Npcs.Select(n => n.DisplayName).ToList(),
-        //            room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-        //            world));
-        //    }
-        //}
-
+        
         private static void BroadcastSystem(Room room, string text)
         {
             foreach (var p in room.Players)
@@ -772,6 +698,19 @@ namespace MudServer
             if (e is Player pl) return pl.Name;
             if (e is Npc npc) return npc.DisplayName;
             return "Unknown";
+        }
+
+        // Query: is this entity currently in an active combat state?
+        public static bool IsEntityInCombat(object entity)
+        {
+            foreach (var kvp in _activeByRoom)
+            {
+                var state = kvp.Value;
+                if (!state.Active) continue;
+                if (state.ContainsEntity(entity))
+                    return true;
+            }
+            return false;
         }
     }
 }

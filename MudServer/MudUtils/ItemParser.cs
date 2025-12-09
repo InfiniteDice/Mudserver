@@ -196,15 +196,14 @@ namespace MudServer.MudUtils
 
         private static bool IsWorn(Item it)
         {
-            return HasFlag(it, "Worn") || !string.IsNullOrEmpty(it.WearLoc);
+            // Only treat actual runtime 'Worn' flag as worn; do not treat WearLoc template as runtime state.
+            return HasFlag(it, "Worn");
         }
 
         private static bool IsHeld(Item it)
         {
-            // Treat non-zero HandLoc or "Held" flag as held; also common for weapons
-            return HasFlag(it, "Held") ||
-                   (it.ItemCategory?.Equals("Weapon", StringComparison.OrdinalIgnoreCase) == true && it.HandLoc != 0) ||
-                   it.HandLoc != 0;
+            // Only treat runtime Held flag as held. Do NOT use HandLoc/template to infer runtime state.
+            return HasFlag(it, "Held");
         }
 
         private static string SafeName(Item it)

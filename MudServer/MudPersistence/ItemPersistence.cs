@@ -251,7 +251,15 @@ namespace MudPersistence
                     {
                         it.Flags = JsonSerializer.Deserialize<List<string>>(it.FlagsJson ?? "[]") ?? new List<string>();
                     }
-                    catch { it.Flags = new List<string>(); }
+                    catch
+                    {
+                        it.Flags = new List<string>();
+                    }
+
+                    // IMPORTANT: Do NOT infer Held/Worn from template fields here.
+                    // The database is the source of truth for runtime flags (Flags/FlagsJson).
+                    // If FlagsJson is empty, leave Flags empty so items are not treated as held/worn
+                    // unless persisted by gameplay actions.
 
                     it.OwnerType = NormalizeOwnerType(it.OwnerType);
                     list.Add(it);

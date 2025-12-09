@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using MudServer.MudUtils; // <- added
 
 namespace MudServer
 {
@@ -68,8 +69,9 @@ namespace MudServer
                 return DropItem(player, itemName);
             }
 
-            if (IsValidDirection(command))
-                return Move(player, command);
+            var normalized = NormalizeCommandAlias(command);
+            if (IsValidDirection(normalized))
+                return Move(player, normalized);
 
             // Handle 'say' command (delegated to Chat for centralization)
             if (command.StartsWith("say ", StringComparison.OrdinalIgnoreCase))
@@ -204,25 +206,31 @@ namespace MudServer
                 case string s when s.Equals("inventory", StringComparison.OrdinalIgnoreCase) ||
                                   s.Equals("inv", StringComparison.OrdinalIgnoreCase):
                 {
-                    var invItems = player.Inventory?.Select(i =>
-                    {
-                        bool isWorn = (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
-                                      || (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0);
-
-                        return new MudNetworking.InventoryItem
+                        var invItems = player.Inventory?.Select(i =>
                         {
-                            Name = i.Name ?? "",
-                            Weight = i.Weight,
-                            Condition = i.Condition,
-                            ItemCategory = i.ItemCategory ?? "",
-                            ShortDesc = i.ShortDesc ?? "",
-                            // NEW fields:
-                            WearLoc = i.WearLoc ?? "",
-                            IsWorn = isWorn
-                        };
-                    }).ToList() ?? new List<MudNetworking.InventoryItem>();
+                            bool isWorn = (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
+                                          || (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0);
 
-                    return MudNetworking.MessageHandler.Inventory(invItems);
+                            // Use runtime-held detection helper (checks Flags/FlagsJson) so template HandLoc doesn't imply held.
+                            bool isHeld = IsRuntimeHeld(i);
+
+                            return new MudNetworking.InventoryItem
+                            {
+                                Name = i.Name ?? "",
+                                Weight = i.Weight,
+                                Condition = i.Condition,
+                                ItemCategory = i.ItemCategory ?? "",
+                                ShortDesc = i.ShortDesc ?? "",
+                                // NEW fields:
+                                WearLoc = i.WearLoc ?? "",
+                                IsWorn = isWorn,
+                                // NEW: expose runtime held state and send handLoc only when runtime-held
+                                IsHeld = isHeld,
+                                HandLoc = isHeld ? i.HandLoc : 0
+                            };
+                        }).ToList() ?? new List<MudNetworking.InventoryItem>();
+
+                        return MudNetworking.MessageHandler.Inventory(invItems);
                 }
 
                 case string s when s.StartsWith("wear", StringComparison.OrdinalIgnoreCase):
@@ -240,14 +248,53 @@ namespace MudServer
                         return MessageHandler.System("Usage: wear <item name>");
                     }
 
-                // Add handling for 'unwear' command
-                case string s when s.StartsWith("unwear ", StringComparison.OrdinalIgnoreCase):
+                
+
+                // handle unwear <arg>
+                case string s when s.StartsWith("unwear", StringComparison.OrdinalIgnoreCase):
                 {
                     var partsUnwear = command.Split(' ', 2);
                     if (partsUnwear.Length < 2) return MessageHandler.System("Usage: unwear <item name or wearloc>");
                     var arg = partsUnwear[1].Trim();
                     return UnwearItem(player, arg);
                 }
+
+                // Add handling for 'unwear' command
+                case string s when s.Equals("unwear", StringComparison.OrdinalIgnoreCase):
+                    {
+                        return MessageHandler.System("Usage: unwear <item name or wearloc>");
+                    }
+
+                case string s when s.StartsWith("hold", StringComparison.OrdinalIgnoreCase):
+                {
+                    // Handles: "hold item", "hold   item", "hold\titem"
+                    var trimmed = command.Trim();
+                    var arg = trimmed.Length > 4 ? trimmed.Substring(4).Trim() : "";
+                    if (string.IsNullOrWhiteSpace(arg))
+                        return MessageHandler.System("Usage: hold <item name>");
+                    return HoldItem(player, arg);
+                }
+
+                case string s when s.Equals("hold", StringComparison.OrdinalIgnoreCase):
+                {
+                    return MessageHandler.System("Usage: hold <item name>");
+                }
+
+                
+
+                // handle unhold <arg>
+                case string s when s.StartsWith("unhold", StringComparison.OrdinalIgnoreCase):
+                {
+                    var partsUnhold = command.Split(' ', 2);
+                    if (partsUnhold.Length < 2) return MessageHandler.System("Usage: unhold <item name or hand>");
+                    var arg = partsUnhold[1].Trim();
+                    return UnholdItem(player, arg);
+                }
+
+                case string s when s.Equals("unhold", StringComparison.OrdinalIgnoreCase):
+                    {
+                        return MessageHandler.System("Usage: unhold <item name or hand>");
+                    }
 
                 // ADD new case inside the main switch (near attack case)
                 case "assist":
@@ -306,54 +353,89 @@ namespace MudServer
             if (player.Inventory == null || player.Inventory.Count == 0)
                 return MessageHandler.System("You carry nothing edible.");
 
-            // Find candidate items (Food category)
-            var candidates = player.Inventory
-                .Where(i => i.ItemCategory != null &&
-                            i.ItemCategory.Equals("Food", StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            // Try ItemParser first for deterministic resolution within player's inventory
+            var parse = ItemParser.ResolveForInventoryCommand(player, requested);
+            Item? item = null;
 
-            if (candidates.Count == 0)
-                return MessageHandler.System("You have no food items.");
-
-            // Exact match by name or template id first
-            var item = candidates.FirstOrDefault(i =>
-                i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase) ||
-                i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase));
-
-            // Fallback startswith
-            if (item == null)
+            if (parse.Winner != null && string.Equals(parse.Winner.ItemCategory, "Food", StringComparison.OrdinalIgnoreCase))
             {
-                item = candidates.FirstOrDefault(i =>
-                    i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase));
+                // Find the matching instance in the player's inventory (match by ItemID or template/name)
+                item = player.Inventory.FirstOrDefault(i =>
+                    i != null && (i.ItemID == parse.Winner.ItemID ||
+                                  (!string.IsNullOrEmpty(i.TemplateID) && !string.IsNullOrEmpty(parse.Winner.TemplateID) && i.TemplateID == parse.Winner.TemplateID) ||
+                                  (!string.IsNullOrEmpty(i.Name) && !string.IsNullOrEmpty(parse.Winner.Name) && string.Equals(i.Name, parse.Winner.Name, StringComparison.OrdinalIgnoreCase)))
+                );
             }
 
+            // Fallback: existing category-based search (keeps UX if parser didn't pick a winner)
             if (item == null)
-                return MessageHandler.System($"No food item matches '{requested}'.");
+            {
+                var candidates = player.Inventory
+                    .Where(i => i.ItemCategory != null && i.ItemCategory.Equals("Food", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
 
-            // Compute heal if flag present
-            bool canHeal = (item.Flags != null &&
-                            item.Flags.Any(f => f.Equals("Heal", StringComparison.OrdinalIgnoreCase)));
+                if (candidates.Count == 0)
+                    return MessageHandler.System("You have no food items.");
 
-            int healAmount = 0;
+                // Try exact/template match first
+                item = candidates.FirstOrDefault(i =>
+                    (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase)));
+
+                // Fallback startswith
+                if (item == null)
+                    item = candidates.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase));
+
+                if (item == null)
+                    return MessageHandler.System($"No food item matches '{requested}'.");
+            }
+
+            // Determine if item carries Heal flag
+            bool canHeal = (item.Flags != null && item.Flags.Any(f => f.Equals("Heal", StringComparison.OrdinalIgnoreCase)));
+
+            int proposedHeal = 0;
+            int appliedHeal = 0;
+
             if (canHeal)
             {
-                double w = item.Weight <= 0 ? 0.02 : item.Weight; // tiny default weight if zero
-                healAmount = (int)Math.Ceiling(w * 50.0);
-                if (healAmount < 1) healAmount = 1;
-                int oldHealth = player.Health;
-                player.Health = Math.Min(player.Health + healAmount, player.MaxHealth);
-                healAmount = player.Health - oldHealth; // actual applied
+                // Delegate numeric computation to Effects (pure logic)
+                proposedHeal = Effects.ComputeHealAmount(item, Effects.HealSource.Food);
+                appliedHeal = Effects.ComputeAppliedHeal(player, proposedHeal);
+
+                // Apply the computed (clamped) heal to the player
+                if (appliedHeal > 0)
+                    player.Health = Math.Min(player.MaxHealth, player.Health + appliedHeal);
             }
 
             // Remove item from inventory & persist removal
-            player.Inventory.Remove(item);
-            ItemPersistence.DeleteItem(_dbConnection, item.ItemID);
+            if (player.Inventory.Contains(item))
+                player.Inventory.Remove(item);
+
+            try
+            {
+                ItemPersistence.DeleteItem(_dbConnection, item.ItemID);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[EAT] Failed to delete item {item.ItemID}: {ex.Message}");
+            }
 
             string msg = $"You eat {item.Name}.";
-            if (canHeal && healAmount > 0)
-                msg += $" You feel better (+{healAmount} HP).";
+            if (canHeal && appliedHeal > 0)
+                msg += $" You feel better (+{appliedHeal} HP).";
 
-            // Persist player health immediately
+            // Persist player health immediately (centralized helper)
+            PersistPlayerHealth(player);
+
+            return MessageHandler.System(msg);
+        }
+
+        // Persist player's current Health to the database.
+        // Centralized so future health updates (spells, regen, effects) reuse the same logic and logging.
+        private void PersistPlayerHealth(Player player)
+        {
+            if (player == null) return;
+
             try
             {
                 using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
@@ -364,10 +446,22 @@ namespace MudServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PLAYER] Failed to persist health for {player.Name} (ID {player.DbPlayerID}): {ex.Message}");
+                Console.WriteLine($"[PLAYER] Failed to persist health for {player?.Name} (ID {player?.DbPlayerID}): {ex.Message}");
             }
 
-            return MessageHandler.System(msg);
+            // Load latest persisted combat/experience fields (do this so XP saved in DB by other flows is reflected)
+            try
+            {
+                PlayerPersistence.LoadExtendedCombat(_dbConnection, player);
+            }
+            catch { }
+
+            // Notify client with authoritative values (health + xp + carried items)
+            try
+            {
+                MessageHandler.EnqueuePlayerUpdate(player);
+            }
+            catch { }
         }
 
         private Message? Look(Player player)
@@ -397,14 +491,14 @@ namespace MudServer
             {
                 if (parts.Length < 2)
                     return MessageHandler.System("Usage: move <direction>");
-                dir = parts[1].Trim().ToUpper();
+                dir = NormalizeCommandAlias(parts[1].Trim()).ToUpper();
             }
             else
             {
-                dir = rawCommand.Trim().ToUpper();
+                dir = NormalizeCommandAlias(rawCommand.Trim()).ToUpper();
             }
 
-            return Movement.AttemptMove(player, dir, _world, _dbConnection); // UPDATED
+            return Movement.AttemptMove(player, dir, _world, _dbConnection);
         }
 
 
@@ -416,8 +510,30 @@ namespace MudServer
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
 
-            // Use InventoryManager to find matches
-            var matches = InventoryManager.FindRoomMatches(room, requested);
+            // Prefer ItemParser resolution but preserve existing multi-match UX.
+            var parseRes = ItemParser.ResolveForGet(player, requested);
+            List<Item> matches;
+
+            if (parseRes.Winner != null)
+            {
+                // collect all room items that match the resolved winner (template/name/id)
+                matches = room.Inventory
+                    .Where(i => i != null && (
+                        i.ItemID == parseRes.Winner.ItemID ||
+                        (!string.IsNullOrEmpty(i.TemplateID) && !string.IsNullOrEmpty(parseRes.Winner.TemplateID) && i.TemplateID == parseRes.Winner.TemplateID) ||
+                        (!string.IsNullOrEmpty(i.Name) && !string.IsNullOrEmpty(parseRes.Winner.Name) && string.Equals(i.Name, parseRes.Winner.Name, StringComparison.OrdinalIgnoreCase))
+                    ))
+                    .ToList();
+
+                // If parser returned a winner but we couldn't map to items (unexpected), fall back to InventoryManager
+                if (matches.Count == 0)
+                    matches = InventoryManager.FindRoomMatches(room, requested);
+            }
+            else
+            {
+                // No deterministic winner from parser, fall back to current logic (preserves prompts)
+                matches = InventoryManager.FindRoomMatches(room, requested);
+            }
 
             if (matches.Count == 0)
                 return MessageHandler.System($"No '{requested}' found in this room.");
@@ -467,22 +583,79 @@ namespace MudServer
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
 
-            // Find matches in player's inventory
-            var matches = player.Inventory
-                .Where(i => i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)
-                         || i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            // Prefer ItemParser for inventory resolution; still preserve multi-match UX.
+            var parseRes = ItemParser.ResolveForInventoryCommand(player, requested);
+            List<Item> matches;
 
-            if (matches.Count == 0)
+            if (parseRes.Winner != null)
             {
-                // try partial
+                // collect all carried items that match the resolved winner (template/name/id)
                 matches = player.Inventory
-                    .Where(i => i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
+                    .Where(i => i != null && (
+                        i.ItemID == parseRes.Winner.ItemID ||
+                        (!string.IsNullOrEmpty(i.TemplateID) && !string.IsNullOrEmpty(parseRes.Winner.TemplateID) && i.TemplateID == parseRes.Winner.TemplateID) ||
+                        (!string.IsNullOrEmpty(i.Name) && !string.IsNullOrEmpty(parseRes.Winner.Name) && string.Equals(i.Name, parseRes.Winner.Name, StringComparison.OrdinalIgnoreCase))
+                    ))
                     .ToList();
+
+                if (matches.Count == 0)
+                {
+                    // unexpected - fallback to naive name/template matching
+                    matches = player.Inventory
+                        .Where(i => i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)
+                                 || i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    if (matches.Count == 0)
+                    {
+                        matches = player.Inventory
+                            .Where(i => i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                    }
+                }
+            }
+            else
+            {
+                // Parser did not determine a winner -> use the existing behavior
+                matches = player.Inventory
+                    .Where(i => i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)
+                             || i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (matches.Count == 0)
+                {
+                    // try partial
+                    matches = player.Inventory
+                        .Where(i => i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                }
             }
 
             if (matches.Count == 0)
                 return MessageHandler.System($"You are not carrying '{requested}'.");
+
+            // Use runtime flags for worn/held detection (do NOT treat template HandLoc as held)
+            var droppable = matches.Where(m => !IsRuntimeWorn(m) && !IsRuntimeHeld(m)).ToList();
+
+            // If there are no droppable matches but there are matches that are worn/held, instruct player
+            if (droppable.Count == 0)
+            {
+                // Decide whether to instruct unwear or unhold (or both) based on matched items
+                bool anyWorn = matches.Any(m => IsRuntimeWorn(m));
+                bool anyHeld = matches.Any(m => IsRuntimeHeld(m));
+
+                if (anyWorn && anyHeld)
+                    return MessageHandler.System($"Those items are currently worn or held. Please unwear or unhold them before dropping.");
+                if (anyWorn)
+                    return MessageHandler.System($"That item is currently worn. Please unwear it before dropping.");
+                if (anyHeld)
+                    return MessageHandler.System($"That item is currently held. Please unhold it before dropping.");
+
+                // fallback (shouldn't hit)
+                return MessageHandler.System($"You cannot drop that item while it is equipped.");
+            }
+
+            // Use the droppable list for all subsequent logic (single / multiple / quantity selection)
+            matches = droppable;
 
             if (matches.Count == 1)
             {
@@ -964,20 +1137,22 @@ namespace MudServer
             if (player.Inventory == null || player.Inventory.Count == 0)
                 return MessageHandler.System("You are carrying nothing to wear.");
 
-            // Find candidate by name or template id (case-insensitive starts-with allowed)
-            var candidates = player.Inventory.Where(i =>
-                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)) ||
-                (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase)) ||
-                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase)))
-                .ToList();
-
-            if (candidates.Count == 0)
+            // Use ItemParser to resolve which inventory item the player meant
+            var parseResult = ItemParser.ResolveForInventoryCommand(player, requested);
+            if (parseResult.Winner == null)
+            {
+                // No single winner - if there are candidates show them to the player, otherwise return a failure.
+                if (parseResult.Candidates.Count > 0)
+                {
+                    var list = string.Join(", ", parseResult.Candidates.Select(i => i.Name ?? $"Item#{i.ItemID}"));
+                    return MessageHandler.System($"Multiple matches: {list}");
+                }
                 return MessageHandler.System($"You do not carry '{requested}'.");
+            }
 
-            // Prefer exact name match if multiple
-            var item = candidates.FirstOrDefault(i => i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)) ?? candidates[0];
+            var item = parseResult.Winner;
 
-            // Validate armor category and WearLoc presence
+            // Validate armor category and WearLoc presence (same as before)
             if (!string.Equals(item.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase))
                 return MessageHandler.System($"'{item.Name}' is not armor.");
             if (string.IsNullOrWhiteSpace(item.WearLoc))
@@ -991,7 +1166,7 @@ namespace MudServer
                     $"'{item.Name}' has unknown WearLoc '{wearLoc}'. Allowed locations: {allowed}.");
             }
 
-            // Replace any currently worn item at same WearLoc
+            // Remove 'Worn' from any item already in that slot (use Flags setter so FlagsJson stays in sync)
             var currentlyWorn = player.Inventory.Where(i =>
                 i != item &&
                 string.Equals(i.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase) &&
@@ -1001,47 +1176,23 @@ namespace MudServer
 
             foreach (var old in currentlyWorn)
             {
-                // Remove 'Worn' flag from previous item
-                if (old.Flags == null) old.Flags = new List<string>();
-                old.Flags.RemoveAll(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase));
-                old.FlagsJson = System.Text.Json.JsonSerializer.Serialize(old.Flags);
-                MudPersistence.ItemPersistence.SaveItem(_dbConnection, old);
+                var oldFlags = old.Flags ?? new List<string>();
+                oldFlags.RemoveAll(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase));
+                old.Flags = oldFlags;
+                try { MudPersistence.ItemPersistence.SaveItem(_dbConnection, old); } catch { }
             }
 
-            // Add/Wear: use setter so Item syncs FlagsJson internally
+            // Add Worn flag
             var flags = item.Flags ?? new List<string>();
             if (!flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
-            {
                 flags.Add("Worn");
-            }
-
-            // IMPORTANT: use the setter (not mutating the getter’s list) to keep FlagsJson in sync
             item.Flags = flags;
 
-            // Pre-save trace to confirm item carries Worn
-            Console.WriteLine($"[WEAR][TRACE] Pre-save Flags list={string.Join(",", item.Flags ?? new List<string>())} FlagsJson={item.FlagsJson ?? "null"}");
+            try { MudPersistence.ItemPersistence.SaveItem(_dbConnection, item); } catch (Exception ex) { Console.WriteLine($"[WEAR] SaveItem failed: {ex.Message}"); }
 
-            // Persist change
-            MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
-
-            // Verify persisted Flags
-            try
-            {
-                using var verify = _dbConnection.CreateCommand();
-                verify.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
-                verify.Parameters.AddWithValue("@id", item.ItemID);
-                var flagsText = verify.ExecuteScalar() as string ?? "";
-                Console.WriteLine($"[WEAR][VERIFY] ItemID={item.ItemID} Flags='{flagsText}'");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WEAR][VERIFY][WARN] Failed to verify Flags: {ex.Message}");
-            }
-
-            // Recompute effective stats for player (Worn armor contributes)
+            // Recompute effective stats and broadcast updated room state
             MudServer.Combat.UpdateEffectiveStats(player);
 
-            // Broadcast updated room state (so client refreshes badges); simple system confirmation
             foreach (var p in room.Players)
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
@@ -1050,6 +1201,9 @@ namespace MudServer
                     room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
+
+            // Send authoritative player update so client header/inventory reflect change immediately
+            try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
 
             return MessageHandler.System($"You wear {item.Name} on {wearLoc}.");
         }
@@ -1062,55 +1216,50 @@ namespace MudServer
             if (player.Inventory == null || player.Inventory.Count == 0)
                 return MessageHandler.System("You are carrying nothing to unwear.");
 
-            // Normalize helper
+            // Normalize helper - treats runtime "Worn" flag (preferred) or FlagsJson fallback.
             bool IsWorn(Item i) =>
                 (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase))) ||
                 (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0);
 
-            // Update within UnwearItem(...) before resolving by slot to validate WearLoc requests
-            // If the user typed a WearLoc (slot name), validate it first to give a helpful message.
-            if (AllowedWearLocs.Contains(requested))
+            // 1) Try ItemParser over equipped items (best-effort deterministic resolution)
+            var parse = ItemParser.ResolveForEquipped(player, requested);
+            Item? target = null;
+            if (parse.Winner != null)
             {
-                // proceed to find by slot; if not found later, we will message appropriately
-            }
-            else
-            {
-                // If the argument looks like a WearLoc (single word, not matching any carried item), guide the user
-                var isSingleToken = requested.IndexOf(' ') < 0;
-                var anyArmorNamed = player.Inventory.Any(i => string.Equals(i.Name, requested, StringComparison.OrdinalIgnoreCase));
-                if (isSingleToken && !anyArmorNamed && !AllowedWearLocs.Contains(requested))
-                {
-                    var allowed = string.Join(", ", AllowedWearLocs.OrderBy(s => s));
-                    // Continue to normal resolution, but provide an early hint if no match is found
-                    // (we don't return here to still allow item-name resolution with the same requested string)
-                }
+                target = player.Inventory.FirstOrDefault(i =>
+                    i != null && (ReferenceEquals(i, parse.Winner) || i.ItemID == parse.Winner.ItemID));
+                // If parser predicted an equipped item but we couldn't find the exact instance,
+                // try a looser match by template/name as fallback below.
             }
 
-            // Try resolve by WearLoc slot first (e.g., "Head", "Body", "Leftarm", etc.)
-            var bySlot = AllowedWearLocs.Contains(requested)
-                ? player.Inventory.FirstOrDefault(i =>
+            // 2) If parser did not provide an instance, allow WearLoc slot lookup (like "head", "body")
+            if (target == null && AllowedWearLocs.Contains(requested))
+            {
+                target = player.Inventory.FirstOrDefault(i =>
                     string.Equals(i.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrWhiteSpace(i.WearLoc) &&
                     string.Equals(i.WearLoc, requested, StringComparison.OrdinalIgnoreCase) &&
-                    IsWorn(i))
-                : null;
+                    IsWorn(i));
+                if (target == null)
+                    return MessageHandler.System($"No item is currently worn in {requested}.");
+            }
 
-            Item? target = bySlot;
-
-            // If not found by slot, resolve by item name/templateID (case-insensitive).
+            // 3) If still not found, fallback to name/template matching among carried armor items,
+            //    preferring worn items (preserve existing UX).
             if (target == null)
             {
-                var matches = player.Inventory.Where(i =>
+                var candidates = player.Inventory.Where(i =>
                     string.Equals(i.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase) &&
                     (string.Equals(i.Name, requested, StringComparison.OrdinalIgnoreCase) ||
                      (!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, requested, StringComparison.OrdinalIgnoreCase)) ||
-                     (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))))
-                    .ToList();
+                     (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase)))
+                ).ToList();
 
-                if (matches.Count == 0)
+                if (candidates.Count == 0)
                     return MessageHandler.System($"No worn armor matching '{requested}' was found.");
+
                 // Prefer a worn item among matches
-                target = matches.FirstOrDefault(IsWorn) ?? matches[0];
+                target = candidates.FirstOrDefault(IsWorn) ?? candidates[0];
             }
 
             if (target == null)
@@ -1119,16 +1268,41 @@ namespace MudServer
             if (!IsWorn(target))
                 return MessageHandler.System($"'{target.Name}' is not currently worn.");
 
-            // Remove 'Worn' flag and persist
+            // Remove 'Worn' flag using the Flags setter (keeps FlagsJson in sync)
             var flags = target.Flags ?? new List<string>();
             flags.RemoveAll(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase));
-            target.Flags = flags; // setter updates FlagsJson
-            MudPersistence.ItemPersistence.SaveItem(_dbConnection, target);
+            target.Flags = flags;
+
+            // Diagnostic: log before saving
+            try
+            {
+                Console.WriteLine($"[UNWEAR] Attempting unwear: ItemID={target.ItemID}, Name='{target.Name}', FlagsJson(before)='{target.FlagsJson}', Flags=[{string.Join(", ", target.Flags ?? new List<string>())}]");
+                MudPersistence.ItemPersistence.SaveItem(_dbConnection, target);
+                Console.WriteLine($"[UNWEAR] SaveItem returned for ItemID={target.ItemID}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[UNWEAR][ERROR] SaveItem failed for ItemID={target.ItemID}: {ex.Message}");
+            }
+
+            // Verify persisted DB value for Flags column
+            try
+            {
+                using var q = _dbConnection.CreateCommand();
+                q.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
+                q.Parameters.AddWithValue("@id", target.ItemID);
+                var dbv = q.ExecuteScalar();
+                Console.WriteLine($"[UNWEAR] DB Flags for ItemID={target.ItemID}: '{(dbv == null ? "NULL" : dbv.ToString())}'");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[UNWEAR][WARN] DB verification failed for ItemID={target.ItemID}: {ex.Message}");
+            }
 
             // Recompute effective stats (worn armor no longer contributes)
             MudServer.Combat.UpdateEffectiveStats(player);
 
-            // Broadcast updated room payload; send confirmation
+            // Broadcast updated room payload so other clients see inventory/appearance change
             foreach (var p in room.Players)
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
@@ -1138,8 +1312,240 @@ namespace MudServer
                     _world));
             }
 
+            // Send authoritative player update so client header/inventory reflect change immediately
+            try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+
             var locText = string.IsNullOrWhiteSpace(target.WearLoc) ? "slot" : target.WearLoc;
             return MessageHandler.System($"You remove {target.Name} from {locText}.");
+        }
+
+        // Runtime helpers (prefer runtime flags; do NOT treat template HandLoc/WearLoc as runtime state)
+        private static bool IsRuntimeWorn(Item i)
+        {
+            if (i == null) return false;
+            if (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase))) return true;
+            if (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            return false;
+        }
+
+        private static bool IsRuntimeHeld(Item i)
+        {
+            if (i == null) return false;
+            if (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase))) return true;
+            if (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            return false;
+        }
+
+        // Effective hand requirement: prefer template HandLoc when present (1 or 2), fallback to 1
+        private static int EffectiveHandLoc(Item i)
+        {
+            if (i == null) return 1;
+            if (i.HandLoc == 2) return 2;
+            if (i.HandLoc == 1) return 1;
+            // default to 1 for handhelds/weapons without explicit HandLoc
+            return 1;
+        }
+
+        // Whether an item is holdable: category "Weapon" or "Handheld" (case-insensitive)
+        private static bool CanBeHeld(Item i)
+        {
+            if (i == null) return false;
+            var cat = i.ItemCategory ?? string.Empty;
+            return string.Equals(cat, "Weapon", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cat, "Handheld", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // HoldItem: resolve inventory item, ensure holdable, auto-unhold to free hands, persist flags.
+        private Message? HoldItem(Player player, string requested)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+            if (player.Inventory == null || player.Inventory.Count == 0)
+                return MessageHandler.System("You are carrying nothing to hold.");
+
+            // Resolve intended inventory item
+            var parse = ItemParser.ResolveForInventoryCommand(player, requested);
+            if (parse.Winner == null)
+            {
+                if (parse.Candidates.Count > 0)
+                {
+                    var list = string.Join(", ", parse.Candidates.Select(i => i.Name ?? $"Item#{i.ItemID}"));
+                    return MessageHandler.System($"Multiple matches: {list}");
+                }
+                return MessageHandler.System($"You do not carry '{requested}'.");
+            }
+
+            var item = player.Inventory.FirstOrDefault(i => i != null && (ReferenceEquals(i, parse.Winner) || i.ItemID == parse.Winner.ItemID));
+            if (item == null)
+            {
+                // defensive fallback
+                item = player.Inventory.FirstOrDefault(i =>
+                    (!string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, requested, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, requested, StringComparison.OrdinalIgnoreCase)));
+                if (item == null) return MessageHandler.System($"You do not carry '{requested}'.");
+            }
+
+            if (!CanBeHeld(item))
+                return MessageHandler.System($"'{item.Name}' cannot be held (not a Weapon or Handheld item).");
+
+            int needHands = EffectiveHandLoc(item);
+
+            if (IsRuntimeHeld(item))
+                return MessageHandler.System($"You are already holding '{item.Name}'.");
+
+            // Count occupied hands
+            var heldItems = player.Inventory.Where(i => IsRuntimeHeld(i)).ToList();
+            int occupiedHands = heldItems.Sum(i => EffectiveHandLoc(i));
+            int availableHands = Math.Max(0, 2 - occupiedHands);
+
+            var autoUnheld = new List<Item>();
+
+            if (needHands > availableHands)
+            {
+                // Unhold one-handed items first
+                var candidatesToUnhold = heldItems
+                    .OrderBy(i => EffectiveHandLoc(i)) // 1-handed first
+                    .ThenBy(i => i.ItemID)
+                    .ToList();
+
+                int freed = 0;
+                foreach (var c in candidatesToUnhold)
+                {
+                    if (availableHands + freed >= needHands) break;
+
+                    var flags = c.Flags ?? new List<string>();
+                    flags.RemoveAll(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase));
+                    c.Flags = flags;
+                    try { MudPersistence.ItemPersistence.SaveItem(_dbConnection, c); }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[HOLD] Failed to save unhold for ItemID={c.ItemID}: {ex.Message}");
+                    }
+
+                    autoUnheld.Add(c);
+                    freed += EffectiveHandLoc(c);
+                }
+
+                occupiedHands = player.Inventory.Where(i => IsRuntimeHeld(i)).Sum(i => EffectiveHandLoc(i));
+                availableHands = Math.Max(0, 2 - occupiedHands);
+
+                if (needHands > availableHands)
+                {
+                    var names = autoUnheld.Select(x => x.Name ?? $"Item#{x.ItemID}");
+                    return MessageHandler.System($"Not enough hands available to hold '{item.Name}'. Unheld: {string.Join(", ", names)}. Try again after unholding more items.");
+                }
+            }
+
+            // Hold requested item
+            var newFlags = item.Flags ?? new List<string>();
+            if (!newFlags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase)))
+                newFlags.Add("Held");
+            item.Flags = newFlags;
+
+            try { MudPersistence.ItemPersistence.SaveItem(_dbConnection, item); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HOLD] SaveItem failed for ItemID={item.ItemID}: {ex.Message}");
+                return MessageHandler.System("Failed to hold item due to a server error.");
+            }
+
+            MudServer.Combat.UpdateEffectiveStats(player);
+
+            // Broadcast room and enqueue player update
+            foreach (var p in room.Players)
+            {
+                p.PendingMessageQueue.Add(MessageHandler.Room(
+                    room,
+                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
+                    _world));
+            }
+            try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+
+            if (autoUnheld.Count > 0)
+            {
+                var names = autoUnheld.Select(x => x.Name ?? $"Item#{x.ItemID}");
+                return MessageHandler.System($"You unhold {string.Join(", ", names)} and hold {item.Name}.");
+            }
+
+            return MessageHandler.System($"You hold {item.Name}.");
+        }
+
+        // Unhold: resolve held item and remove 'Held' flag
+        private Message? UnholdItem(Player player, string requested)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+            if (player.Inventory == null || player.Inventory.Count == 0)
+                return MessageHandler.System("You are carrying nothing to unhold.");
+
+            // Try parser (equipped/held)
+            var parse = ItemParser.ResolveForEquipped(player, requested);
+            Item? target = null;
+            if (parse.Winner != null)
+                target = player.Inventory.FirstOrDefault(i => i != null && (ReferenceEquals(i, parse.Winner) || i.ItemID == parse.Winner.ItemID));
+
+            if (target == null)
+            {
+                var candidates = player.Inventory.Where(i =>
+                    IsRuntimeHeld(i) &&
+                    ((!string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, requested, StringComparison.OrdinalIgnoreCase))
+                     || (!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, requested, StringComparison.OrdinalIgnoreCase))
+                     || (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))))
+                    .ToList();
+
+                if (candidates.Count == 0) return MessageHandler.System($"You are not holding '{requested}'.");
+                target = candidates.FirstOrDefault(i => string.Equals(i.Name, requested, StringComparison.OrdinalIgnoreCase)) ?? candidates[0];
+            }
+
+            if (target == null) return MessageHandler.System($"You are not holding '{requested}'.");
+            if (!IsRuntimeHeld(target)) return MessageHandler.System($"'{target.Name}' is not currently held.");
+
+            var flags = target.Flags ?? new List<string>();
+            flags.RemoveAll(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase));
+            target.Flags = flags;
+
+            // Diagnostic: log before saving
+            try
+            {
+                Console.WriteLine($"[UNHOLD] Attempting unhold: ItemID={target.ItemID}, Name='{target.Name}', FlagsJson(before)='{target.FlagsJson}', Flags=[{string.Join(", ", target.Flags ?? new List<string>())}]");
+                MudPersistence.ItemPersistence.SaveItem(_dbConnection, target);
+                Console.WriteLine($"[UNHOLD] SaveItem returned for ItemID={target.ItemID}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[UNHOLD][ERROR] SaveItem failed for ItemID={target.ItemID}: {ex.Message}");
+            }
+
+            // Verify persisted DB value for Flags column
+            try
+            {
+                using var q = _dbConnection.CreateCommand();
+                q.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
+                q.Parameters.AddWithValue("@id", target.ItemID);
+                var dbv = q.ExecuteScalar();
+                Console.WriteLine($"[UNHOLD] DB Flags for ItemID={target.ItemID}: '{(dbv == null ? "NULL" : dbv.ToString())}'");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[UNHOLD][WARN] DB verification failed for ItemID={target.ItemID}: {ex.Message}");
+            }
+
+            MudServer.Combat.UpdateEffectiveStats(player);
+
+            foreach (var p in room.Players)
+            {
+                p.PendingMessageQueue.Add(MessageHandler.Room(
+                    room,
+                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
+                    _world));
+            }
+            try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+
+            return MessageHandler.System($"You unhold {target.Name}.");
         }
 
         private bool IsValidDirection(string dir)
@@ -1345,6 +1751,17 @@ namespace MudServer
 
             var lines = room.Inventory.Select((it, idx) => $"{idx + 1}) {it.Name} (Template: {it.TemplateID})");
             return MessageHandler.System("Items in room:\n" + string.Join("\n", lines));
+        }
+
+        private static string NormalizeCommandAlias(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return token;
+            switch (token.Trim().ToLowerInvariant())
+            {
+                case "u": return "up";
+                case "d": return "down";
+                default:  return token;
+            }
         }
     }
 }

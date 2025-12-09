@@ -350,6 +350,19 @@ namespace MudServer
                     defMax,
                     defender.AsPlayer);
 
+                // Ensure any affected player(s) receive an authoritative player_update (health + xp)
+                if (attacker.IsPlayer && attacker.AsPlayer != null)
+                {
+                    try { if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, attacker.AsPlayer); } catch { }
+                    try { MessageHandler.EnqueuePlayerUpdate(attacker.AsPlayer); } catch { }
+                }
+
+                if (defender.IsPlayer && defender.AsPlayer != null)
+                {
+                    try { if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, defender.AsPlayer); } catch { }
+                    try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
+                }
+
 
 
                 if (DebugCombat)
@@ -365,10 +378,18 @@ namespace MudServer
                 {
                     if (DebugCombat) Console.WriteLine($"[COMBAT] Death NPC {defender.DisplayName}");
 
-                    var winners = attackers.Members
+                    // Build contributors robustly from the actual team in the CombatState (not the local attackers snapshot)
+                    var winningTeam = state.GetTeamOf(attacker.Entity) ?? attackers;
+                    var winners = winningTeam.Members
                         .Where(m => m.IsPlayer && m.AsPlayer != null && m.Alive && m.AsPlayer.CurrentRoom == state.Room)
                         .Select(m => m.AsPlayer!)
                         .ToList();
+
+                    // Fallback: ensure at least the immediate attacker is credited if no contributors found
+                    if (winners.Count == 0 && attacker.IsPlayer && attacker.AsPlayer != null && attacker.Alive)
+                        winners.Add(attacker.AsPlayer);
+
+                    if (DebugCombat) Console.WriteLine($"[COMBAT] Contributors for death: {string.Join(", ", winners.Select(p => p?.Name ?? "<null>"))}");
 
                     // Route to central Combat.HandleNpcDeath with contributors and the 'world' parameter
                     Combat.HandleNpcDeath(attacker.AsPlayer ?? state.Room.Players.FirstOrDefault(), defender.AsNpc, world, conn, winners);

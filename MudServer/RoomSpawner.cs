@@ -21,7 +21,7 @@ namespace MudServer
     public static class RoomSpawner
     {
         private static readonly Random _rng = new Random();
-        static bool useVerboseLogging = true;
+        static bool useVerboseLogging = false;
 
         public static void ProcessSpawns(World world, SqliteConnection conn)
         {

@@ -183,7 +183,27 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@EffArmorClass", player.EffArmorClass);
             cmd.Parameters.AddWithValue("@Buffs", JsonSerializer.Serialize(player.Buffs ?? new List<string>()));
             cmd.Parameters.AddWithValue("@Debuffs", JsonSerializer.Serialize(player.Debuffs ?? new List<string>()));
-            cmd.Parameters.AddWithValue("@Experience", player.Experience);
+
+            // Protect against accidental overwrite of persisted Experience when in-memory Experience is still default (0).
+            int expToSave = player.Experience;
+            if (Has("Experience") && expToSave == 0 && player.DbPlayerID != 0)
+            {
+                try
+                {
+                    using var q = conn.CreateCommand();
+                    q.CommandText = "SELECT Experience FROM Player WHERE PlayerID = @pid";
+                    q.Parameters.AddWithValue("@pid", player.DbPlayerID);
+                    var o = q.ExecuteScalar();
+                    if (o != null && o != DBNull.Value)
+                    {
+                        if (int.TryParse(o.ToString(), out var dbExp))
+                            expToSave = dbExp;
+                    }
+                }
+                catch { /* non-fatal: fallback to in-memory value */ }
+            }
+
+            cmd.Parameters.AddWithValue("@Experience", expToSave);
 
             try { cmd.ExecuteNonQuery(); }
             catch (Exception ex)

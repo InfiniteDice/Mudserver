@@ -13,6 +13,7 @@
             <div class="status">
                 <span class="status-item">Player: <strong id="playerName">—</strong></span>
                 <span class="status-item">HP: <strong id="hp">0</strong></span>
+                <span class="status-item">XP: <strong id="xp">0</strong></span>
                 <!-- Inventory button (single source of truth) -->
                 <button id="invBtn" class="inv-button">Inventory</button>
             </div>
@@ -110,6 +111,7 @@
 
         const playerNameEl = document.getElementById('playerName');
         const hpEl = document.getElementById('hp');
+        const xpEl = document.getElementById('xp');
         const roomTitleEl = document.getElementById('roomTitle');
         const roomDescEl = document.getElementById('roomDesc');
         const exitsEl = document.getElementById('exits');
@@ -277,6 +279,7 @@
                 if (msg.type === 'player_update') {
                     playerNameEl.textContent = msg.name || '—';
                     hpEl.textContent = `${msg.currentHealth ?? 0}/${msg.maxHealth ?? 0}`;
+                    if (xpEl) xpEl.textContent = String(msg.experience ?? 0);
                     return;
                 }
 

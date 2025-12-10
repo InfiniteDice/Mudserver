@@ -70,14 +70,14 @@ namespace MudPersistence
                         hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus");
 
                     if (setVerboseServerLogs)
-                        Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ConnState={conn.State}, ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}'");
+                        Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ConnState={conn.State}, ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}', DmgDiceMult={item.DmgDiceMult}");
 
                     if (item.ItemID <= 0)
                     {
                         using var cmd = new SqliteCommand(
-                            @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags, OwnerAreaID"
+                            @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags, DmgDiceMult, OwnerAreaID"
                             + (hasBaseAcBonus == true ? ", BaseACBonus" : string.Empty) + @")
-                              VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags, @ownerarea"
+                              VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags, @dmgmult, @ownerarea"
                             + (hasBaseAcBonus == true ? ", @baseac" : string.Empty) + @");
                               SELECT last_insert_rowid();", conn);
 
@@ -98,12 +98,14 @@ namespace MudPersistence
                         cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
                         cmd.Parameters.AddWithValue("@cond", item.Condition);
                         cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
                         cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
                         if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
 
                         if (setVerboseServerLogs)
                         {
                             Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (INSERT): " + (item.FlagsJson ?? "null"));
+                            Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (INSERT): " + item.DmgDiceMult);
                             Console.WriteLine($"[ItemPersistence][TRACE] INSERT Exec: ConnState={conn.State}");
                         }
 
@@ -130,7 +132,8 @@ namespace MudPersistence
                                 LongDesc = @long,
                                 Creator = @creator,
                                 Condition = @cond,
-                                Flags = @flags"
+                                Flags = @flags,
+                                DmgDiceMult = @dmgmult"
                             + (hasBaseAcBonus == true ? ", BaseACBonus = @baseac" : string.Empty) + @"
                             WHERE ItemID = @id;", conn);
 
@@ -151,12 +154,14 @@ namespace MudPersistence
                         cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
                         cmd.Parameters.AddWithValue("@cond", item.Condition);
                         cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
                         if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
                         cmd.Parameters.AddWithValue("@id", item.ItemID);
 
                         if (setVerboseServerLogs)
                         {
                             Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (UPDATE): " + (item.FlagsJson ?? "null"));
+                            Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (UPDATE): " + item.DmgDiceMult);
                             Console.WriteLine($"[ItemPersistence][TRACE] UPDATE Exec: ConnState={conn.State}, ItemID={item.ItemID}");
                         }
 
@@ -210,7 +215,7 @@ namespace MudPersistence
                 using var cmd = new SqliteCommand(@"
                     SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
                            Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
-                           LongDesc, Creator, Condition, Flags"
+                           LongDesc, Creator, Condition, Flags, DmgDiceMult"
                            + (includeBaseAc ? ", BaseACBonus" : ""), conn);
 
                 cmd.CommandText += " FROM Item WHERE OwnerType = @otype AND OwnerID = @oid;";
@@ -240,9 +245,23 @@ namespace MudPersistence
                         FlagsJson   = !reader.IsDBNull(15) ? reader.GetString(15): "[]"
                     };
 
+                    // DmgDiceMult is next (ordinal 16)
+                    try
+                    {
+                        int dmgOrd = 16;
+                        if (!reader.IsDBNull(dmgOrd))
+                            it.DmgDiceMult = reader.GetDouble(dmgOrd);
+                        else
+                            it.DmgDiceMult = 1.0;
+                    }
+                    catch
+                    {
+                        it.DmgDiceMult = 1.0;
+                    }
+
                     if (includeBaseAc)
                     {
-                        int baseAcOrd = 16; // after Flags
+                        int baseAcOrd = 17; // after Flags + DmgDiceMult
                         if (!reader.IsDBNull(baseAcOrd))
                             it.BaseACBonus = reader.GetDouble(baseAcOrd);
                     }
@@ -251,15 +270,7 @@ namespace MudPersistence
                     {
                         it.Flags = JsonSerializer.Deserialize<List<string>>(it.FlagsJson ?? "[]") ?? new List<string>();
                     }
-                    catch
-                    {
-                        it.Flags = new List<string>();
-                    }
-
-                    // IMPORTANT: Do NOT infer Held/Worn from template fields here.
-                    // The database is the source of truth for runtime flags (Flags/FlagsJson).
-                    // If FlagsJson is empty, leave Flags empty so items are not treated as held/worn
-                    // unless persisted by gameplay actions.
+                    catch { it.Flags = new List<string>(); }
 
                     it.OwnerType = NormalizeOwnerType(it.OwnerType);
                     list.Add(it);

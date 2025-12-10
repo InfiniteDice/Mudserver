@@ -27,6 +27,9 @@ namespace MudCore.World
         // Example new properties
         public int Condition { get; set; } = 100; // default condition
         public double BaseACBonus { get; set; } = 0.0; // default AC bonus
+
+        // NEW: per-template damage dice multiplier (maps to Item.DmgDiceMult)
+        public double DmgDiceMult { get; set; } = 1.0;
     }
 
     public class ItemTemplateManager
@@ -135,7 +138,9 @@ namespace MudCore.World
                 OwnerType = ownerType,
                 OwnerID = ownerId,
                 RoomID = roomId,
-                Condition = 100 // fully intact for freshly created items
+                Condition = 100, // fully intact for freshly created items
+                // ensure template multiplier is applied to the new item
+                DmgDiceMult = template.DmgDiceMult
             };
 
             return item;

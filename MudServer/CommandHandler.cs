@@ -876,12 +876,43 @@ namespace MudServer
 
                 string dir = pa.Direction;
 
-                var newArea = new Area(input, _world.Areas.Count + 1);
+                // 1) Create in-memory Area object (ID will be populated from DB insert)
+                var newArea = new Area(input, 0);
+
+                // 2) Persist Area row and obtain DB-assigned AreaID
+                try
+                {
+                    using var ins = _dbConnection.CreateCommand();
+                    ins.CommandText = @"
+                        INSERT INTO Area (Name, Description, WorldID, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner)
+                        VALUES (@name, @desc, @wid, @theme, @min, @max, @pvp, @owner);
+                        SELECT last_insert_rowid();";
+                    ins.Parameters.AddWithValue("@name", newArea.Name ?? "");
+                    ins.Parameters.AddWithValue("@desc", newArea.Description ?? "");
+                    ins.Parameters.AddWithValue("@wid", _world.WorldID);
+                    ins.Parameters.AddWithValue("@theme", newArea.Theme ?? "Generic");
+                    ins.Parameters.AddWithValue("@min", newArea.LevelRangeMin);
+                    ins.Parameters.AddWithValue("@max", newArea.LevelRangeMax);
+                    ins.Parameters.AddWithValue("@pvp", newArea.IsPvPAllowed ? 1 : 0);
+                    ins.Parameters.AddWithValue("@owner", newArea.Owner ?? "System");
+
+                    long newAreaId = (long)ins.ExecuteScalar();
+                    newArea.AreaID = (int)newAreaId;
+                }
+                catch (Exception ex)
+                {
+                    player.PendingAction = null!;
+                    Console.WriteLine($"[CREATEAREA][ERROR] Failed to insert Area '{input}': {ex.Message}");
+                    return MessageHandler.System($"Error creating area {input}: {ex.Message}");
+                }
+
+                // 3) Build the starting room and set AreaID to persisted value
                 var newRoom = new Room($"{input} - Undefined Room", "Starting room for the area")
                 {
                     AreaID = newArea.AreaID
                 };
 
+                // 4) Persist the room (will reference the newly created AreaID)
                 int dbID = _world.CreateRoomInDB(newRoom, _dbConnection);
                 if (dbID == 0)
                 {
@@ -889,6 +920,7 @@ namespace MudServer
                     return MessageHandler.System("Failed to create room in database.");
                 }
 
+                // 5) Finish in-memory wiring
                 newArea.Rooms.Add(newRoom);
                 _world.Areas.Add(newArea);
 
@@ -901,7 +933,6 @@ namespace MudServer
 
                 player.PendingAction = null!;
 
-                // 4) Replace CreateArea/CreateRoom return Room calls to use names only (no LastAction formatting)
                 return MessageHandler.Room(
                     player.CurrentRoom,
                     player.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(),

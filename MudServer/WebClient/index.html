@@ -9,12 +9,11 @@
 <body>
     <div id="app">
         <header class="topbar">
-            <div class="title">MUD — Forest</div>
+            <div class="title">MUD</div>
             <div class="status">
                 <span class="status-item">Player: <strong id="playerName">—</strong></span>
                 <span class="status-item">HP: <strong id="hp">0</strong></span>
                 <span class="status-item">XP: <strong id="xp">0</strong></span>
-                <!-- Inventory button (single source of truth) -->
                 <button id="invBtn" class="inv-button">Inventory</button>
             </div>
         </header>
@@ -42,7 +41,6 @@
                         <strong>Items:</strong>
                         <span id="items" class="badge-row"></span>
                     </div>
-                    
                 </div>
             </section>
 
@@ -86,7 +84,7 @@
                             <th>Condition</th>
                             <th>Category</th>
                             <th>Short Description</th>
-                            <th>Status</th> <!-- NEW -->
+                            <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -104,7 +102,6 @@
     </div>
 
     <script>
-        // Minimal client glue: open WS, send JSON commands, render simple messages/room updates.
         const host = location.hostname || 'localhost';
         const port = 9250;
         const ws = new WebSocket(`ws://${host}:${port}`);
@@ -122,6 +119,9 @@
         const cmdForm = document.getElementById('cmdForm');
         const cmdInput = document.getElementById('cmdInput');
 
+        // top bar title element
+        const siteTitleEl = document.querySelector('.title');
+
         // Inventory modal elements
         const invBtn = document.getElementById('invBtn');
         const invModal = document.getElementById('invModal');
@@ -134,16 +134,12 @@
         function addLog(text, cls = '') {
             const el = document.createElement('div');
             el.className = 'log-line ' + cls;
-
-            // Allow trusted HTML only for system messages we generate (contains hp-current span)
             if (cls === 'system') {
-                // Very minimal sanitization: replace script tags if somehow present
                 const safe = text.replace(/<script/gi, '&lt;script');
                 el.innerHTML = safe;
             } else {
                 el.textContent = text;
             }
-
             logEl.appendChild(el);
             logEl.scrollTop = logEl.scrollHeight;
         }
@@ -169,17 +165,15 @@
             invEmpty.style.display = 'none';
             document.querySelector('#invTable').style.display = '';
             items.forEach(it => {
-                // Compute status text: worn/held (held reserved for future)
                 let status = '';
-                const cat = (it.itemCategory || '').toLowerCase();
                 const wearLoc = it.wearLoc || '';
                 const isWorn = !!it.isWorn;
+                const isHeld = !!it.isHeld;
 
                 if (isWorn && wearLoc) {
                     status = `Worn on ${wearLoc}`;
-                } else if (cat === 'weapon' && it.handLoc) {
-                    // Future: show held when command implemented; placeholder example
-                    status = `Held in ${it.handLoc === 1 ? 'Lefthand' : 'Righthand'}`;
+                } else if (isHeld) {
+                    status = `Held`;
                 }
 
                 const tr = document.createElement('tr');
@@ -202,8 +196,6 @@
         }
 
         function requestInventory() {
-            // ask server for detailed inventory
-            // server should reply with { type: "inventory", inventory: [...] }
             const payload = JSON.stringify({ type: 'command', text: 'inventory' });
             ws.send(payload);
             addLog('> inventory', 'you');
@@ -218,12 +210,10 @@
             try {
                 const msg = JSON.parse(evt.data);
 
-                // ROOM payload: description may include "**RoomName**\nLong description"
                 if (msg.type === 'room') {
                     let title = msg.title || '';
                     let desc = msg.description || '';
 
-                    // If server encoded title in description like "**Name**\nDesc", extract it
                     if (!title && desc) {
                         const parts = desc.split('\n');
                         title = parts[0].replace(/\*\*/g, '').trim();
@@ -233,7 +223,14 @@
                     roomTitleEl.textContent = title || 'Unknown room';
                     roomDescEl.textContent = desc || '';
 
-                    // Render exits from the room message (server includes exits array)
+                    // update top title to "WorldName -- AreaName"
+                    const worldName = msg.worldName || '';
+                    const areaName = msg.areaName || '';
+                    if (worldName || areaName) {
+                        siteTitleEl.textContent = worldName && areaName ? `${worldName} -- ${areaName}` : (worldName || areaName || 'MUD');
+                        document.title = siteTitleEl.textContent;
+                    }
+
                     exitsEl.innerHTML = (msg.exits || [])
                         .map(e => {
                             const dir = e.direction ?? e.Direction ?? '';
@@ -242,29 +239,22 @@
                         })
                         .join(' ');
 
-                    // render NPCs
                     if (npcsEl) {
                         npcsEl.innerHTML = (msg.npcs || []).map(n => `<span class="badge">${n}</span>`).join(' ');
                     }
 
-                    // Players
                     if (playersEl) {
                         playersEl.innerHTML = (msg.players || []).map(p => `<span class="badge">${p}</span>`).join(' ');
                     }
 
-                    // Items
                     if (itemsEl) {
                         itemsEl.innerHTML = (msg.items || []).map(i => `<span class="badge item">${i}</span>`).join(' ');
                     }
-
-                    itemsEl && (itemsEl.innerHTML = (msg.items || [])
-                        .map(i => `<span class="badge item">${i}</span>`).join(' '));
 
                     addLog(title ? `You look at ${title}` : `You look around`, 'info');
                     return;
                 }
 
-                // EXITS payload: array of { direction, title }
                 if (msg.type === 'exits') {
                     exitsEl.innerHTML = (msg.exits || [])
                         .map(e => {
@@ -275,7 +265,6 @@
                     return;
                 }
 
-                // Player update (name, health)
                 if (msg.type === 'player_update') {
                     playerNameEl.textContent = msg.name || '—';
                     hpEl.textContent = `${msg.currentHealth ?? 0}/${msg.maxHealth ?? 0}`;
@@ -283,7 +272,6 @@
                     return;
                 }
 
-                // Inventory message (detailed objects)
                 if (msg.type === 'inventory') {
                     renderInventory(msg.inventory || []);
                     return;
@@ -292,20 +280,11 @@
                 if (msg.type === 'system') { addLog(msg.text || '[system]', 'system'); return; }
                 if (msg.type === 'chat') { addLog(msg.text || '', 'chat'); return; }
 
-                // Debug fallback
                 addLog(JSON.stringify(msg), 'debug');
             } catch {
                 addLog(evt.data, 'raw');
             }
         });
-
-        //cmdForm.addEventListener('submit', e => {
-        //    e.preventDefault();
-        //    const text = cmdInput.value.trim();
-        //    if (!text) return;
-        //    sendCommand(text);
-        //    cmdInput.value = '';
-        //});
 
         document.querySelectorAll('.quick button').forEach(b => {
             b.addEventListener('click', () => {
@@ -317,19 +296,17 @@
         });
 
         function sendCommand(text) {
-            // Send as JSON payload expected by the server
             const payload = JSON.stringify({ type: 'command', text });
             ws.send(payload);
             addLog('> ' + text, 'you');
         }
 
-        // --- Client-only command history (last 3), ArrowUp/ArrowDown ---
         const history = [];
         let cursor = -1;
 
         function recordCommand(cmd) {
             if (!cmd || !cmd.trim()) return;
-            if (history.length > 0 && history[0] === cmd) return; // skip adjacent duplicate
+            if (history.length > 0 && history[0] === cmd) return;
             history.unshift(cmd);
             if (history.length > 3) history.pop();
             cursor = -1;
@@ -358,7 +335,7 @@
             e.preventDefault();
             const text = cmdInput.value.trim();
             if (!text) return;
-            recordCommand(text);            // record locally
+            recordCommand(text);
             sendCommand(text);
             cmdInput.value = '';
         });
@@ -368,20 +345,16 @@
             if (e.key === 'ArrowDown') { e.preventDefault(); historyNext(); }
         });
 
-        // Inventory button handlers
         invBtn.addEventListener('click', openInventory);
         invClose.addEventListener('click', closeInventory);
         invClose2.addEventListener('click', closeInventory);
         invRefresh.addEventListener('click', requestInventory);
 
-        // Small keyboard shortcut: focus input on '/'
         window.addEventListener('keydown', e => {
             if (e.key === '/') { e.preventDefault(); cmdInput.focus(); }
-            // Close modal with Esc
             if (e.key === 'Escape' && invModal.style.display === 'flex') closeInventory();
         });
 
-        // start hidden
         invModal.style.display = 'none';
     </script>
 </body>

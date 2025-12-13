@@ -50,14 +50,308 @@ namespace MudServer
                 return EatItem(player, foodName);
             }
 
-            // Handle 'get' or 'take' command
+            // Inspect container (new): inspect <containername>
+            // Inspect container (new): inspect <containername>
+            if (command.StartsWith("inspect ", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2) return MessageHandler.System("Usage: inspect <container>");
+                var containerName = parts[1].Trim();
+                if (string.IsNullOrWhiteSpace(containerName)) return MessageHandler.System("Usage: inspect <container>");
+
+                var container = InventoryManager.FindContainer(player, containerName);
+                if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
+
+                // NEW: enforce lock check
+                var lockMsg = KeyLocks.EnsureAccessible(_dbConnection, player, container);
+                if (lockMsg != null) return MessageHandler.System(lockMsg);
+
+                try
+                {
+                    // Load items whose OwnerType='Item' and OwnerID == container.ItemID
+                    var contents = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", container.ItemID) ?? new List<Item>();
+
+                    // Compute current used weight in container
+                    double usedWeight = 0.0;
+                    try
+                    {
+                        using var cmd = _dbConnection.CreateCommand();
+                        cmd.CommandText = @"SELECT SUM(COALESCE(Weight,0.0) * COALESCE(Quantity,1)) FROM Item
+                                            WHERE OwnerType = 'Item' AND OwnerID = @cid;";
+                        cmd.Parameters.AddWithValue("@cid", container.ItemID);
+                        var obj = cmd.ExecuteScalar();
+                        if (!(obj == null || obj is DBNull))
+                            usedWeight = Convert.ToDouble(obj);
+                    }
+                    catch
+                    {
+                        usedWeight = 0.0;
+                    }
+
+                    var cap = InventoryManager.ParseCapacity(container);
+                    string capText = cap.HasValue ? $"{cap.Value}" : "unlimited";
+
+                    if (contents.Count == 0)
+                    {
+                        string emptyMsg = $"{container.Name} is empty. Capacity: {capText}. Used: {usedWeight}.";
+                        return MessageHandler.System(emptyMsg);
+                    }
+
+                    var lines = new List<string>();
+                    for (int i = 0; i < contents.Count; i++)
+                    {
+                        var it = contents[i];
+                        var qtyPart = it.Quantity > 1 ? $" (x{it.Quantity})" : "";
+                        var totalWeight = it.Weight * Math.Max(1, it.Quantity);
+                        lines.Add($"{i + 1}) {it.Name}{qtyPart} — wt {totalWeight}");
+                    }
+
+                    var header = $"{container.Name} contents (Used: {usedWeight} / Capacity: {capText}):";
+                    return MessageHandler.System(header + "\n" + string.Join("\n", lines));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[INSPECT] Failed to inspect container '{containerName}': {ex}");
+                    return MessageHandler.System("Failed to inspect container due to a server error.");
+                }
+            }
+
+            // --- GET / TAKE command handling: added container lock check ---
             if (command.StartsWith("get ", StringComparison.OrdinalIgnoreCase) ||
                 command.StartsWith("take ", StringComparison.OrdinalIgnoreCase))
             {
-                var parts = command.Split(' ', 2);
-                if (parts.Length < 2) return MessageHandler.System("Usage: get <item>");
-                string itemName = parts[1].Trim();
-                return GetItem(player, itemName);
+                var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (tokens.Count < 2) return MessageHandler.System("Usage: get <item> [container] OR get <n> <item> <container>");
+
+                var (quantity, itemExpr, containerName, getErr) = ParseQuantityItemContainer(tokens, 1);
+                if (getErr != null) return MessageHandler.System(getErr);
+
+                if (!string.IsNullOrWhiteSpace(containerName))
+                {
+                    var container = InventoryManager.FindContainer(player, containerName);
+                    if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
+
+                    // NEW: enforce lock check before attempting to read container contents
+                    var lockMsg = KeyLocks.EnsureAccessible(_dbConnection, player, container);
+                    if (lockMsg != null) return MessageHandler.System(lockMsg);
+
+                    // Load and resolve inside container (unchanged)
+                    List<Item> containerItems = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", container.ItemID);
+                    var matches = containerItems
+                        .Where(i => !string.IsNullOrEmpty(i.Name) &&
+                                    (i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase) ||
+                                     (!string.IsNullOrEmpty(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase))))
+                        .ToList();
+
+                    if (matches.Count == 0)
+                    {
+                        matches = containerItems.Where(i => !string.IsNullOrEmpty(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)).ToList();
+                    }
+
+                    if (matches.Count == 0)
+                        return MessageHandler.System($"No '{itemExpr}' found inside '{container.Name}'.");
+
+                    if (matches.Count == 1)
+                    {
+                        return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, matches[0], quantity);
+                    }
+                    else
+                    {
+                        var listText = string.Join("\n", matches.Select((it, idx2) => $"{idx2 + 1}) {it.Name} (Qty {it.Quantity})"));
+                        player.PendingAction = new PendingAction
+                        {
+                            Command = "GetFromContainer",
+                            Step = "SelectIndex",
+                            Data = new GetPendingData { Matches = matches }
+                        };
+
+                        return MessageHandler.System($"Multiple items match '{itemExpr}' inside '{container.Name}'. Choose which one:\n{listText}\nType the number of the item to take.");
+                    }
+                }
+                else
+                {
+                    // No container specified -> existing behavior (room-level get)
+                    return GetItem(player, itemExpr);
+                }
+            }
+
+            // --- PUT command already delegates to InventoryManager.TransferToContainer which now enforces lock ---
+            // (existing put branch remains; TransferToContainer will call KeyLocks.EnsureAccessible)
+
+            // --- NEW: lock/unlock commands ---
+            if (command.StartsWith("lock ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Syntax: lock <container> with <key>
+                var rest = command.Substring(4).Trim();
+                var parts = rest.Split(new string[] { " with " }, 2, StringSplitOptions.None);
+                if (parts.Length < 2) return MessageHandler.System("Usage: lock <container> with <key>");
+
+                var containerName = parts[0].Trim();
+                var keyExpr = parts[1].Trim();
+                if (string.IsNullOrWhiteSpace(containerName) || string.IsNullOrWhiteSpace(keyExpr))
+                    return MessageHandler.System("Usage: lock <container> with <key>");
+
+                var container = InventoryManager.FindContainer(player, containerName);
+                if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
+
+                if (!KeyLocks.IsLockable(container))
+                    return MessageHandler.System("You cannot lock that.");
+
+                // Resolve key from player's inventory
+                var parse = ItemParser.ResolveForInventoryCommand(player, keyExpr);
+                Item? key = null;
+                if (parse.Winner != null)
+                    key = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == parse.Winner.ItemID);
+
+                if (key == null)
+                {
+                    // fallback simple match
+                    key = player.Inventory.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) &&
+                        (i.Name.Equals(keyExpr, StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(keyExpr, StringComparison.OrdinalIgnoreCase))));
+                }
+
+                if (key == null)
+                    return MessageHandler.System($"You do not carry '{keyExpr}'.");
+
+                if (!string.Equals(key.ItemCategory ?? "", "Key", StringComparison.OrdinalIgnoreCase))
+                    return MessageHandler.System($"'{key.Name}' is not a key.");
+
+                // Prevent self-lock: key inside the container was handled earlier; but check again
+                if (string.Equals(key.OwnerType, "Item", StringComparison.OrdinalIgnoreCase) && key.OwnerID == container.ItemID)
+                    return MessageHandler.System("You cannot lock a container with a key that is inside it.");
+
+                // Prompt for key label (pending action)
+                player.PendingAction = new PendingAction
+                {
+                    Command = "LockKey",
+                    Step = "NameKey",
+                    Data = new KeyLocks.LockPendingData { Container = container, Key = key }
+                };
+
+                return MessageHandler.System("Enter a label for this key (single line):");
+            }
+
+            if (command.StartsWith("unlock ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Syntax: unlock <container> with <key>
+                var rest = command.Substring(6).Trim();
+                var parts = rest.Split(new string[] { " with " }, 2, StringSplitOptions.None);
+                if (parts.Length < 2) return MessageHandler.System("Usage: unlock <container> with <key>");
+
+                var containerName = parts[0].Trim();
+                var keyExpr = parts[1].Trim();
+                if (string.IsNullOrWhiteSpace(containerName) || string.IsNullOrWhiteSpace(keyExpr))
+                    return MessageHandler.System("Usage: unlock <container> with <key>");
+
+                var container = InventoryManager.FindContainer(player, containerName);
+                if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
+
+                // Resolve key from player's inventory
+                var parse = ItemParser.ResolveForInventoryCommand(player, keyExpr);
+                Item? key = null;
+                if (parse.Winner != null)
+                    key = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == parse.Winner.ItemID);
+
+                if (key == null)
+                {
+                    key = player.Inventory.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) &&
+                        (i.Name.Equals(keyExpr, StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(keyExpr, StringComparison.OrdinalIgnoreCase))));
+                }
+
+                if (key == null) return MessageHandler.System($"You do not carry '{keyExpr}'.");
+
+                // Attempt unlock
+                return KeyLocks.UnlockContainer(_dbConnection, player, container, key);
+            }
+
+
+            // Handle 'put' command: put <item> <container>  or put <n> <item> <container>
+            // Replace the existing "put" branch body in ProcessCommand with this block
+            if (command.StartsWith("put ", StringComparison.OrdinalIgnoreCase))
+            {
+                var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (tokens.Count < 2) return MessageHandler.System("Usage: put <item> <container> OR put <n> <item> <container>");
+
+                var (quantity, itemExpr, containerName, putErr) = ParseQuantityItemContainer(tokens, 1);
+                if (putErr != null) return MessageHandler.System("Usage: put <n?> <item> in <container> (recommended).");
+
+                Console.WriteLine($"[PUT] parsed: qty={quantity}, itemExpr='{itemExpr}', container='{containerName}'");
+
+                // Require explicit separator (more reliable for multi-word container names)
+                if (string.IsNullOrWhiteSpace(containerName))
+                    return MessageHandler.System("Usage: put <n?> <item> in <container> (use 'in' or 'into' for multi-word containers).");
+
+                // Resolve container (player inventory first then room)
+                var container = InventoryManager.FindContainer(player, containerName);
+                if (container == null)
+                {
+                    Console.WriteLine($"[PUT] No container matching '{containerName}' found. Player inventory: {string.Join(", ", player.Inventory.Select(i => i.Name ?? $"Item#{i.ItemID}"))}");
+                    return MessageHandler.System($"No container matching '{containerName}' found.");
+                }
+
+                // Diagnostic: list player's inventory with IDs and quantities
+                try
+                {
+                    Console.WriteLine("[PUT] Player inventory dump:");
+                    foreach (var it in player.Inventory)
+                    {
+                        Console.WriteLine($"[PUT][INV] ItemID={it.ItemID} Name='{it.Name}' Template='{it.TemplateID}' OwnerType='{it.OwnerType}' OwnerID={it.OwnerID} Qty={it.Quantity}");
+                    }
+                }
+                catch { }
+
+                // Resolve item in player's inventory (prefer ItemParser)
+                var parse = ItemParser.ResolveForInventoryCommand(player, itemExpr);
+                Console.WriteLine($"[PUT] ItemParser: winner={(parse.Winner != null ? $"{parse.Winner.Name} (ID={parse.Winner.ItemID})" : "(null)")} candidates={string.Join(", ", parse.Candidates.Select(c => c.Name ?? $"#{c.ItemID}"))}");
+
+                Item? item = null;
+                if (parse.Winner != null)
+                {
+                    // Match by ItemID (safer than ReferenceEquals across deserialized contexts)
+                    item = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == parse.Winner.ItemID);
+                    if (item == null)
+                    {
+                        // parser winner existed but didn't map to a carried instance -> log and continue fallback
+                        Console.WriteLine($"[PUT] Parser winner ItemID={parse.Winner.ItemID} not found in player.Inventory (possible reference mismatch).");
+                    }
+                }
+
+                // Stronger fallback: exact template / exact name / starts-with name
+                if (item == null)
+                {
+                    item = player.Inventory.FirstOrDefault(i =>
+                        !string.IsNullOrWhiteSpace(i.Name) &&
+                        (i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)
+                         || i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)
+                         || (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)))
+                    );
+                }
+
+                // Additional fallback: token or plural-insensitive first-token match
+                if (item == null)
+                {
+                    var firstTok = itemExpr.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? itemExpr;
+                    item = player.Inventory.FirstOrDefault(i =>
+                        !string.IsNullOrWhiteSpace(i.Name) &&
+                        i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+
+                if (item == null)
+                {
+                    Console.WriteLine($"[PUT] Could not resolve item '{itemExpr}' in player inventory. Inventory names: {string.Join(", ", player.Inventory.Select(i => i.Name))}");
+                    return MessageHandler.System($"You are not carrying '{itemExpr}'.");
+                }
+
+                // Log container accessibility check before transfer
+                var roomRef = player.CurrentRoom;
+                bool containerAccessible = (player.Inventory?.Contains(container) ?? false) || (roomRef != null && roomRef.Inventory.Contains(container));
+                Console.WriteLine($"[PUT] Container resolved: ItemID={container.ItemID} Name='{container.Name}' Accessible={containerAccessible}");
+
+                if (!containerAccessible)
+                    return MessageHandler.System($"Container '{container.Name}' not accessible.");
+
+                // perform transfer
+                return InventoryManager.TransferToContainer(_world, _dbConnection, player, item, container, quantity);
             }
 
             // Handle 'drop' command
@@ -94,8 +388,24 @@ namespace MudServer
             {
                 if (!player.IsAdmin)
                     return MessageHandler.System("Permission denied. Admins only.");
-                string item = command.Substring(8).Trim();
-                return AddItem(player, item);
+
+                // Parse optional quantity: additem <template> [qty]
+                var rest = command.Substring(8).Trim();
+                if (string.IsNullOrWhiteSpace(rest))
+                    return MessageHandler.System("Usage: additem <template> [quantity]");
+
+                var tokens = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                string template = tokens[0];
+                int qty = 1;
+                if (tokens.Length > 1)
+                {
+                    if (!int.TryParse(tokens[1], out qty) || qty < 1)
+                        return MessageHandler.System("Invalid quantity. Provide a positive integer.");
+                    // optional cap to avoid abuse (adjust as desired)
+                    qty = Math.Min(qty, 10000);
+                }
+
+                return AddItem(player, template, qty);
             }
 
             if (command.StartsWith("removeitem ", StringComparison.OrdinalIgnoreCase))
@@ -205,7 +515,7 @@ namespace MudServer
                 // Handle 'inventory' command - show detailed carried items in modal
                 case string s when s.Equals("inventory", StringComparison.OrdinalIgnoreCase) ||
                                   s.Equals("inv", StringComparison.OrdinalIgnoreCase):
-                {
+                    {
                         var invItems = player.Inventory?.Select(i =>
                         {
                             bool isWorn = (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase)))
@@ -226,12 +536,14 @@ namespace MudServer
                                 IsWorn = isWorn,
                                 // NEW: expose runtime held state and send handLoc only when runtime-held
                                 IsHeld = isHeld,
-                                HandLoc = isHeld ? i.HandLoc : 0
+                                HandLoc = isHeld ? i.HandLoc : 0,
+                                // NEW: quantity
+                                Quantity = i.Quantity > 0 ? i.Quantity : 1
                             };
                         }).ToList() ?? new List<MudNetworking.InventoryItem>();
 
                         return MudNetworking.MessageHandler.Inventory(invItems);
-                }
+                    }
 
                 case string s when s.StartsWith("wear", StringComparison.OrdinalIgnoreCase):
                     {
@@ -248,16 +560,16 @@ namespace MudServer
                         return MessageHandler.System("Usage: wear <item name>");
                     }
 
-                
+
 
                 // handle unwear <arg>
                 case string s when s.StartsWith("unwear", StringComparison.OrdinalIgnoreCase):
-                {
-                    var partsUnwear = command.Split(' ', 2);
-                    if (partsUnwear.Length < 2) return MessageHandler.System("Usage: unwear <item name or wearloc>");
-                    var arg = partsUnwear[1].Trim();
-                    return UnwearItem(player, arg);
-                }
+                    {
+                        var partsUnwear = command.Split(' ', 2);
+                        if (partsUnwear.Length < 2) return MessageHandler.System("Usage: unwear <item name or wearloc>");
+                        var arg = partsUnwear[1].Trim();
+                        return UnwearItem(player, arg);
+                    }
 
                 // Add handling for 'unwear' command
                 case string s when s.Equals("unwear", StringComparison.OrdinalIgnoreCase):
@@ -266,30 +578,30 @@ namespace MudServer
                     }
 
                 case string s when s.StartsWith("hold", StringComparison.OrdinalIgnoreCase):
-                {
-                    // Handles: "hold item", "hold   item", "hold\titem"
-                    var trimmed = command.Trim();
-                    var arg = trimmed.Length > 4 ? trimmed.Substring(4).Trim() : "";
-                    if (string.IsNullOrWhiteSpace(arg))
-                        return MessageHandler.System("Usage: hold <item name>");
-                    return HoldItem(player, arg);
-                }
+                    {
+                        // Handles: "hold item", "hold   item", "hold\titem"
+                        var trimmed = command.Trim();
+                        var arg = trimmed.Length > 4 ? trimmed.Substring(4).Trim() : "";
+                        if (string.IsNullOrWhiteSpace(arg))
+                            return MessageHandler.System("Usage: hold <item name>");
+                        return HoldItem(player, arg);
+                    }
 
                 case string s when s.Equals("hold", StringComparison.OrdinalIgnoreCase):
-                {
-                    return MessageHandler.System("Usage: hold <item name>");
-                }
+                    {
+                        return MessageHandler.System("Usage: hold <item name>");
+                    }
 
-                
+
 
                 // handle unhold <arg>
                 case string s when s.StartsWith("unhold", StringComparison.OrdinalIgnoreCase):
-                {
-                    var partsUnhold = command.Split(' ', 2);
-                    if (partsUnhold.Length < 2) return MessageHandler.System("Usage: unhold <item name or hand>");
-                    var arg = partsUnhold[1].Trim();
-                    return UnholdItem(player, arg);
-                }
+                    {
+                        var partsUnhold = command.Split(' ', 2);
+                        if (partsUnhold.Length < 2) return MessageHandler.System("Usage: unhold <item name or hand>");
+                        var arg = partsUnhold[1].Trim();
+                        return UnholdItem(player, arg);
+                    }
 
                 case string s when s.Equals("unhold", StringComparison.OrdinalIgnoreCase):
                     {
@@ -308,38 +620,38 @@ namespace MudServer
 
                 // Admin command: debugitems (prints all Item rows from the DB on the active connection)
                 case "debugitems":
-                {
-                    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-
-                    try
                     {
-                        using var cmd = _dbConnection.CreateCommand();
-                        cmd.CommandText = "SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID, OwnerAreaID FROM Item ORDER BY ItemID DESC";
-                        using var rdr = cmd.ExecuteReader();
+                        if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
 
-                        int n = 0;
-                        while (rdr.Read())
+                        try
                         {
-                            n++;
-                            var id = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
-                            var tid = rdr.IsDBNull(1) ? "" : rdr.GetString(1);
-                            var name = rdr.IsDBNull(2) ? "" : rdr.GetString(2);
-                            var otype = rdr.IsDBNull(3) ? "" : rdr.GetString(3);
-                            var oid = rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4);
-                            var rid = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5);
-                            var oarea = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6);
+                            using var cmd = _dbConnection.CreateCommand();
+                            cmd.CommandText = "SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID, OwnerAreaID FROM Item ORDER BY ItemID DESC";
+                            using var rdr = cmd.ExecuteReader();
 
-                            Console.WriteLine($"[DEBUGITEMS] id={id} tid='{tid}' name='{name}' otype='{otype}' oid={oid} rid={rid} oarea={oarea}");
+                            int n = 0;
+                            while (rdr.Read())
+                            {
+                                n++;
+                                var id = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+                                var tid = rdr.IsDBNull(1) ? "" : rdr.GetString(1);
+                                var name = rdr.IsDBNull(2) ? "" : rdr.GetString(2);
+                                var otype = rdr.IsDBNull(3) ? "" : rdr.GetString(3);
+                                var oid = rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4);
+                                var rid = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5);
+                                var oarea = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6);
+
+                                Console.WriteLine($"[DEBUGITEMS] id={id} tid='{tid}' name='{name}' otype='{otype}' oid={oid} rid={rid} oarea={oarea}");
+                            }
+
+                            return MessageHandler.System($"DebugItems: printed {n} row(s) to server log.");
                         }
-
-                        return MessageHandler.System($"DebugItems: printed {n} row(s) to server log.");
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[DEBUGITEMS][ERROR] {ex}");
+                            return MessageHandler.System($"DebugItems failed: {ex.Message}");
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[DEBUGITEMS][ERROR] {ex}");
-                        return MessageHandler.System($"DebugItems failed: {ex.Message}");
-                    }
-                }
 
                 default:
                     return MessageHandler.System($"Unknown command: {command}");
@@ -462,6 +774,70 @@ namespace MudServer
                 MessageHandler.EnqueuePlayerUpdate(player);
             }
             catch { }
+        }
+
+        // Add this helper method inside the CommandHandler class (near other private helpers)
+        private (int quantity, string itemExpr, string containerName, string? error) ParseQuantityItemContainer(List<string> tokens, int startIdx)
+        {
+            // tokens: full token list; startIdx = index of first token after command word (e.g. 1 for "put"/"get")
+            if (tokens == null || tokens.Count <= startIdx) return (1, "", "", "Usage: <command> <item> [container] or <n> <item> <container>");
+            int quantity = 1;
+            int idx = startIdx;
+
+            // optional numeric prefix
+            if (tokens.Count > idx && int.TryParse(tokens[idx], out var parsedQty))
+            {
+                quantity = Math.Max(1, parsedQty);
+                idx++;
+            }
+
+            if (tokens.Count <= idx) return (quantity, "", "", "Usage: <command> <item> [container] or <n> <item> <container>");
+
+            // Look for separator token that indicates container follows
+            // Accept: in, into, from, inside
+            var separators = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "in", "into", "from", "inside" };
+            int sepIndex = -1;
+            for (int i = idx; i < tokens.Count; i++)
+            {
+                if (separators.Contains(tokens[i]))
+                {
+                    sepIndex = i;
+                    break;
+                }
+            }
+
+            string itemExpr;
+            string containerName = "";
+
+            if (sepIndex >= 0)
+            {
+                // everything before separator is item, everything after is container (support multi-word container)
+                if (sepIndex == idx) return (quantity, "", "", "Usage: missing item before container separator.");
+                itemExpr = string.Join(" ", tokens.Skip(idx).Take(sepIndex - idx));
+                if (sepIndex + 1 >= tokens.Count) return (quantity, "", "", "Usage: missing container name after separator.");
+                containerName = string.Join(" ", tokens.Skip(sepIndex + 1));
+            }
+            else
+            {
+                // fallback: assume last token is container if there are at least two tokens remaining
+                if (tokens.Count - idx >= 2)
+                {
+                    containerName = tokens.Last();
+                    itemExpr = string.Join(" ", tokens.Skip(idx).Take(tokens.Count - idx - 1));
+                }
+                else
+                {
+                    // only an item expression present
+                    itemExpr = string.Join(" ", tokens.Skip(idx));
+                    containerName = "";
+                }
+            }
+
+            itemExpr = itemExpr?.Trim() ?? "";
+            containerName = containerName?.Trim() ?? "";
+
+            if (string.IsNullOrWhiteSpace(itemExpr)) return (quantity, "", "", "Usage: missing item name.");
+            return (quantity, itemExpr, containerName, null);
         }
 
         private Message? Look(Player player)
@@ -716,18 +1092,43 @@ namespace MudServer
         {
             if (player.PendingAction == null) return null;
 
-            // Delegate auth flow to PlayerAuthentication
-            var authHandled = _auth.HandleAuthPending(player, rawCommand);
-            if (authHandled != null) return authHandled;
-
-            // The auth handler may have completed the flow and cleared PendingAction (e.g. successful login).
-            // Stop processing further pending-action logic if PendingAction is now null.
-            if (player.PendingAction == null) return null;
-
+            // First, allow immediate handling of the LockKey pending flow so the
+            // label entered by the player is consumed correctly (was being treated
+            // as a normal command previously).
             string input = ExtractCommandText(rawCommand).Trim();
             var pa = player.PendingAction!;
 
-            // existing pending action handling (GetItem, DropItem, EditRoom, CreateArea, CreateRoom, etc.)
+            // Handle LockKey pending action (name the key)
+            if (pa.Command == "LockKey")
+            {
+                var data = pa.Data as KeyLocks.LockPendingData;
+                if (data == null)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
+
+                if (pa.Step == "NameKey")
+                {
+                    string label = input;
+                    if (string.IsNullOrWhiteSpace(label) || label.Length > 100)
+                        return MessageHandler.System("Invalid label. Enter a non-empty label up to 100 characters.");
+
+                    player.PendingAction = null!;
+                    return KeyLocks.LockContainer(_dbConnection, player, data.Container, data.Key, label.Trim());
+                }
+
+                // If there are other LockKey steps in future, handle them here...
+            }
+
+            // Delegate auth flow to PlayerAuthentication (unchanged behavior for auth pending)
+            var authHandled = _auth.HandleAuthPending(player, rawCommand);
+            if (authHandled != null) return authHandled;
+
+            // The rest of the existing pending action handling follows (GetItem, DropItem, EditRoom, CreateArea, CreateRoom, etc.)
+            // (Preserved existing logic below.)
+
+            // The GetItem pending action
             if (pa.Command == "GetItem")
             {
                 var room = player.CurrentRoom;
@@ -757,13 +1158,11 @@ namespace MudServer
                     if (quantity > available)
                         return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
 
-                    // Transfer 'quantity' items (they are identical instances)
                     var toTransfer = data.Matches.Take(quantity).ToList();
                     player.PendingAction = null!;
 
                     foreach (var it in toTransfer)
                     {
-                        // reuse TransferItemToPlayer which persists
                         TransferItemToPlayer(player, it);
                     }
 
@@ -771,7 +1170,7 @@ namespace MudServer
                 }
             }
 
-            // Handle DropItem multi-step interaction (mirror GetItem)
+            // DropItem pending action
             if (pa.Command == "DropItem")
             {
                 var room = player.CurrentRoom;
@@ -813,7 +1212,7 @@ namespace MudServer
                 }
             }
 
-            // EDIT ROOM
+            // EditRoom pending action (partial flow preserved)
             if (pa.Command == "EditRoom")
             {
                 if (!player.IsAdmin)
@@ -865,7 +1264,7 @@ namespace MudServer
                 }
             }
 
-            // CREATE AREA
+            // CreateArea pending action
             if (pa.Command == "CreateArea")
             {
                 if (!player.IsAdmin)
@@ -875,11 +1274,8 @@ namespace MudServer
                 }
 
                 string dir = pa.Direction;
-
-                // 1) Create in-memory Area object (ID will be populated from DB insert)
                 var newArea = new Area(input, 0);
 
-                // 2) Persist Area row and obtain DB-assigned AreaID
                 try
                 {
                     using var ins = _dbConnection.CreateCommand();
@@ -906,13 +1302,11 @@ namespace MudServer
                     return MessageHandler.System($"Error creating area {input}: {ex.Message}");
                 }
 
-                // 3) Build the starting room and set AreaID to persisted value
                 var newRoom = new Room($"{input} - Undefined Room", "Starting room for the area")
                 {
                     AreaID = newArea.AreaID
                 };
 
-                // 4) Persist the room (will reference the newly created AreaID)
                 int dbID = _world.CreateRoomInDB(newRoom, _dbConnection);
                 if (dbID == 0)
                 {
@@ -920,10 +1314,9 @@ namespace MudServer
                     return MessageHandler.System("Failed to create room in database.");
                 }
 
-                // 5) Finish in-memory wiring
-                newArea.Rooms.Add(newRoom);
-                _world.Areas.Add(newArea);
-
+                var currentArea = _world.Areas.FirstOrDefault(a => a.Rooms.Contains(player.CurrentRoom));
+                if (currentArea != null)
+                    currentArea.Rooms.Add(newRoom);
                 player.CurrentRoom.Exits.Add(new Room.RoomExit(dir, newRoom.RoomID));
                 newRoom.Exits.Add(new Room.RoomExit(OppositeDirection(dir), player.CurrentRoom.RoomID));
 
@@ -932,15 +1325,10 @@ namespace MudServer
                 _world.SaveDirtyRooms(_dbConnection);
 
                 player.PendingAction = null!;
-
-                return MessageHandler.Room(
-                    player.CurrentRoom,
-                    player.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(),
-                    player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
-                    _world);
+                return MessageHandler.System("Area created.");
             }
 
-            // CREATE ROOM
+            // CreateRoom pending action
             if (pa.Command == "CreateRoom")
             {
                 if (!player.IsAdmin)
@@ -950,7 +1338,6 @@ namespace MudServer
                 }
 
                 string dir = pa.Direction;
-
                 var currentArea = _world.Areas.FirstOrDefault(a => a.Rooms.Contains(player.CurrentRoom));
                 if (currentArea == null)
                 {
@@ -971,7 +1358,6 @@ namespace MudServer
                 }
 
                 currentArea.Rooms.Add(newRoom);
-
                 player.CurrentRoom.Exits.Add(new Room.RoomExit(dir, newRoom.RoomID));
                 newRoom.Exits.Add(new Room.RoomExit(OppositeDirection(dir), player.CurrentRoom.RoomID));
 
@@ -980,15 +1366,10 @@ namespace MudServer
                 _world.SaveDirtyRooms(_dbConnection);
 
                 player.PendingAction = null!;
-
-                // 4) Replace CreateArea/CreateRoom return Room calls to use names only (no LastAction formatting)
-                return MessageHandler.Room(
-                    player.CurrentRoom,
-                    player.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(),
-                    player.CurrentRoom.Players.Where(p => p != player).Select(p => p.Name).ToList(),
-                    _world);
+                return MessageHandler.System("Room created.");
             }
 
+            // If no pending action matched, return null so normal command processing continues.
             return null;
         }
 
@@ -1641,10 +2022,9 @@ namespace MudServer
             _ => ""
         };
 
-        // -------------------------------
-
         // Admin helpers: add/remove/list items in current room
-        private Message? AddItem(Player player, string itemTemplateId)
+        // Updated AddItem signature to accept quantity and delegate to InventoryManager for consistent behavior.
+        private Message? AddItem(Player player, string itemTemplateId, int quantity = 1)
         {
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
@@ -1654,72 +2034,8 @@ namespace MudServer
 
             try
             {
-                Console.WriteLine($"[AddItem][TRACE] Creating item from template='{itemTemplateId}' in RoomID={room.RoomID}, AreaID={room.AreaID}.");
-                var item = _world.ItemFactory.CreateItem(itemTemplateId, "ROOM", 0, room.RoomID);
-
-                // Normalize ownership fields consistently
-                item.OwnerType = "Room";
-                item.OwnerID = room.RoomID;
-                item.RoomID = room.RoomID;
-                item.OwnerAreaID = room.AreaID;
-
-                Console.WriteLine($"[AddItem][TRACE] Pre-SaveItem: ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}'.");
-
-                MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
-
-                using var readCmd = _dbConnection.CreateCommand();
-                readCmd.CommandText = "SELECT ItemID, TemplateID, OwnerType, OwnerID, RoomID, OwnerAreaID FROM Item WHERE ItemID=@id";
-                readCmd.Parameters.AddWithValue("@id", item.ItemID);
-                using var r = readCmd.ExecuteReader();
-                if (r.Read())
-                {
-                    Console.WriteLine($"[AddItem][VERIFY] Row: id={r.GetInt32(0)} tid='{r.GetString(1)}' otype='{r.GetString(2)}' oid={r.GetInt32(3)} rid={r.GetInt32(4)} oarea={r.GetInt32(5)}");
-                }
-                else
-                {
-                    Console.WriteLine($"[AddItem][ERROR] Just-inserted ItemID={item.ItemID} not found via SELECT.");
-                }
-
-                Console.WriteLine($"[AddItem][TRACE] Post-SaveItem: ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}.");
-
-                using var verifyCmd = _dbConnection.CreateCommand();
-                verifyCmd.CommandText = "SELECT COUNT(*) FROM Item WHERE OwnerType='Room' AND OwnerID=@rid";
-                verifyCmd.Parameters.AddWithValue("@rid", room.RoomID);
-                var countObj = verifyCmd.ExecuteScalar();
-                long count = countObj is long l ? l : Convert.ToInt64(countObj);
-                Console.WriteLine($"[AddItem][TRACE] DB verify: Room {room.RoomID} now has {count} item(s) persisted as OwnerType='Room'.");
-
-                room.Inventory.Add(item);
-                room.IsDirty = true;
-
-                // Verify DB persistence for this room
-                using var checkCmd = _dbConnection.CreateCommand();
-                checkCmd.CommandText = "SELECT COUNT(*) FROM Item WHERE OwnerType='Room' AND OwnerID=@rid";
-                checkCmd.Parameters.AddWithValue("@rid", room.RoomID);
-                var itemCount = (long)(checkCmd.ExecuteScalar() ?? 0);
-                Console.WriteLine($"[AddItem][TRACE] Verify after add: Room {room.RoomID} has {itemCount} items in DB.");
-
-                _world.SaveDirtyRooms(_dbConnection);
-
-                foreach (var p in room.Players)
-                {
-                    p.PendingMessageQueue.Add(MessageHandler.Room(
-                        room,
-                        room.Npcs.Select(n => n.DisplayName).ToList(),
-                        room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
-                        _world));
-                }
-
-                foreach (var n in room.Npcs)
-                {
-                    if (!string.IsNullOrWhiteSpace(n.LastAction))
-                    {
-                        foreach (var recipient in room.Players)
-                            MessageHandler.SendSystem(recipient, n.LastAction);
-                    }
-                }
-
-                return MessageHandler.System($"Item '{item.Name}' added to the room.");
+                // Delegate to InventoryManager which uses ItemFactory + ItemPersistence and supports merging/quantity.
+                return InventoryManager.AddItemToRoom(_world, _dbConnection, player, itemTemplateId, quantity);
             }
             catch (Exception ex)
             {
@@ -1791,7 +2107,7 @@ namespace MudServer
             {
                 case "u": return "up";
                 case "d": return "down";
-                default:  return token;
+                default: return token;
             }
         }
     }

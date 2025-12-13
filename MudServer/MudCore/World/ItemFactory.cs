@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Linq;
 
 namespace MudCore.World
 {
@@ -23,6 +24,11 @@ namespace MudCore.World
         public string WearLoc { get; set; } = "";
         public int HandLoc { get; set; } = 1;
         public List<string> Flags { get; set; } = new List<string>();
+
+        // Optional stackable marker in templates; accept either a boolean or string in JSON.
+        // Many existing templates may use Flags with "Stackable" so we check both.
+        [JsonPropertyName("Stackable")]
+        public string? Stackable { get; set; } = null;
 
         // Example new properties
         public int Condition { get; set; } = 100; // default condition
@@ -114,11 +120,37 @@ namespace MudCore.World
             _templateManager = templateManager;
         }
 
-        public Item CreateItem(string templateId, string ownerType, int ownerId, int roomId = 0)
+        // quantity: optional number of units to create for stackable templates (defaults to 1)
+        public Item CreateItem(string templateId, string ownerType, int ownerId, int roomId = 0, int quantity = 1)
         {
             var template = _templateManager.Get(templateId);
 
+            // Start with a copy of template flags (runtime list)
             var flags = template.Flags != null ? new List<string>(template.Flags) : new List<string>();
+
+            // Determine if template is stackable from template.Stackable or Flags marker.
+            bool templateStackable = false;
+            if (!string.IsNullOrWhiteSpace(template.Stackable))
+            {
+                // template.Stackable may be "true"/"false" (string) or "True" etc.
+                if (bool.TryParse(template.Stackable, out var parsed))
+                    templateStackable = parsed;
+                else
+                    templateStackable = string.Equals(template.Stackable, "true", StringComparison.OrdinalIgnoreCase);
+            }
+
+            // Also allow explicit Flags marker "Stackable"
+            if (!templateStackable && flags != null && flags.Any(f => string.Equals(f, "Stackable", StringComparison.OrdinalIgnoreCase)))
+                templateStackable = true;
+
+            // Robust fix: when a template declares Stackable (via property or flags),
+            // ensure the runtime Flags list contains the "Stackable" token so persistence
+            // merge logic (which inspects FlagsJson) sees it.
+            if (templateStackable)
+            {
+                if (!flags.Any(f => string.Equals(f, "Stackable", StringComparison.OrdinalIgnoreCase)))
+                    flags.Add("Stackable");
+            }
 
             var item = new Item
             {
@@ -140,8 +172,14 @@ namespace MudCore.World
                 RoomID = roomId,
                 Condition = 100, // fully intact for freshly created items
                 // ensure template multiplier is applied to the new item
-                DmgDiceMult = template.DmgDiceMult
+                DmgDiceMult = template.DmgDiceMult,
+                Quantity = 1 // default; may be updated below for stackables
             };
+
+            if (templateStackable)
+                item.Quantity = Math.Max(1, quantity);
+            else
+                item.Quantity = 1; // non-stackables always created as single item
 
             return item;
         }

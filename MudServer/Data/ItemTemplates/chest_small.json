@@ -1,0 +1,13 @@
+{
+  "Id": "chest_small",
+  "Name": "Small Chest",
+  "ItemCategory": "Container",
+  "Weight": 0.3,
+  "Value": 12,
+  "ShortDesc": "A small oak chest",
+  "LongDesc": "A small chest made of oak, this can be locked.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": ["Capacity80","Accept:All","Lockable"],
+  "BaseACBonus": 0.0
+}

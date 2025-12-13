@@ -1,0 +1,13 @@
+{
+  "Id": "key",
+  "Name": "Key",
+  "ItemCategory": "Key",
+  "Weight": 0.02,
+  "Value": 1,
+  "ShortDesc": "A key",
+  "LongDesc": "A key, this can lock things.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0
+}

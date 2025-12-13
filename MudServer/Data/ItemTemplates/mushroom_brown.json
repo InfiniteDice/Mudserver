@@ -8,5 +8,6 @@
   "LongDesc": "A brownish mushroom, I bet you could eat this.",
   "WearLoc": "",
   "HandLoc": 0,
-  "Flags": [ "Heal" ]
+  "Flags": [ "Heal" ],
+  "Stackable": "true"
 }

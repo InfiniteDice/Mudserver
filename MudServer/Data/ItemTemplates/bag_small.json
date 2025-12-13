@@ -1,0 +1,13 @@
+{
+  "Id": "bag_small",
+  "Name": "Small Bag",
+  "ItemCategory": "Container",
+  "Weight": 0.1,
+  "Value": 3,
+  "ShortDesc": "A simple linen bag",
+  "LongDesc": "A small bag made of linen, this can hold some stuff.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": ["Capacity50","Accept:All"],
+  "BaseACBonus": 0.0
+}

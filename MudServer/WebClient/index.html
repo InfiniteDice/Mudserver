@@ -8,16 +8,7 @@
 </head>
 <body>
     <div id="app">
-        <header class="topbar">
-            <div class="title">MUD</div>
-            <div class="status">
-                <span class="status-item">Player: <strong id="playerName">—</strong></span>
-                <span class="status-item">HP: <strong id="hp">0</strong></span>
-                <span class="status-item">XP: <strong id="xp">0</strong></span>
-                <button id="invBtn" class="inv-button">Inventory</button>
-            </div>
-        </header>
-
+        <header class="topbar"> <div class="title">MUD</div> <div class="status"> <span class="status-item">Player: <strong id="playerName">—</strong></span> <span class="status-item">HP: <strong id="hp">0</strong></span> <span class="status-item">XP: <strong id="xp">0</strong></span> <button id="invBtn" class="inv-button">Inventory</button> </div> </header>
         <main class="main">
             <section class="room card">
                 <h2 id="roomTitle">Loading…</h2>
@@ -169,6 +160,7 @@
                 const wearLoc = it.wearLoc || '';
                 const isWorn = !!it.isWorn;
                 const isHeld = !!it.isHeld;
+                const qty = (it.quantity && Number(it.quantity) > 1) ? Number(it.quantity) : 1;
 
                 if (isWorn && wearLoc) {
                     status = `Worn on ${wearLoc}`;
@@ -176,9 +168,11 @@
                     status = `Held`;
                 }
 
+                const displayName = qty > 1 ? `${qty} x ${escapeHtml(it.name)}` : escapeHtml(it.name);
+
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-          <td>${escapeHtml(it.name)}</td>
+          <td>${displayName}</td>
           <td>${escapeHtml(String(it.weight ?? ''))}</td>
           <td>${escapeHtml(String(it.condition ?? ''))}</td>
           <td>${escapeHtml(it.itemCategory ?? '')}</td>
@@ -248,7 +242,8 @@
                     }
 
                     if (itemsEl) {
-                        itemsEl.innerHTML = (msg.items || []).map(i => `<span class="badge item">${i}</span>`).join(' ');
+                        // msg.items now contains quantity-prefixed strings for room items when applicable
+                        itemsEl.innerHTML = (msg.items || []).map(i => `<span class="badge item">${escapeHtml(i)}</span>`).join(' ');
                     }
 
                     addLog(title ? `You look at ${title}` : `You look around`, 'info');

@@ -1,0 +1,14 @@
+{
+  "Id": "coin_gold",
+  "Name": "Gold Coin",
+  "ItemCategory": "Currency",
+  "Weight": 0.003,
+  "Value": 2000,
+  "ShortDesc": "A gold coin",
+  "LongDesc": "A gold coin, sweet sunshine!, it's worth 20 silver, or 2000 copper",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Stackable": "true"
+}

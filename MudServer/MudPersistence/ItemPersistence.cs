@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Data;
+using System.Linq;
 
 namespace MudPersistence
 {
@@ -36,6 +37,7 @@ namespace MudPersistence
                 _ => s
             };
         }
+
 
         public static void SaveItem(SqliteConnection conn, Item item, SqliteTransaction? tx = null)
         {
@@ -92,12 +94,12 @@ namespace MudPersistence
                             // Try to find an existing stack with the same TemplateID, owner and identical flags JSON.
                             using var findCmd = new SqliteCommand(
                                 @"SELECT ItemID, Quantity FROM Item
-                                  WHERE TemplateID = @template
-                                    AND OwnerType = @otype
-                                    AND OwnerID = @oid
-                                    AND RoomID = @rid
-                                    AND Flags = @flags
-                                  ORDER BY ItemID LIMIT 1;", conn);
+                          WHERE TemplateID = @template
+                            AND OwnerType = @otype
+                            AND OwnerID = @oid
+                            AND RoomID = @rid
+                            AND Flags = @flags
+                          ORDER BY ItemID LIMIT 1;", conn);
 
                             if (tx != null) findCmd.Transaction = tx;
 
@@ -142,11 +144,11 @@ namespace MudPersistence
                             + (hasQuantity == true ? ", Quantity" : string.Empty)
                             + ", DmgDiceMult, OwnerAreaID"
                             + (hasBaseAcBonus == true ? ", BaseACBonus" : string.Empty) + @")
-                              VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags"
+                      VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags"
                             + (hasQuantity == true ? ", @quantity" : string.Empty)
                             + ", @dmgmult, @ownerarea"
                             + (hasBaseAcBonus == true ? ", @baseac" : string.Empty) + @");
-                              SELECT last_insert_rowid();", conn);
+                      SELECT last_insert_rowid();", conn);
 
                         if (tx != null) cmd.Transaction = tx;
 
@@ -187,25 +189,25 @@ namespace MudPersistence
                     {
                         using var cmd = new SqliteCommand(
                             @"UPDATE Item SET
-                                Name = @name,
-                                OwnerType = @otype,
-                                OwnerID = @oid,
-                                RoomID = @rid,
-                                OwnerAreaID = @ownerarea,
-                                Value = @value,
-                                Weight = @weight,
-                                WearLoc = @wear,
-                                HandLoc = @hand,
-                                ItemCategory = @category,
-                                ShortDesc = @short,
-                                LongDesc = @long,
-                                Creator = @creator,
-                                Condition = @cond,
-                                Flags = @flags,"
+                        Name = @name,
+                        OwnerType = @otype,
+                        OwnerID = @oid,
+                        RoomID = @rid,
+                        OwnerAreaID = @ownerarea,
+                        Value = @value,
+                        Weight = @weight,
+                        WearLoc = @wear,
+                        HandLoc = @hand,
+                        ItemCategory = @category,
+                        ShortDesc = @short,
+                        LongDesc = @long,
+                        Creator = @creator,
+                        Condition = @cond,
+                        Flags = @flags,"
                             + (hasQuantity == true ? " Quantity = @quantity," : string.Empty) + @"
-                                DmgDiceMult = @dmgmult"
+                        DmgDiceMult = @dmgmult"
                             + (hasBaseAcBonus == true ? ", BaseACBonus = @baseac" : string.Empty) + @"
-                            WHERE ItemID = @id;", conn);
+                    WHERE ItemID = @id;", conn);
 
                         if (tx != null) cmd.Transaction = tx;
 

@@ -118,14 +118,16 @@ namespace MudServer
                 }
             }
 
-            // --- GET / TAKE command handling: added container lock check ---
+            // --- GET / TAKE command handling: added container lock check & quantity support ---
             if (command.StartsWith("get ", StringComparison.OrdinalIgnoreCase) ||
                 command.StartsWith("take ", StringComparison.OrdinalIgnoreCase))
             {
                 var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
-                if (tokens.Count < 2) return MessageHandler.System("Usage: get <item> [container] OR get <n> <item> <container>");
+                if (tokens.Count < 2) return MessageHandler.System("Usage: get <item> [container] OR get <n|all> <item> <container>");
 
-                var (quantity, itemExpr, containerName, getErr) = ParseQuantityItemContainer(tokens, 1);
+                // Replace the existing "get" branch body in ProcessCommand with this block
+                // inside ProcessCommand GET/TAKE branch - replace existing ParseQuantityItemContainer unpacking
+                var (quantity, explicitQuantity, itemExpr, containerName, getErr) = ParseQuantityItemContainer(tokens, 1);
                 if (getErr != null) return MessageHandler.System(getErr);
 
                 if (!string.IsNullOrWhiteSpace(containerName))
@@ -155,7 +157,9 @@ namespace MudServer
 
                     if (matches.Count == 1)
                     {
-                        return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, matches[0], quantity);
+                        // If player explicitly requested a quantity use that, otherwise default to single-unit for container-get
+                        int qtyToTake = explicitQuantity ? (quantity < 0 ? matches[0].Quantity : quantity) : 1;
+                        return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, matches[0], qtyToTake);
                     }
                     else
                     {
@@ -172,8 +176,10 @@ namespace MudServer
                 }
                 else
                 {
-                    // No container specified -> existing behavior (room-level get)
-                    return GetItem(player, itemExpr);
+                    // No container specified -> room-level get; pass parsed quantity through
+                    // If the player explicitly specified a number/all forward it; otherwise signal 'unspecified' via 0 so GetItem will prompt for stacks.
+                    int forwardQty = explicitQuantity ? quantity : 0;
+                    return GetItem(player, itemExpr, forwardQty);
                 }
             }
 
@@ -274,7 +280,7 @@ namespace MudServer
                 var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
                 if (tokens.Count < 2) return MessageHandler.System("Usage: put <item> <container> OR put <n> <item> <container>");
 
-                var (quantity, itemExpr, containerName, putErr) = ParseQuantityItemContainer(tokens, 1);
+                var (quantity, explicitQuantity, itemExpr, containerName, putErr) = ParseQuantityItemContainer(tokens, 1);
                 if (putErr != null) return MessageHandler.System("Usage: put <n?> <item> in <container> (recommended).");
 
                 Console.WriteLine($"[PUT] parsed: qty={quantity}, itemExpr='{itemExpr}', container='{containerName}'");
@@ -364,8 +370,8 @@ namespace MudServer
                     {
                         // allow equipped fallback for ambiguous cases to preserve UX
                         item = player.Inventory.FirstOrDefault(i =>
-                            !string.IsNullOrWhiteSpace(i.Name) &&
-                            i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0);
+                          !string.IsNullOrWhiteSpace(i.Name) &&
+                          i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0);
                     }
                 }
 
@@ -389,10 +395,15 @@ namespace MudServer
             // Handle 'drop' command
             if (command.StartsWith("drop ", StringComparison.OrdinalIgnoreCase))
             {
-                var parts = command.Split(' ', 2);
-                if (parts.Length < 2) return MessageHandler.System("Usage: drop <item>");
-                string itemName = parts[1].Trim();
-                return DropItem(player, itemName);
+                var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (tokens.Count < 2) return MessageHandler.System("Usage: drop <item> or drop <n|all> <item>");
+
+                var (quantity, explicitQuantity, itemExpr, containerName, dropErr) = ParseQuantityItemContainer(tokens, 1);
+                if (dropErr != null) return MessageHandler.System(dropErr);
+
+                // We don't support dropping directly into a container with this form; ignore containerName if present.
+                int forwardQty = explicitQuantity ? quantity : 0; // 0 => unspecified => prompt for stacks when appropriate
+                return DropItem(player, itemExpr, forwardQty);
             }
 
             var normalized = NormalizeCommandAlias(command);
@@ -438,6 +449,12 @@ namespace MudServer
 
                 // Delegated to new AdminService
                 return _adminService.AddItem(player, template, qty);
+            }
+
+            if (command.StartsWith("exchange ", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                return _adminService.HandleExchange(player, command);
             }
 
             if (command.StartsWith("removeitem ", StringComparison.OrdinalIgnoreCase))
@@ -635,10 +652,39 @@ namespace MudServer
                             // Use runtime-held detection helper (checks Flags/FlagsJson) so template HandLoc doesn't imply held.
                             bool isHeld = IsRuntimeHeld(i);
 
+                            // Compute base total weight for stacked items (unit weight * quantity)
+                            double baseTotalWeight = i.Weight * Math.Max(1, i.Quantity);
+
+                            // If this item is a container, add weight of contained items (OwnerType='Item' OwnerID = container.ItemID)
+                            double containedWeight = 0.0;
+                            try
+                            {
+                                if (!string.IsNullOrWhiteSpace(i.ItemCategory) && string.Equals(i.ItemCategory, "Container", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    using var cmd = _dbConnection.CreateCommand();
+                                    cmd.CommandText = @"SELECT SUM(COALESCE(Weight,0.0) * COALESCE(Quantity,1)) FROM Item
+                                WHERE OwnerType = 'Item' AND OwnerID = @cid;";
+                                    cmd.Parameters.AddWithValue("@cid", i.ItemID);
+                                    var obj = cmd.ExecuteScalar();
+                                    if (!(obj == null || obj is DBNull))
+                                    {
+                                        // obj may be long/double/decimal - convert safely
+                                        containedWeight = Convert.ToDouble(obj);
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[INVENTORY] Failed to compute contained weight for ItemID={i?.ItemID}: {ex.Message}");
+                                containedWeight = 0.0;
+                            }
+
+                            double totalWeight = Math.Round(baseTotalWeight + containedWeight, 2);
+
                             return new MudNetworking.InventoryItem
                             {
                                 Name = i.Name ?? "",
-                                Weight = i.Weight,
+                                Weight = totalWeight,
                                 Condition = i.Condition,
                                 ItemCategory = i.ItemCategory ?? "",
                                 ShortDesc = i.ShortDesc ?? "",
@@ -777,7 +823,7 @@ namespace MudServer
                     (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)) ||
                     (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase)));
 
-                // Fallback startswith
+                // Fallback starts-with
                 if (item == null)
                     item = candidates.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase));
 
@@ -860,21 +906,36 @@ namespace MudServer
         }
 
         // Add this helper method inside the CommandHandler class (near other private helpers)
-        private (int quantity, string itemExpr, string containerName, string? error) ParseQuantityItemContainer(List<string> tokens, int startIdx)
+        private (int quantity, bool explicitQuantity, string itemExpr, string containerName, string? error) ParseQuantityItemContainer(List<string> tokens, int startIdx)
         {
             // tokens: full token list; startIdx = index of first token after command word (e.g. 1 for "put"/"get")
-            if (tokens == null || tokens.Count <= startIdx) return (1, "", "", "Usage: <command> <item> [container] or <n> <item> <container>");
+            if (tokens == null || tokens.Count <= startIdx)
+                return (1, false, "", "", "Usage: <command> <item> [container] or <n|all> <item> <container>");
+
             int quantity = 1;
+            bool explicitQuantity = false;
             int idx = startIdx;
 
-            // optional numeric prefix
-            if (tokens.Count > idx && int.TryParse(tokens[idx], out var parsedQty))
+            // optional numeric prefix or keyword 'all'
+            if (tokens.Count > idx)
             {
-                quantity = Math.Max(1, parsedQty);
-                idx++;
+                var tok = tokens[idx].Trim().ToLowerInvariant();
+                if (int.TryParse(tokens[idx], out var parsedQty))
+                {
+                    quantity = Math.Max(1, parsedQty);
+                    explicitQuantity = true;
+                    idx++;
+                }
+                else if (tok == "all" || tok == "everything" || tok == "entire")
+                {
+                    // -1 denotes "all"
+                    quantity = -1;
+                    explicitQuantity = true;
+                    idx++;
+                }
             }
 
-            if (tokens.Count <= idx) return (quantity, "", "", "Usage: <command> <item> [container] or <n> <item> <container>");
+            if (tokens.Count <= idx) return (quantity, explicitQuantity, "", "", "Usage: <command> <item> [container] or <n|all> <item> <container>");
 
             // Look for separator token that indicates container follows
             // Accept: in, into, from, inside
@@ -895,9 +956,9 @@ namespace MudServer
             if (sepIndex >= 0)
             {
                 // everything before separator is item, everything after is container (support multi-word container)
-                if (sepIndex == idx) return (quantity, "", "", "Usage: missing item before container separator.");
+                if (sepIndex == idx) return (quantity, explicitQuantity, "", "", "Usage: missing item before container separator.");
                 itemExpr = string.Join(" ", tokens.Skip(idx).Take(sepIndex - idx));
-                if (sepIndex + 1 >= tokens.Count) return (quantity, "", "", "Usage: missing container name after separator.");
+                if (sepIndex + 1 >= tokens.Count) return (quantity, explicitQuantity, "", "", "Usage: missing container name after separator.");
                 containerName = string.Join(" ", tokens.Skip(sepIndex + 1));
             }
             else
@@ -919,8 +980,8 @@ namespace MudServer
             itemExpr = itemExpr?.Trim() ?? "";
             containerName = containerName?.Trim() ?? "";
 
-            if (string.IsNullOrWhiteSpace(itemExpr)) return (quantity, "", "", "Usage: missing item name.");
-            return (quantity, itemExpr, containerName, null);
+            if (string.IsNullOrWhiteSpace(itemExpr)) return (quantity, explicitQuantity, "", "", "Usage: missing item name.");
+            return (quantity, explicitQuantity, itemExpr, containerName, null);
         }
 
         private Message? Look(Player player)
@@ -962,10 +1023,15 @@ namespace MudServer
 
 
         // -------------------------------
-        // GET / TAKE
+        // GET / TAKE (modified to accept requestedQuantity and prompt for stacks)
         // -------------------------------
-        private Message? GetItem(Player player, string requested)
+        private Message? GetItem(Player player, string requested, int requestedQuantity = 0)
         {
+            // requestedQuantity meanings:
+            //   0  => no explicit quantity provided (prompt for stacks)
+            //  >0  => explicit numeric requested
+            //  -1  => 'all' requested (take entire stack or as much as available)
+
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
 
@@ -999,8 +1065,40 @@ namespace MudServer
 
             if (matches.Count == 1)
             {
-                // Single match - transfer immediately using the InventoryManager
-                return InventoryManager.TransferToPlayer(_world, _dbConnection, player, matches[0]);
+                var item = matches[0];
+
+                // Stack handling
+                if (item.Quantity > 1)
+                {
+                    if (requestedQuantity == 0)
+                    {
+                        // Prompt for how many (player didn't specify)
+                        player.PendingAction = new PendingAction
+                        {
+                            Command = "GetStack",
+                            Step = "ChooseQuantity",
+                            Data = new GetPendingData { Matches = new List<Item> { item } }
+                        };
+
+                        return MessageHandler.System($"There are {item.Quantity} of '{item.Name}'. How many do you want to get? (type a number or 'all')");
+                    }
+                    else if (requestedQuantity < 0)
+                    {
+                        // 'all' requested: transfer entire quantity
+                        return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, item.Quantity);
+                    }
+                    else
+                    {
+                        int take = Math.Min(requestedQuantity, item.Quantity);
+                        return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, take);
+                    }
+                }
+                else
+                {
+                    // Non-stackable / single quantity: honor explicit quantity if >0 (will be treated as 1)
+                    int take = (requestedQuantity > 0) ? requestedQuantity : 1;
+                    return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, take);
+                }
             }
 
             // Multiple matches: check if they are identical (same TemplateID)
@@ -1008,7 +1106,17 @@ namespace MudServer
 
             if (allSameTemplate)
             {
-                // Ask how many to pick up
+                // If player specified an explicit numeric quantity, take that many rows
+                if (requestedQuantity > 0)
+                {
+                    int want = Math.Min(requestedQuantity, matches.Count);
+                    var toTransfer = matches.Take(want).ToList();
+                    foreach (var it in toTransfer)
+                        InventoryManager.TransferToPlayer(_world, _dbConnection, player, it, 1);
+                    return MessageHandler.System($"You picked up {want} x {toTransfer.First().Name}.");
+                }
+
+                // Ask how many to pick up (preserve existing UX)
                 player.PendingAction = new PendingAction
                 {
                     Command = "GetItem",
@@ -1036,8 +1144,14 @@ namespace MudServer
         // -------------------------------
         // DROP
         // -------------------------------
-        private Message? DropItem(Player player, string requested)
+        
+private Message? DropItem(Player player, string requested, int requestedQuantity = 0)
         {
+            // requestedQuantity meanings:
+            //   0  => no explicit quantity provided (prompt for stacks)
+            //  >0  => explicit numeric requested
+            //  -1  => 'all' requested (drop entire stack or as much as available)
+
             if (player == null) return MessageHandler.System("Invalid player.");
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
@@ -1107,7 +1221,7 @@ namespace MudServer
             if (matches.Count == 0)
                 return MessageHandler.System($"You are not carrying '{requested}'.");
 
-            // Use runtime flags for worn/held detection (do NOT treat template HandLoc as held)
+            // Use runtime flags for worn/held detection (do NOT treat template HandLoc/WearLoc as runtime state)
             var droppable = matches.Where(m => !IsRuntimeWorn(m) && !IsRuntimeHeld(m)).ToList();
 
             // If there are no droppable matches but there are matches that are worn/held, instruct player
@@ -1133,13 +1247,75 @@ namespace MudServer
 
             if (matches.Count == 1)
             {
-                return InventoryManager.TransferToRoom(_world, _dbConnection, player, matches[0]);
+                var item = matches[0];
+
+                // If it's a stackable item (Quantity > 1) handle explicit vs unspecified quantity
+                if (item.Quantity > 1)
+                {
+                    if (requestedQuantity == 0)
+                    {
+                        // unspecified -> prompt for how many
+                        player.PendingAction = new PendingAction
+                        {
+                            Command = "DropStack",
+                            Step = "ChooseQuantity",
+                            Data = new GetPendingData { Matches = new List<Item> { item } }
+                        };
+
+                        return MessageHandler.System($"You have {item.Quantity} of '{item.Name}'. How many do you want to drop? (type a number or 'all')");
+                    }
+
+                    // explicit request
+                    if (requestedQuantity < 0)
+                    {
+                        // 'all'
+                        return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, item.Quantity);
+                    }
+
+                    int dropQty = Math.Min(requestedQuantity, item.Quantity);
+                    return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, dropQty);
+                }
+
+                // non-stackable or single-qty
+                return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, 1);
             }
 
             bool allSameTemplate = matches.All(i => i.TemplateID == matches[0].TemplateID);
 
             if (allSameTemplate)
             {
+                // NEW: if the player explicitly requested a numeric quantity, fulfill it automatically
+                // prefer a single stack that can satisfy the request; otherwise consume across stacks.
+                if (requestedQuantity > 0)
+                {
+                    // prefer single stack with enough quantity
+                    var single = matches.FirstOrDefault(m => m.Quantity >= requestedQuantity);
+                    if (single != null)
+                    {
+                        return InventoryManager.TransferToRoom(_world, _dbConnection, player, single, Math.Min(requestedQuantity, single.Quantity));
+                    }
+
+                    // if combined quantity across matches satisfies request, consume in descending-size order
+                    int combined = matches.Sum(m => m.Quantity);
+                    if (combined >= requestedQuantity)
+                    {
+                        int remaining = requestedQuantity;
+                        foreach (var it in matches.OrderByDescending(m => m.Quantity).ToList())
+                        {
+                            int take = Math.Min(remaining, it.Quantity);
+                            InventoryManager.TransferToRoom(_world, _dbConnection, player, it, take);
+                            remaining -= take;
+                            if (remaining <= 0) break;
+                        }
+
+                        return MessageHandler.System($"You dropped {requestedQuantity} x {matches.First().Name}.");
+                    }
+
+                    // not enough total quantity -> inform player
+                    return MessageHandler.System($"Only {combined} available. Enter a number up to {combined}.");
+                }
+
+                // preserve existing UX (prompt) when no explicit quantity supplied
                 player.PendingAction = new PendingAction
                 {
                     Command = "DropItem",
@@ -1225,6 +1401,62 @@ namespace MudServer
 
             // The rest of the existing pending action handling follows (GetItem, DropItem, EditRoom, CreateArea, CreateRoom, etc.)
             // (Preserved existing logic below.)
+
+            // NEW: GetStack pending action (single stack prompt)
+            if (pa.Command == "GetStack")
+            {
+                var data = pa.Data as GetPendingData;
+                if (data == null || data.Matches == null || data.Matches.Count == 0)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
+
+                if (pa.Step == "ChooseQuantity")
+                {
+                    var item = data.Matches[0];
+                    if (string.Equals(input, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "everything", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, item.Quantity);
+                    }
+
+                    if (!int.TryParse(input, out int qty) || qty < 1)
+                        return MessageHandler.System("Please enter a positive number or 'all'.");
+
+                    int take = Math.Min(qty, item.Quantity);
+                    player.PendingAction = null!;
+                    return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, take);
+                }
+            }
+
+            // NEW: DropStack pending action (single stack prompt)
+            if (pa.Command == "DropStack")
+            {
+                var data = pa.Data as GetPendingData;
+                if (data == null || data.Matches == null || data.Matches.Count == 0)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
+
+                if (pa.Step == "ChooseQuantity")
+                {
+                    var item = data.Matches[0];
+                    if (string.Equals(input, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "everything", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, item.Quantity);
+                    }
+
+                    if (!int.TryParse(input, out int qty) || qty < 1)
+                        return MessageHandler.System("Please enter a positive number or 'all'.");
+
+                    int drop = Math.Min(qty, item.Quantity);
+                    player.PendingAction = null!;
+                    return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, drop);
+                }
+            }
 
             // The GetItem pending action
             if (pa.Command == "GetItem")
@@ -1346,7 +1578,7 @@ namespace MudServer
                         return MessageHandler.System("Enter new distant description for this room:");
                     }
 
-                    return MessageHandler.System("Invalid option. Type Name, Description, 1, 2, 3, or EndEdit.");
+                    return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, 1, 2, 3, or EndEdit.");
                 }
 
                 if (pa.Step == "EditName")

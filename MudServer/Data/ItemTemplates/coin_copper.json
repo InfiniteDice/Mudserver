@@ -1,0 +1,14 @@
+{
+  "Id": "coin_copper",
+  "Name": "Copper Coin",
+  "ItemCategory": "Currency",
+  "Weight": 0.005,
+  "Value": 1,
+  "ShortDesc": "A copper coin",
+  "LongDesc": "A copper coin, the lowest denomination it takes 100 to make a Silver and 2000 to make a gold.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Stackable": "true"
+}

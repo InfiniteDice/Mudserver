@@ -1,0 +1,14 @@
+{
+  "Id": "coin_silver",
+  "Name": "Silver Coin",
+  "ItemCategory": "Currency",
+  "Weight": 0.004,
+  "Value": 100,
+  "ShortDesc": "A silver coin",
+  "LongDesc": "A silver coin, better than copper! it takes 20 to make a gold and is worth 100 copper.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Stackable": "true"
+}

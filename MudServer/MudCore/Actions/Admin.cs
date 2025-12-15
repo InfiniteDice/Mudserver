@@ -22,6 +22,248 @@ namespace MudServer
             _db = dbConnection ?? throw new ArgumentNullException(nameof(dbConnection));
         }
 
+        // --------------------------------------------------------------------
+        // NEW: admin coin exchange command
+        // Syntax:
+        //   - exchange <from> to <to>           (convert all of <from> that can be converted)
+        //   - exchange <n> <from> to <to>       (convert exactly n units of <from>)
+        // Accepts "to" or "for" as separator, and unit names: copper/silver/gold (or c/s/g).
+        //
+        // Examples:
+        //   exchange copper to silver
+        //   exchange 234 copper to silver
+        //   exchange 5 silver to copper
+        //
+        // This operates on the invoking player's inventory (admin-only for now).
+        // --------------------------------------------------------------------
+        public Message? HandleExchange(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null || _world.ItemFactory == null) return MessageHandler.System("Server item factory unavailable.");
+
+            // Tokenize and find separator - allow "to" or "for"
+            var toks = command.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+            if (toks.Count < 3) return MessageHandler.System("Usage: exchange [<n>] <from> to <to>");
+
+            // remove leading "exchange"
+            if (string.Equals(toks[0], "exchange", StringComparison.OrdinalIgnoreCase))
+                toks.RemoveAt(0);
+
+            int sepIdx = toks.FindIndex(t => string.Equals(t, "to", StringComparison.OrdinalIgnoreCase) || string.Equals(t, "for", StringComparison.OrdinalIgnoreCase));
+            if (sepIdx <= 0 || sepIdx >= toks.Count - 1)
+                return MessageHandler.System("Usage: exchange [<n>] <from> to <to>");
+
+            // Left side (amount?/from), right side (to unit)
+            var left = toks.Take(sepIdx).ToArray();
+            var right = toks.Skip(sepIdx + 1).ToArray();
+
+            if (right.Length == 0) return MessageHandler.System("Missing target unit (gold/silver/copper).");
+
+            string toUnit = right[0];
+            string fromUnit;
+            long requestedUnits = -1; // -1 => convert all available
+
+            if (left.Length == 1)
+            {
+                // either "copper" or "100" (invalid)
+                if (int.TryParse(left[0], out var n))
+                    return MessageHandler.System("Specify a unit: exchange <n> <from> to <to>");
+                fromUnit = left[0];
+            }
+            else if (left.Length >= 2)
+            {
+                // Expect "<n> <from>"
+                if (!int.TryParse(left[0], out var n))
+                    return MessageHandler.System("Invalid amount. Usage: exchange [<n>] <from> to <to>");
+                requestedUnits = Math.Max(0, n);
+                fromUnit = left[1];
+            }
+            else
+            {
+                return MessageHandler.System("Usage: exchange [<n>] <from> to <to>");
+            }
+
+            // Normalize unit names
+            bool TryResolveUnit(string token, out string unitKey)
+            {
+                unitKey = token?.Trim().ToLowerInvariant() ?? "";
+                if (unitKey == "c" || unitKey == "copper") { unitKey = "copper"; return true; }
+                if (unitKey == "s" || unitKey == "silver") { unitKey = "silver"; return true; }
+                if (unitKey == "g" || unitKey == "gold") { unitKey = "gold"; return true; }
+                return false;
+            }
+
+            if (!TryResolveUnit(fromUnit, out var fromKey))
+                return MessageHandler.System($"Unknown unit '{fromUnit}'. Use copper/silver/gold.");
+
+            if (!TryResolveUnit(toUnit, out var toKey))
+                return MessageHandler.System($"Unknown unit '{toUnit}'. Use copper/silver/gold.");
+
+            if (fromKey == toKey) return MessageHandler.System("Nothing to do: same unit specified for from/to.");
+
+            // Map to template IDs and copper values
+            (string templateId, long copperValue) GetTemplateInfo(string unit)
+            {
+                return unit switch
+                {
+                    "copper" => ("coin_copper", 1L),
+                    "silver" => ("coin_silver", (long)Currency.CopperPerSilver),
+                    "gold"   => ("coin_gold", Currency.CopperPerGold),
+                    _ => ("", 0L)
+                };
+            }
+
+            var fromInfo = GetTemplateInfo(fromKey);
+            var toInfo = GetTemplateInfo(toKey);
+
+            if (string.IsNullOrEmpty(fromInfo.templateId) || string.IsNullOrEmpty(toInfo.templateId))
+                return MessageHandler.System("Unsupported currency unit.");
+
+            // Sum available from-units in player's inventory
+            int availableFromUnits = 0;
+            try
+            {
+                availableFromUnits = player.Inventory?
+                    .Where(i => i != null && string.Equals(i.TemplateID, fromInfo.templateId, StringComparison.OrdinalIgnoreCase))
+                    .Sum(i => Math.Max(1, i.Quantity)) ?? 0;
+            }
+            catch
+            {
+                availableFromUnits = 0;
+            }
+
+            if (availableFromUnits == 0)
+                return MessageHandler.System($"You have no {fromKey} to exchange.");
+
+            long unitsToConvert = requestedUnits < 0 ? availableFromUnits : Math.Min(availableFromUnits, requestedUnits);
+            if (unitsToConvert <= 0) return MessageHandler.System("Nothing to convert.");
+
+            // Compute total copper represented by the unitsToConvert
+            long totalCopper = unitsToConvert * fromInfo.copperValue;
+
+            // Compute how many whole target units can be produced
+            long targetUnits = totalCopper / toInfo.copperValue;
+            if (targetUnits == 0)
+            {
+                // Nothing convertible (e.g., trying to convert 1 silver -> gold)
+                return MessageHandler.System($"Not enough {fromKey} to convert to {toKey}.");
+            }
+
+            // Compute consumed from-units (integer)
+            long consumedFromUnits = (targetUnits * toInfo.copperValue) / fromInfo.copperValue;
+            // Safety clamp
+            consumedFromUnits = Math.Min(consumedFromUnits, unitsToConvert);
+
+            // Perform inventory modifications:
+            // 1) consume consumedFromUnits of 'from' coin from player's inventory
+            // 2) add targetUnits of 'to' coin to player's inventory (merge if stackable)
+            try
+            {
+                ConsumeFromCoinStacks(player, fromInfo.templateId, (int)consumedFromUnits);
+
+                // Add target coins: prefer merging into existing stack if present
+                AddCoinsToPlayer(player, toInfo.templateId, (int)targetUnits);
+
+                // Persist DB and notify clients
+                _world.SaveDirtyRooms(_db); // no-op for inventories but keep consistent (rooms may be marked)
+                MessageHandler.EnqueuePlayerUpdate(player);
+
+                // Compute leftover (if the admin requested a specific amount less than available, that amount may leave remainder)
+                long leftoverFromUnits = unitsToConvert - consumedFromUnits;
+                string msg;
+                if (requestedUnits < 0)
+                {
+                    // Converted as much as possible from all available of 'from'
+                    // There may still be leftover from-units that didn't make a full target
+                    // e.g., converting all copper: 234c -> 2s and 34c remain (leftoverFromUnits is 34 when from=copper)
+                    long leftoverCopper = (availableFromUnits * fromInfo.copperValue) - (targetUnits * toInfo.copperValue);
+                    var leftoverCurrency = Currency.FromCopper(leftoverCopper);
+                    msg = $"Converted {consumedFromUnits} {fromKey} into {targetUnits} {toKey}. Leftover: {leftoverCurrency.Silver} silver {leftoverCurrency.Copper} copper (if applicable).";
+                }
+                else
+                {
+                    // Admin specified exact amountUnits; leftover is relative to that requested amount
+                    if (leftoverFromUnits > 0)
+                    {
+                        msg = $"Converted {consumedFromUnits} {fromKey} into {targetUnits} {toKey}. {leftoverFromUnits} {fromKey} were not convertible and remain.";
+                    }
+                    else
+                    {
+                        msg = $"Converted {consumedFromUnits} {fromKey} into {targetUnits} {toKey}.";
+                    }
+                }
+
+                return MessageHandler.System(msg);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[EXCHANGE][ERROR] {ex}");
+                return MessageHandler.System("Exchange failed due to a server error.");
+            }
+        }
+
+        // Helper: consume 'unitsToConsume' items of templateId from player's inventory (updates DB + in-memory)
+        private void ConsumeFromCoinStacks(Player player, string templateId, int unitsToConsume)
+        {
+            if (unitsToConsume <= 0) return;
+            var stacks = player.Inventory
+                .Where(i => i != null && string.Equals(i.TemplateID, templateId, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(i => i.ItemID)
+                .ToList();
+
+            int remaining = unitsToConsume;
+            foreach (var st in stacks)
+            {
+                if (remaining <= 0) break;
+                int take = Math.Min(st.Quantity, remaining);
+                st.Quantity -= take;
+                remaining -= take;
+
+                if (st.Quantity <= 0)
+                {
+                    // remove item
+                    MudPersistence.ItemPersistence.DeleteItem(_db, st.ItemID);
+                }
+                else
+                {
+                    // persist updated quantity
+                    MudPersistence.ItemPersistence.SaveItem(_db, st);
+                }
+            }
+
+            // remove zero-qty stacks from in-memory inventory
+            player.Inventory.RemoveAll(i => i != null && i.Quantity <= 0);
+        }
+
+        // Helper: add coin stacks (merge with existing stack when possible)
+        private void AddCoinsToPlayer(Player player, string templateId, int unitsToAdd)
+        {
+            if (unitsToAdd <= 0) return;
+
+            // Try to find existing stack to merge into
+            var existing = player.Inventory.FirstOrDefault(i => i != null && string.Equals(i.TemplateID, templateId, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                existing.Quantity += unitsToAdd;
+                MudPersistence.ItemPersistence.SaveItem(_db, existing);
+                return;
+            }
+
+            // No existing stack, create a new item via ItemFactory
+            var roomId = player.CurrentRoom?.RoomID ?? 0;
+            var item = _world.ItemFactory.CreateItem(templateId, "Player", player.DbPlayerID, roomId, unitsToAdd);
+            // Ensure owner fields are correct
+            item.OwnerType = "Player";
+            item.OwnerID = player.DbPlayerID;
+            MudPersistence.ItemPersistence.SaveItem(_db, item);
+
+            // Add to player's in-memory inventory (if not present)
+            player.Inventory.Add(item);
+        }
+        // --------------------------------------------------------------------
+
+
         public Message? HandleCreateArea(Player player, string command)
         {
             var parts = command.Trim().Split(' ', 2);

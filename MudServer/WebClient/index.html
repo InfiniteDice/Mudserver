@@ -172,13 +172,13 @@
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-          <td>${displayName}</td>
-          <td>${escapeHtml(String(it.weight ?? ''))}</td>
-          <td>${escapeHtml(String(it.condition ?? ''))}</td>
-          <td>${escapeHtml(it.itemCategory ?? '')}</td>
-          <td>${escapeHtml(it.shortDesc ?? '')}</td>
-          <td>${escapeHtml(status)}</td>
-        `;
+              <td>${displayName}</td>
+              <td>${escapeHtml(String(it.weight ?? ''))}</td>
+              <td>${escapeHtml(String(it.condition ?? ''))}</td>
+              <td>${escapeHtml(it.itemCategory ?? '')}</td>
+              <td>${escapeHtml(it.shortDesc ?? '')}</td>
+              <td>${escapeHtml(status)}</td>
+            `;
                 invTableBody.appendChild(tr);
             });
         }
@@ -264,6 +264,26 @@
                     playerNameEl.textContent = msg.name || '—';
                     hpEl.textContent = `${msg.currentHealth ?? 0}/${msg.maxHealth ?? 0}`;
                     if (xpEl) xpEl.textContent = String(msg.experience ?? 0);
+
+                    // Update header with world/area + stylized game header when available
+                    const w = msg.worldName || '';
+                    const a = msg.areaName || '';
+                    const gh = msg.gameHeader || '';
+
+                    if (w || a) {
+                        // build base world/area string
+                        const base = w && a ? `${w} -- ${a}` : (w || a || 'MUD');
+
+                        if (gh) {
+                            // include descriptive period + ordinal date + month + year
+                            siteTitleEl.textContent = `${base} — ${gh}`;
+                        } else {
+                            // fallback to base
+                            siteTitleEl.textContent = base;
+                        }
+                        document.title = siteTitleEl.textContent;
+                    }
+
                     return;
                 }
 

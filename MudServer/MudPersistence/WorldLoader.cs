@@ -160,17 +160,38 @@ namespace MudPersistence
         {
             EnsureOpen(conn);
             var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT WorldID, Name FROM World LIMIT 1";
+            cmd.CommandText = "SELECT WorldID, Name, DateTime FROM World LIMIT 1";
 
             using var reader = cmd.ExecuteReader();
             if (!reader.Read())
                 throw new Exception("No world found in database.");
 
-            return new World
+            var world = new World
             {
                 WorldID = reader.GetInt32(0),
                 Name = reader.GetString(1)
             };
+
+            // DateTime is optional; parse into GameClock if present.
+            try
+            {
+                if (!reader.IsDBNull(2))
+                {
+                    var dtText = reader.GetString(2);
+                    world.GameTime = GameClock.Parse(dtText);
+                }
+                else
+                {
+                    world.GameTime = new GameClock();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WorldLoader] Failed to parse World.DateTime: {ex.Message}. Using default clock.");
+                world.GameTime = new GameClock();
+            }
+
+            return world;
         }
 
         private static List<Area> LoadAreas(SqliteConnection conn, int worldID)
@@ -205,7 +226,7 @@ namespace MudPersistence
             var rooms = new List<Room>();
             var cmd = conn.CreateCommand();
             cmd.CommandText = @"
-    SELECT RoomID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage
+    SELECT RoomID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage, DistantDescription
     FROM Room
     WHERE AreaID = @aid";
             cmd.Parameters.AddWithValue("@aid", areaID);
@@ -252,6 +273,9 @@ namespace MudPersistence
 
                 room.SpawnMaxRoom = reader.IsDBNull(9) ? 1 : reader.GetInt32(9);
                 room.SpawnMessage = reader.IsDBNull(10) ? "" : reader.GetString(10);
+
+                // NEW: load DistantDescription (nullable)
+                room.DistantDescription = reader.IsDBNull(11) ? "" : reader.GetString(11);
 
                 // existing post-processing: load exits/keywords/inventory happens elsewhere in loader
                 rooms.Add(room);
@@ -304,7 +328,7 @@ namespace MudPersistence
         //    cmd.CommandText = "SELECT ItemID, Name FROM Item WHERE OwnerType = @otype AND OwnerID = @oid";
         //    cmd.Parameters.AddWithValue("@otype", "Room");
         //    cmd.Parameters.AddWithValue("@oid", roomID); // integer OwnerID
-
+        //
         //    using var reader = cmd.ExecuteReader();
         //    while (reader.Read())
         //    {
@@ -315,7 +339,7 @@ namespace MudPersistence
         //            RoomID = roomID
         //        });
         //    }
-
+        //
         //    return inventory;
         //}
     }

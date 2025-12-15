@@ -27,9 +27,9 @@ namespace MudPersistence
 
             var cmd = new SqliteCommand(@"
                 INSERT INTO Room 
-                    (RoomID, AreaID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage)
+                    (RoomID, AreaID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage, DistantDescription)
                 VALUES 
-                    (@rid, @aid, @name, @desc, @isSpawner, @spawnType, @spawnList, @spawnChance, @spawnDelay, @lastSpawn, @spawnMax, @spawnMsg)
+                    (@rid, @aid, @name, @desc, @isSpawner, @spawnType, @spawnList, @spawnChance, @spawnDelay, @lastSpawn, @spawnMax, @spawnMsg, @distant)
                 ON CONFLICT(RoomID) DO UPDATE SET
                     Name = @name,
                     Description = @desc,
@@ -41,7 +41,8 @@ namespace MudPersistence
                     SpawnDelayMinutes = @spawnDelay,
                     LastSpawnTime = @lastSpawn,
                     SpawnMaxRoom = @spawnMax,
-                    SpawnMessage = @spawnMsg;
+                    SpawnMessage = @spawnMsg,
+                    DistantDescription = @distant;
             ", conn);
 
             cmd.Parameters.AddWithValue("@rid", room.RoomID);
@@ -77,6 +78,9 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@spawnMax", room.SpawnMaxRoom);
             cmd.Parameters.AddWithValue("@spawnMsg", room.SpawnMessage ?? "");
 
+            // NEW: DistantDescription persisted (nullable -> empty string fallback)
+            cmd.Parameters.AddWithValue("@distant", room.DistantDescription ?? "");
+
             var last = room.LastSpawnTime == DateTime.MinValue ? DateTime.UtcNow : room.LastSpawnTime;
             cmd.Parameters.AddWithValue("@lastSpawn", last.ToString("o"));
 
@@ -93,7 +97,7 @@ namespace MudPersistence
 
             if (setVerboseServerLogs)
             {
-                Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom END RoomID={room.RoomID}");
+                Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom END RoomID={room.ID}");
             }
         }
 

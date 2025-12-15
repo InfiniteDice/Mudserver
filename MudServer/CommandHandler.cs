@@ -16,6 +16,7 @@ namespace MudServer
         private readonly World _world;
         private readonly SqliteConnection _dbConnection;
         private readonly PlayerAuthentication _auth;
+        private readonly AdminService _adminService; // new
 
         private static readonly HashSet<string> AllowedWearLocs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -31,6 +32,7 @@ namespace MudServer
             _world = world;
             _dbConnection = dbConnection;
             _auth = new PlayerAuthentication(world, dbConnection);
+            _adminService = new AdminService(world, dbConnection); // initialize admin service
         }
 
         public Message? ProcessCommand(Player player, string rawCommand)
@@ -301,39 +303,70 @@ namespace MudServer
                 catch { }
 
                 // Resolve item in player's inventory (prefer ItemParser)
+                // --- Replace the resolution block inside the 'put' branch (where item is resolved) with this block ---
+
+                // Resolve item in player's inventory (prefer ItemParser)
                 var parse = ItemParser.ResolveForInventoryCommand(player, itemExpr);
                 Console.WriteLine($"[PUT] ItemParser: winner={(parse.Winner != null ? $"{parse.Winner.Name} (ID={parse.Winner.ItemID})" : "(null)")} candidates={string.Join(", ", parse.Candidates.Select(c => c.Name ?? $"#{c.ItemID}"))}");
 
                 Item? item = null;
                 if (parse.Winner != null)
                 {
-                    // Match by ItemID (safer than ReferenceEquals across deserialized contexts)
+                    // Try mapping parser winner -> actual carried instance
                     item = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == parse.Winner.ItemID);
-                    if (item == null)
+
+                    // If parser selected an equipped instance, try to find a non-equipped duplicate to use instead
+                    if (item != null && (IsRuntimeWorn(item) || IsRuntimeHeld(item)))
                     {
-                        // parser winner existed but didn't map to a carried instance -> log and continue fallback
-                        Console.WriteLine($"[PUT] Parser winner ItemID={parse.Winner.ItemID} not found in player.Inventory (possible reference mismatch).");
+                        var alt = FindNonEquippedMatches(player, itemExpr);
+                        if (alt.Count > 0)
+                        {
+                            item = alt[0];
+                            Console.WriteLine($"[PUT] Parser winner was equipped; using non-equipped alternative: ItemID={item.ItemID} Name='{item.Name}'");
+                        }
+                        else
+                        {
+                            // No non-equipped alternative — keep the equipped reference so later TransferToContainer can instruct unwear/unhold if needed.
+                            Console.WriteLine($"[PUT] Parser winner is equipped and no non-equipped alternative found.");
+                        }
                     }
                 }
 
-                // Stronger fallback: exact template / exact name / starts-with name
                 if (item == null)
                 {
-                    item = player.Inventory.FirstOrDefault(i =>
-                        !string.IsNullOrWhiteSpace(i.Name) &&
-                        (i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)
-                         || i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)
-                         || (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)))
-                    );
+                    // Stronger fallback: exact template / exact name / starts-with name (non-equipped preferred)
+                    var nonEquippedExact = FindNonEquippedMatches(player, itemExpr);
+                    if (nonEquippedExact.Count > 0)
+                        item = nonEquippedExact[0];
+
+                    // If still null, fall back to including equipped items (original behavior)
+                    if (item == null)
+                    {
+                        item = player.Inventory.FirstOrDefault(i =>
+                            !string.IsNullOrWhiteSpace(i.Name) &&
+                            (i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)
+                             || i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)
+                             || (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)))
+                        );
+                    }
                 }
 
-                // Additional fallback: token or plural-insensitive first-token match
+                // Additional fallback: token or plural-insensitive first-token match (prefer non-equipped)
                 if (item == null)
                 {
                     var firstTok = itemExpr.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? itemExpr;
                     item = player.Inventory.FirstOrDefault(i =>
+                        !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
                         !string.IsNullOrWhiteSpace(i.Name) &&
                         i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    if (item == null)
+                    {
+                        // allow equipped fallback for ambiguous cases to preserve UX
+                        item = player.Inventory.FirstOrDefault(i =>
+                            !string.IsNullOrWhiteSpace(i.Name) &&
+                            i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0);
+                    }
                 }
 
                 if (item == null)
@@ -341,7 +374,6 @@ namespace MudServer
                     Console.WriteLine($"[PUT] Could not resolve item '{itemExpr}' in player inventory. Inventory names: {string.Join(", ", player.Inventory.Select(i => i.Name))}");
                     return MessageHandler.System($"You are not carrying '{itemExpr}'.");
                 }
-
                 // Log container accessibility check before transfer
                 var roomRef = player.CurrentRoom;
                 bool containerAccessible = (player.Inventory?.Contains(container) ?? false) || (roomRef != null && roomRef.Inventory.Contains(container));
@@ -401,22 +433,24 @@ namespace MudServer
                 {
                     if (!int.TryParse(tokens[1], out qty) || qty < 1)
                         return MessageHandler.System("Invalid quantity. Provide a positive integer.");
-                    // optional cap to avoid abuse (adjust as desired)
                     qty = Math.Min(qty, 10000);
                 }
 
-                return AddItem(player, template, qty);
+                // Delegated to new AdminService
+                return _adminService.AddItem(player, template, qty);
             }
 
             if (command.StartsWith("removeitem ", StringComparison.OrdinalIgnoreCase))
             {
                 string item = command.Substring(11).Trim();
-                return RemoveItem(player, item);
+                // Delegated to AdminService
+                return _adminService.RemoveItem(player, item);
             }
 
             if (command.Equals("listitems", StringComparison.OrdinalIgnoreCase))
             {
-                return ListItems(player);
+                // Delegated to AdminService
+                return _adminService.ListItems(player);
             }
 
             switch (command.Split(' ')[0].ToLower())
@@ -431,28 +465,106 @@ namespace MudServer
                         var room = player.CurrentRoom;
                         if (room == null) return MessageHandler.System("You are lost in the void.");
 
-                        // DEBUG: log tokens/matches
-                        var matches = NpcTargeting.FindMatches(room, targetExpr);
-                        Console.WriteLine($"[LOOK] target='{targetExpr}', room='{room.Name}', npcCount={room.Npcs.Count}, matches={matches.Count}");
-
-                        if (matches.Count == 0)
-                            return MessageHandler.System($"No NPC matching '{targetExpr}' found here.");
-
-                        if (matches.Count > 1)
+                        // 1) If the token looks like a direction/exit, handle distant look first.
+                        // Accept abbreviations ("n","e","s","w","ne","sw", "up","down") and full words ("north","east", etc.)
+                        var dirToken = NormalizeCommandAlias(targetExpr).ToUpperInvariant();
+                        if (IsValidDirection(dirToken))
                         {
-                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
-                            return MessageHandler.System($"Multiple matches: {list}");
+                            // Find matching exit in current room (case-insensitive direction match)
+                            var exit = room.Exits.FirstOrDefault(x => string.Equals(x.Direction, dirToken, StringComparison.OrdinalIgnoreCase));
+                            if (exit == null)
+                            {
+                                // Allow friendly alias matching (e.g. "north" vs "N"), try normalized comparison
+                                exit = room.Exits.FirstOrDefault(x => string.Equals(NormalizeCommandAlias(x.Direction), NormalizeCommandAlias(targetExpr), StringComparison.OrdinalIgnoreCase));
+                            }
+
+                            if (exit == null)
+                                return MessageHandler.System("You don't see an exit in that direction.");
+
+                            // Resolve target room
+                            var targetRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+
+                            string distantText;
+                            if (targetRoom != null && !string.IsNullOrWhiteSpace(targetRoom.DistantDescription))
+                            {
+                                distantText = targetRoom.DistantDescription;
+                            }
+                            else if (targetRoom != null)
+                            {
+                                // Fallback: use room name if no DistantDescription
+                                distantText = $"In the distance you can see {targetRoom.Name}.";
+                            }
+                            else
+                            {
+                                distantText = "You can see a distant landscape in that direction.";
+                            }
+
+                            // Movement hint based on presence of NPCs/players in distant room
+                            string movementHint = "";
+                            try
+                            {
+                                int distantCount = 0;
+                                if (targetRoom != null)
+                                {
+                                    distantCount = (targetRoom.Npcs?.Count ?? 0) + (targetRoom.Players?.Count ?? 0);
+                                }
+
+                                if (distantCount == 1)
+                                    movementHint = " Something can be seen moving in the distance.";
+                                else if (distantCount == 2)
+                                    movementHint = " A couple of shapes can be seen moving in the distance.";
+                                else if (distantCount >= 3 && distantCount <= 4)
+                                    movementHint = " Several figures can be seen moving in the distance.";
+                                else if (distantCount >= 5)
+                                    movementHint = " Many things can be seen moving in the distance.";
+                            }
+                            catch { /* best-effort only */ }
+
+                            return MessageHandler.System(distantText + movementHint);
                         }
 
-                        var npc = matches[0];
-                        var desc = string.IsNullOrWhiteSpace(npc.Description) ? "No description." : npc.Description;
+                        // 2) Try NPC lookup in current room
+                        var npcMatches = NpcTargeting.FindMatches(room, targetExpr);
+                        Console.WriteLine($"[LOOK] target='{targetExpr}', room='{room.Name}', npcMatches={npcMatches.Count}");
 
-                        // Append health segment; current in <span class='hp-current'> for client styling.
-                        var healthSegment = $" (<span class='hp-current'>{npc.Health}</span>/{npc.HealthMax})";
-                        var text = $"{npc.DisplayName}: {desc}{healthSegment}";
-                        Console.WriteLine($"[LOOK] match='{npc.DisplayName}', text='{text}'");
+                        if (npcMatches.Count > 0)
+                        {
+                            if (npcMatches.Count > 1)
+                            {
+                                var list = string.Join(", ", npcMatches.Select(m => m.DisplayName));
+                                return MessageHandler.System($"Multiple matches: {list}");
+                            }
 
-                        return MessageHandler.System(text);
+                            var npc = npcMatches[0];
+                            var desc = string.IsNullOrWhiteSpace(npc.Description) ? "No description." : npc.Description;
+
+                            // Append health segment; current in <span class='hp-current'> for client styling.
+                            var healthSegment = $" (<span class='hp-current'>{npc.Health}</span>/{npc.HealthMax})";
+                            var text = $"{npc.DisplayName}: {desc}{healthSegment}";
+                            Console.WriteLine($"[LOOK] match='{npc.DisplayName}', text='{text}'");
+
+                            return MessageHandler.System(text);
+                        }
+
+                        // 3) Try item lookup in this room
+                        var itemMatches = InventoryManager.FindRoomMatches(room, targetExpr);
+                        if (itemMatches == null || itemMatches.Count == 0)
+                        {
+                            // No NPC or item or exit matched
+                            return MessageHandler.System($"You see no '{targetExpr}' here.");
+                        }
+
+                        if (itemMatches.Count > 1)
+                        {
+                            // Present a simple disambiguation list (preserve existing UX)
+                            var list = string.Join(", ", itemMatches.Select(i => i.Name));
+                            return MessageHandler.System($"Multiple items match: {list}");
+                        }
+
+                        var item = itemMatches[0];
+                        var itemDesc = !string.IsNullOrWhiteSpace(item.LongDesc) ? item.LongDesc :
+                                       !string.IsNullOrWhiteSpace(item.ShortDesc) ? item.ShortDesc : "No description.";
+                        return MessageHandler.System($"{item.Name}: {itemDesc}");
                     }
                 case "move": return Move(player, command);
 
@@ -494,23 +606,22 @@ namespace MudServer
 
                 case string s when s.StartsWith("createarea", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-                    return HandleCreateArea(player, command);
+                    return _adminService.HandleCreateArea(player, command);
 
                 case string s when s.StartsWith("createroom", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-                    return HandleCreateRoom(player, command);
+                    return _adminService.HandleCreateRoom(player, command);
 
                 case string s when s.StartsWith("editroom", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-                    return HandleEditRoom(player);
+                    return _adminService.HandleEditRoom(player);
 
-                // Handle 'createnpc' admin command (create NPC instance from a JSON template)
                 case string s when s.StartsWith("createnpc", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     var parts = command.Split(' ', 2);
                     if (parts.Length < 2) return MessageHandler.System("Usage: createnpc <templateId>");
                     string templateId = parts[1].Trim();
-                    return HandleCreateNpc(player, templateId);
+                    return _adminService.HandleCreateNpc(player, templateId);
 
                 // Handle 'inventory' command - show detailed carried items in modal
                 case string s when s.Equals("inventory", StringComparison.OrdinalIgnoreCase) ||
@@ -621,36 +732,8 @@ namespace MudServer
                 // Admin command: debugitems (prints all Item rows from the DB on the active connection)
                 case "debugitems":
                     {
-                        if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-
-                        try
-                        {
-                            using var cmd = _dbConnection.CreateCommand();
-                            cmd.CommandText = "SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID, OwnerAreaID FROM Item ORDER BY ItemID DESC";
-                            using var rdr = cmd.ExecuteReader();
-
-                            int n = 0;
-                            while (rdr.Read())
-                            {
-                                n++;
-                                var id = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
-                                var tid = rdr.IsDBNull(1) ? "" : rdr.GetString(1);
-                                var name = rdr.IsDBNull(2) ? "" : rdr.GetString(2);
-                                var otype = rdr.IsDBNull(3) ? "" : rdr.GetString(3);
-                                var oid = rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4);
-                                var rid = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5);
-                                var oarea = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6);
-
-                                Console.WriteLine($"[DEBUGITEMS] id={id} tid='{tid}' name='{name}' otype='{otype}' oid={oid} rid={rid} oarea={oarea}");
-                            }
-
-                            return MessageHandler.System($"DebugItems: printed {n} row(s) to server log.");
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[DEBUGITEMS][ERROR] {ex}");
-                            return MessageHandler.System($"DebugItems failed: {ex.Message}");
-                        }
+                        // Delegate to AdminService (copied implementation lives in AdminService)
+                        return _adminService.DebugItems(player);
                     }
 
                 default:
@@ -963,6 +1046,8 @@ namespace MudServer
             var parseRes = ItemParser.ResolveForInventoryCommand(player, requested);
             List<Item> matches;
 
+            // --- Replace the early-matches section in DropItem (after parser resolution) with this updated logic ---
+
             if (parseRes.Winner != null)
             {
                 // collect all carried items that match the resolved winner (template/name/id)
@@ -974,19 +1059,28 @@ namespace MudServer
                     ))
                     .ToList();
 
+                // If parser returned a winner but matches include an equipped instance, try to find non-equipped alternatives.
+                var nonEquipped = matches.Where(m => !IsRuntimeWorn(m) && !IsRuntimeHeld(m)).ToList();
+                if (nonEquipped.Count > 0)
+                {
+                    matches = nonEquipped;
+                }
+                else
+                {
+                    // Try broader search for non-equipped matching items (template/name/startswith)
+                    var alt = FindNonEquippedMatches(player, requested);
+                    if (alt.Count > 0)
+                        matches = alt;
+                }
+
+                // If still no matches, keep the original (likely equipped) matches so later logic can instruct to unwear/unhold.
                 if (matches.Count == 0)
                 {
-                    // unexpected - fallback to naive name/template matching
+                    // fallback to conservative behavior (use winner-based filtering but nothing matched)
                     matches = player.Inventory
-                        .Where(i => i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)
-                                 || i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase))
+                        .Where(i => (i?.Name != null && i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase))
+                                 || (!string.IsNullOrWhiteSpace(i?.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase)))
                         .ToList();
-                    if (matches.Count == 0)
-                    {
-                        matches = player.Inventory
-                            .Where(i => i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
-                            .ToList();
-                    }
                 }
             }
             else
@@ -999,10 +1093,14 @@ namespace MudServer
 
                 if (matches.Count == 0)
                 {
-                    // try partial
-                    matches = player.Inventory
-                        .Where(i => i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
-                        .ToList();
+                    // try partial (prefer non-equipped)
+                    matches = FindNonEquippedMatches(player, requested);
+                    if (matches.Count == 0)
+                    {
+                        matches = player.Inventory
+                            .Where(i => i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                    }
                 }
             }
 
@@ -1241,8 +1339,14 @@ namespace MudServer
                         pa.Step = "EditDescription";
                         return MessageHandler.System("Enter new description for this room:");
                     }
+                    // NEW: allow editing distant description via in-game editor
+                    if (input == "3" || input.Equals("DistantDescription", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditDistantDescription";
+                        return MessageHandler.System("Enter new distant description for this room:");
+                    }
 
-                    return MessageHandler.System("Invalid option. Type Name, Description, 1, 2, or EndEdit.");
+                    return MessageHandler.System("Invalid option. Type Name, Description, 1, 2, 3, or EndEdit.");
                 }
 
                 if (pa.Step == "EditName")
@@ -1261,6 +1365,15 @@ namespace MudServer
                     _world.SaveDirtyRooms(_dbConnection);
                     player.PendingAction = null!;
                     return MessageHandler.System("Room description updated.");
+                }
+                // NEW: handle distant description update
+                if (pa.Step == "EditDistantDescription")
+                {
+                    room.DistantDescription = input;
+                    room.IsDirty = true;
+                    _world.SaveDirtyRooms(_dbConnection);
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Room distant description updated.");
                 }
             }
 
@@ -1377,168 +1490,6 @@ namespace MudServer
         private class GetPendingData
         {
             public List<Item> Matches { get; set; } = new List<Item>();
-        }
-
-        // -------------------------------
-        // Admin Commands
-        // -------------------------------
-        private Message? HandleCreateArea(Player player, string command)
-        {
-            var parts = command.Trim().Split(' ', 2);
-            if (parts.Length < 2)
-                return MessageHandler.System("Usage: CreateArea <Direction>");
-
-            string dir = parts[1].Trim().ToUpper();
-            if (!IsValidDirection(dir))
-                return MessageHandler.System("Invalid direction.");
-
-            if (player.CurrentRoom.Exits.Any(e =>
-                    e.Direction.Equals(dir, StringComparison.OrdinalIgnoreCase)))
-            {
-                return MessageHandler.System($"Cannot create area. An exit already exists in direction {dir}.");
-            }
-
-            player.PendingAction = new PendingAction
-            {
-                Command = "CreateArea",
-                Direction = dir
-            };
-
-            return MessageHandler.System("Enter name for the new area:");
-        }
-
-        private Message? HandleCreateRoom(Player player, string command)
-        {
-            var parts = command.Trim().Split(' ', 2);
-            if (parts.Length < 2)
-                return MessageHandler.System("Usage: CreateRoom <Direction>");
-
-            string dir = parts[1].Trim().ToUpper();
-            if (!IsValidDirection(dir))
-                return MessageHandler.System("Invalid direction.");
-
-            if (player.CurrentRoom.Exits.Any(e =>
-                    e.Direction.Equals(dir, StringComparison.OrdinalIgnoreCase)))
-            {
-                return MessageHandler.System($"Cannot create room. An exit already exists in direction {dir}.");
-            }
-
-            player.PendingAction = new PendingAction
-            {
-                Command = "CreateRoom",
-                Direction = dir
-            };
-
-            return MessageHandler.System("Enter name for the new room:");
-        }
-
-        private Message? HandleEditRoom(Player player)
-        {
-            var room = player.CurrentRoom;
-            if (room == null)
-                return MessageHandler.System("You are not inside a valid room.");
-
-            player.PendingAction = new PendingAction
-            {
-                Command = "EditRoom",
-                Step = "SelectField"
-            };
-
-            return MessageHandler.System(
-                $"Editing room: {room.Name}\n" +
-                "Choose a field to edit:\n" +
-                "1) Name\n" +
-                "2) Description\n" +
-                "Type the option name/number, or type EndEdit to finish."
-            );
-        }
-
-        private Message? HandleCreateNpc(Player player, string templateId)
-        {
-            var room = player.CurrentRoom;
-            if (room == null) return MessageHandler.System("You are not in a valid room.");
-
-            try
-            {
-                // Create in-memory NPC via NpcFactory
-                var newNpc = _world.NpcFactory.CreateNpc(templateId, room);
-
-                // Persist the NPC and assign NpcID
-                int newId = MudPersistence.NpcPersistence.InsertNpc(_dbConnection, newNpc);
-                newNpc.NpcID = newId;
-
-                // Ensure world list contains it
-                if (!_world.Npcs.Any(n => n.NpcID == newNpc.NpcID))
-                {
-                    _world.Npcs.Add(newNpc);
-                    Console.WriteLine($"[WORLD][TRACE] NPC created and added: NpcID={newNpc.NpcID} Name='{newNpc.Name}' RoomID={room.RoomID}");
-                }
-                else
-                {
-                    //DEPRECATED// world.Npcs already contains NPC; skipping add.
-                    Console.WriteLine($"[WORLD][TRACE] NPC already in world list: NpcID={newNpc.NpcID}");
-                }
-
-                // If template specifies equipment, instantiate items and assign to NPC
-                try
-                {
-                    var equipTemplates = newNpc.Template?.EquipmentTemplateIds;
-                    if (equipTemplates != null && equipTemplates.Count > 0 && _world.ItemFactory != null)
-                    {
-                        foreach (var equipTemplateId in equipTemplates)
-                        {
-                            try
-                            {
-                                // Create item owned by NPC (OwnerType "NPC", OwnerID = newNpc.NpcID), RoomID set to current room
-                                var item = _world.ItemFactory.CreateItem(equipTemplateId, "NPC", newNpc.NpcID, newNpc.CurrentRoom?.RoomID ?? 0);
-                                // Persist item (assigns ItemID)
-                                MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
-                                // Add to NPC inventory
-                                newNpc.Inventory.Add(item);
-                            }
-                            catch (Exception iex)
-                            {
-                                Console.WriteLine($"[NPC] Failed to create/equip item '{equipTemplateId}' for NPC {newNpc.Name}: {iex.Message}");
-                            }
-                        }
-                    }
-                }
-                catch (Exception exEquip)
-                {
-                    Console.WriteLine($"[NPC] Equipment assignment error for NPC {newNpc.Name}: {exEquip.Message}");
-                }
-
-                // Broadcast updated room so clients immediately see the NPC (and any equipment effect)
-                foreach (var p in room.Players)
-                {
-                    p.PendingMessageQueue.Add(MessageHandler.Room(
-                        room,
-                        room.Npcs.Select(n => n.DisplayName).ToList(),
-                        room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
-                        _world));
-                }
-
-                // send NPC actions to log (separate system messages, no name+action in badges)
-                foreach (var n in room.Npcs)
-                {
-                    if (!string.IsNullOrWhiteSpace(n.LastAction))
-                    {
-                        foreach (var recipient in room.Players)
-                            MessageHandler.SendSystem(recipient, n.LastAction);
-                    }
-                }
-
-                return MessageHandler.System($"NPC '{newNpc.Name}' created (ID {newId}).");
-            }
-            catch (KeyNotFoundException)
-            {
-                return MessageHandler.System($"NPC template not found: {templateId}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[NPC] Failed to create NPC from template {templateId}: {ex}");
-                return MessageHandler.System($"Failed to create NPC: {ex.Message}");
-            }
         }
 
         private Message? WearItem(Player player, string requested)
@@ -1738,6 +1689,40 @@ namespace MudServer
             if (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase))) return true;
             if (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
             return false;
+        }
+
+        // --- Insert this helper inside the CommandHandler class (near other private helpers) ---
+        private List<Item> FindNonEquippedMatches(Player player, string itemExpr)
+        {
+            if (player == null || string.IsNullOrWhiteSpace(itemExpr) || player.Inventory == null) return new List<Item>();
+
+            // Exact name/template first (non-equipped)
+            var exact = player.Inventory
+                .Where(i => i != null &&
+                       !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
+                       (
+                           (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)) ||
+                           (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase))
+                       ))
+                .ToList();
+            if (exact.Count > 0) return exact;
+
+            // Starts-with match
+            var starts = player.Inventory
+                .Where(i => i != null &&
+                       !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
+                       (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (starts.Count > 0) return starts;
+
+            // Fallback: first-token or contains
+            var firstTok = itemExpr.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? itemExpr;
+            var contains = player.Inventory
+                .Where(i => i != null &&
+                       !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
+                       (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0))
+                .ToList();
+            return contains;
         }
 
         private static bool IsRuntimeHeld(Item i)
@@ -2021,84 +2006,6 @@ namespace MudServer
             "DOWN" => "UP",
             _ => ""
         };
-
-        // Admin helpers: add/remove/list items in current room
-        // Updated AddItem signature to accept quantity and delegate to InventoryManager for consistent behavior.
-        private Message? AddItem(Player player, string itemTemplateId, int quantity = 1)
-        {
-            var room = player.CurrentRoom;
-            if (room == null) return MessageHandler.System("You are not in a valid room.");
-
-            if (_world.ItemFactory == null)
-                return MessageHandler.System("Item factory not available.");
-
-            try
-            {
-                // Delegate to InventoryManager which uses ItemFactory + ItemPersistence and supports merging/quantity.
-                return InventoryManager.AddItemToRoom(_world, _dbConnection, player, itemTemplateId, quantity);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[AddItem][ERROR] AddItem failed: {ex}");
-                return MessageHandler.System($"Failed to add item: {ex.Message}");
-            }
-        }
-
-        private Message? RemoveItem(Player player, string identifier)
-        {
-            var room = player.CurrentRoom;
-            if (room == null) return MessageHandler.System("You are not in a valid room.");
-
-            // allow admin only removal
-            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-
-            var target = room.Inventory.FirstOrDefault(i => i.Name.Equals(identifier, StringComparison.OrdinalIgnoreCase)
-                                                   || i.TemplateID.Equals(identifier, StringComparison.OrdinalIgnoreCase));
-
-            if (target == null)
-                return MessageHandler.System($"No item '{identifier}' found in the room.");
-
-            // Remove from DB and room
-            target.OwnerType = "ROOM";
-            target.OwnerID = 0;
-            MudPersistence.ItemPersistence.SaveItem(_dbConnection, target);
-
-            room.Inventory.Remove(target);
-            room.IsDirty = true;
-            _world.SaveDirtyRooms(_dbConnection);
-
-            foreach (var p in room.Players)
-            {
-                p.PendingMessageQueue.Add(MessageHandler.Room(
-                    room,
-                    room.Npcs.Select(n => n.DisplayName).ToList(),
-                    room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
-                    _world));
-            }
-
-            foreach (var n in room.Npcs)
-            {
-                if (!string.IsNullOrWhiteSpace(n.LastAction))
-                {
-                    foreach (var recipient in room.Players)
-                        MessageHandler.SendSystem(recipient, n.LastAction);
-                }
-            }
-
-            return MessageHandler.System($"Item '{target.Name}' removed from the room.");
-        }
-
-        private Message? ListItems(Player player)
-        {
-            var room = player.CurrentRoom;
-            if (room == null) return MessageHandler.System("You are not in a valid room.");
-
-            if (room.Inventory == null || room.Inventory.Count == 0)
-                return MessageHandler.System("This room contains no items.");
-
-            var lines = room.Inventory.Select((it, idx) => $"{idx + 1}) {it.Name} (Template: {it.TemplateID})");
-            return MessageHandler.System("Items in room:\n" + string.Join("\n", lines));
-        }
 
         private static string NormalizeCommandAlias(string token)
         {

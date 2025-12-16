@@ -194,12 +194,13 @@ namespace MudPersistence
             return world;
         }
 
+
         private static List<Area> LoadAreas(SqliteConnection conn, int worldID)
         {
             EnsureOpen(conn);
             var areas = new List<Area>();
             var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT AreaID, Name, Description, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner FROM Area WHERE WorldID = @wid";
+            cmd.CommandText = "SELECT AreaID, Name, Description, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner, Climate FROM Area WHERE WorldID = @wid";
             cmd.Parameters.AddWithValue("@wid", worldID);
 
             using var reader = cmd.ExecuteReader();
@@ -214,11 +215,25 @@ namespace MudPersistence
                     IsPvPAllowed = !reader.IsDBNull(6) && reader.GetInt32(6) != 0,
                     Owner = reader.IsDBNull(7) ? "System" : reader.GetString(7)
                 };
+
+                // NEW: load Climate (TEXT) - default to "Temperate"
+                try
+                {
+                    area.Climate = reader.IsDBNull(8) ? "Temperate" : reader.GetString(8);
+                    if (string.IsNullOrWhiteSpace(area.Climate))
+                        area.Climate = "Temperate";
+                }
+                catch
+                {
+                    area.Climate = "Temperate";
+                }
+
                 areas.Add(area);
             }
 
             return areas;
         }
+
 
         private static List<Room> LoadRooms(SqliteConnection conn, int areaID)
         {
@@ -226,9 +241,9 @@ namespace MudPersistence
             var rooms = new List<Room>();
             var cmd = conn.CreateCommand();
             cmd.CommandText = @"
-    SELECT RoomID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage, DistantDescription
-    FROM Room
-    WHERE AreaID = @aid";
+SELECT RoomID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage, DistantDescription, Flags, KeyWords, IsBuildZone
+FROM Room
+WHERE AreaID = @aid";
             cmd.Parameters.AddWithValue("@aid", areaID);
 
             using var reader = cmd.ExecuteReader();
@@ -254,6 +269,33 @@ namespace MudPersistence
                     room.SpawnTemplateList = new List<string>();
                 }
 
+                // Robustness: some databases or manual edits may store a comma-separated string
+                // (e.g. "goblin,goblin_assassin") instead of a JSON array. Detect and normalize.
+                try
+                {
+                    if (room.SpawnTemplateList == null)
+                        room.SpawnTemplateList = new List<string>();
+
+                    if (room.SpawnTemplateList.Count == 1 && !string.IsNullOrWhiteSpace(room.SpawnTemplateList[0]))
+                    {
+                        var single = room.SpawnTemplateList[0].Trim();
+
+                        // If the stored value looks like a JSON array string but failed deserialization,
+                        // or is a comma-separated list (no surrounding '['), split on commas.
+                        if ((single.Contains(',') && !single.StartsWith("[") && !single.EndsWith("]")) ||
+                            (single.StartsWith("\"") && single.EndsWith("\"") && single.Contains(',')))
+                        {
+                            var parts = single.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                              .Select(s => s.Trim().Trim().Trim('"'))
+                                              .Where(s => s.Length > 0)
+                                              .ToList();
+                            if (parts.Count > 0)
+                                room.SpawnTemplateList = parts;
+                        }
+                    }
+                }
+                catch { /* best-effort normalization, do not fail load */ }
+
                 room.SpawnChance = reader.IsDBNull(6) ? 0 : reader.GetInt32(6);
                 room.SpawnDelayMinutes = reader.IsDBNull(7) ? 0 : reader.GetInt32(7);
 
@@ -276,6 +318,46 @@ namespace MudPersistence
 
                 // NEW: load DistantDescription (nullable)
                 room.DistantDescription = reader.IsDBNull(11) ? "" : reader.GetString(11);
+
+                // NEW: load Flags JSON
+                try
+                {
+                    var flagsJson = reader.IsDBNull(12) ? "[]" : reader.GetString(12);
+                    room.Flags = JsonSerializer.Deserialize<List<string>>(flagsJson) ?? new List<string>();
+                }
+                catch
+                {
+                    room.Flags = new List<string>();
+                }
+
+                // NEW: load KeyWords JSON
+                try
+                {
+                    var kwJson = reader.IsDBNull(13) ? "[]" : reader.GetString(13);
+                    room.KeyWords = JsonSerializer.Deserialize<List<string>>(kwJson) ?? new List<string>();
+                }
+                catch
+                {
+                    room.KeyWords = new List<string>();
+                }
+
+                // NEW: load IsBuildZone (stored as TEXT "true"/"false"); default false
+                try
+                {
+                    if (!reader.IsDBNull(14))
+                    {
+                        var b = reader.GetString(14);
+                        room.IsBuildZone = string.Equals(b, "true", StringComparison.OrdinalIgnoreCase);
+                    }
+                    else
+                    {
+                        room.IsBuildZone = false;
+                    }
+                }
+                catch
+                {
+                    room.IsBuildZone = false;
+                }
 
                 // existing post-processing: load exits/keywords/inventory happens elsewhere in loader
                 rooms.Add(room);
@@ -321,26 +403,6 @@ namespace MudPersistence
             return keywords;
         }
 
-        //private static List<Item> LoadRoomInventory(SqliteConnection conn, int roomID)
-        //{
-        //    var inventory = new List<Item>();
-        //    var cmd = conn.CreateCommand();
-        //    cmd.CommandText = "SELECT ItemID, Name FROM Item WHERE OwnerType = @otype AND OwnerID = @oid";
-        //    cmd.Parameters.AddWithValue("@otype", "Room");
-        //    cmd.Parameters.AddWithValue("@oid", roomID); // integer OwnerID
-        //
-        //    using var reader = cmd.ExecuteReader();
-        //    while (reader.Read())
-        //    {
-        //        inventory.Add(new Item
-        //        {
-        //            ItemID = reader.GetInt32(0),
-        //            Name = reader.GetString(1),
-        //            RoomID = roomID
-        //        });
-        //    }
-        //
-        //    return inventory;
-        //}
+
     }
 }

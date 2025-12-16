@@ -63,6 +63,7 @@ namespace MudPersistence
             catch { return fallback; }
         }
 
+
         public static void LoadExtendedCombat(SqliteConnection conn, Player player)
         {
             if (conn == null || player == null) return;
@@ -83,6 +84,9 @@ namespace MudPersistence
             if (Has("Buffs")) wanted.Add("Buffs");
             if (Has("Debuffs")) wanted.Add("Debuffs");
             if (Has("Experience")) wanted.Add("Experience");
+
+            // NEW: Flags column support
+            if (Has("Flags")) wanted.Add("Flags");
 
             if (wanted.Count == 0) return;
 
@@ -122,6 +126,19 @@ namespace MudPersistence
                                 case "Experience":
                                     player.Experience = rdr.GetInt32(ordinal);
                                     break;
+                                case "Flags":
+                                    try
+                                    {
+                                        var fjson = rdr.GetString(ordinal);
+                                        player.Flags = JsonSerializer.Deserialize<List<string>>(fjson) ?? new List<string>();
+                                        player.FlagsJson = string.IsNullOrEmpty(fjson) ? "[]" : fjson;
+                                    }
+                                    catch
+                                    {
+                                        player.Flags = new List<string>();
+                                        player.FlagsJson = "[]";
+                                    }
+                                    break;
                             }
                         }
                         catch { }
@@ -140,11 +157,11 @@ namespace MudPersistence
             EnsureColumns(conn);
 
             var colAssignments = new List<string>
-            {
-                "Health = @health",
-                "MaxHealth = @maxHealth",
-                "LastRoomID = @room"
-            };
+    {
+        "Health = @health",
+        "MaxHealth = @maxHealth",
+        "LastRoomID = @room"
+    };
 
             if (Has("Level")) colAssignments.Add("Level = @Level");
             if (Has("LastAreaID")) colAssignments.Add("LastAreaID = @lastAreaId");
@@ -160,6 +177,9 @@ namespace MudPersistence
             if (Has("Buffs")) colAssignments.Add("Buffs = @Buffs");
             if (Has("Debuffs")) colAssignments.Add("Debuffs = @Debuffs");
             if (Has("Experience")) colAssignments.Add("Experience = @Experience");
+
+            // NEW: persist Flags column when present
+            if (Has("Flags")) colAssignments.Add("Flags = @Flags");
 
             var sql = $"UPDATE Player SET {string.Join(", ", colAssignments)} WHERE PlayerID = @pid;";
 
@@ -204,6 +224,20 @@ namespace MudPersistence
             }
 
             cmd.Parameters.AddWithValue("@Experience", expToSave);
+
+            // NEW: Flags parameter (serialize deterministically)
+            try
+            {
+                var flagsList = player.Flags ?? new List<string>();
+                // normalize order for deterministic DB storage
+                flagsList.Sort(System.StringComparer.OrdinalIgnoreCase);
+                var flagsJson = JsonSerializer.Serialize(flagsList);
+                cmd.Parameters.AddWithValue("@Flags", flagsJson);
+            }
+            catch
+            {
+                cmd.Parameters.AddWithValue("@Flags", "[]");
+            }
 
             try { cmd.ExecuteNonQuery(); }
             catch (Exception ex)

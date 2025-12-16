@@ -1,0 +1,67 @@
+{
+  "Id": "goblin_assassin",
+  "Name": "Goblin Assassin",
+  "Alignment": "Evil",
+  "Description": "A small wicked looking goblin lurks here, it's eyes purvey murderous intent!'.",
+  "IdleActions": [
+    "twirls a knife in it's hand",
+    "laughs wickedly",
+    "glances around suspiciously",
+    "dodges here and there"
+  ],
+  "WanderChance": 0.02,
+  "WanderAreas": [],
+  "AiBehaviors": [ "Patrol", "Guard" ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 35,
+  "Health": 35,
+  "Flags": ["PoisonHit90T"],
+  "Level": 3,
+  "Mass": 20.0,
+  "EffMass": 20.0,
+  "SizeEnum": 3,
+  "CombatSkill": 50.0,
+  "EffCombatSkill": 50.0,
+  "BaseDmgDice": 1.5,
+  "EffDmgDice": 1.5,
+  "BaseArmorClass": 0.0,
+  "EffArmorClass": 0.0,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": [ "knife_basic" ],
+  "DropChance": 0.60,
+  "DropCountMin": 1,
+  "DropCountMax": 2,
+  "DropPool": [
+    {
+      "TemplateId": "knife_basic",
+      "Weight": 15,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "Common weapon — high weight, high chance"
+    },
+    {
+      "TemplateId": "coin_copper",
+      "Weight": 60,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 10,
+      "Stackable": true,
+      "Notes": "Uncommon armor — low chance even if selected"
+    },
+    {
+      "TemplateId": "mushroom_brown",
+      "Weight": 25,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 3,
+      "Stackable": true,
+      "Notes": "Consumable/stackable — 1..3 pieces when successful"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "VisualTrait":""
+}

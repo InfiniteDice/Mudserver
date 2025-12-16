@@ -19,17 +19,18 @@ namespace MudPersistence
                 conn.Open();
         }
 
-        public static void SaveRoom(SqliteConnection conn, Room room)
+        
+public static void SaveRoom(SqliteConnection conn, Room room)
         {
             EnsureOpen(conn);
 
-            if(setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom START RoomID={room.RoomID}, AreaID={room.AreaID}, IsSpawner={room.IsSpawner}, SpawnType='{room.SpawnType}', Templates=[{string.Join(',', room.SpawnTemplateList ?? new List<string>())}]");
+            if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] SaveRoom START RoomID={room.RoomID}, AreaID={room.AreaID}, IsSpawner={room.IsSpawner}, SpawnType='{room.SpawnType}', Templates=[{string.Join(',', room.SpawnTemplateList ?? new List<string>())}]");
 
             var cmd = new SqliteCommand(@"
                 INSERT INTO Room 
-                    (RoomID, AreaID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage, DistantDescription)
+                    (RoomID, AreaID, Name, Description, IsSpawner, SpawnType, SpawnTemplateList, SpawnChance, SpawnDelayMinutes, LastSpawnTime, SpawnMaxRoom, SpawnMessage, DistantDescription, Flags, KeyWords, IsBuildZone)
                 VALUES 
-                    (@rid, @aid, @name, @desc, @isSpawner, @spawnType, @spawnList, @spawnChance, @spawnDelay, @lastSpawn, @spawnMax, @spawnMsg, @distant)
+                    (@rid, @aid, @name, @desc, @isSpawner, @spawnType, @spawnList, @spawnChance, @spawnDelay, @lastSpawn, @spawnMax, @spawnMsg, @distant, @roomFlags, @roomKeyWords, @isBuildZone)
                 ON CONFLICT(RoomID) DO UPDATE SET
                     Name = @name,
                     Description = @desc,
@@ -42,7 +43,10 @@ namespace MudPersistence
                     LastSpawnTime = @lastSpawn,
                     SpawnMaxRoom = @spawnMax,
                     SpawnMessage = @spawnMsg,
-                    DistantDescription = @distant;
+                    DistantDescription = @distant,
+                    Flags = @roomFlags,
+                    KeyWords = @roomKeyWords,
+                    IsBuildZone = @isBuildZone;
             ", conn);
 
             cmd.Parameters.AddWithValue("@rid", room.RoomID);
@@ -52,7 +56,7 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@isSpawner", room.IsSpawner ? 1 : 0);
             cmd.Parameters.AddWithValue("@spawnType", room.SpawnType ?? "");
             cmd.Parameters.AddWithValue("@spawnList", JsonSerializer.Serialize(room.SpawnTemplateList ?? new List<string>()));
-            
+
             int currentDbChance = -1;
             try
             {
@@ -80,6 +84,13 @@ namespace MudPersistence
 
             // NEW: DistantDescription persisted (nullable -> empty string fallback)
             cmd.Parameters.AddWithValue("@distant", room.DistantDescription ?? "");
+
+            // NEW: Flags and KeyWords persisted as JSON text
+            cmd.Parameters.AddWithValue("@roomFlags", JsonSerializer.Serialize(room.Flags ?? new List<string>()));
+            cmd.Parameters.AddWithValue("@roomKeyWords", JsonSerializer.Serialize(room.KeyWords ?? new List<string>()));
+
+            // NEW: IsBuildZone stored as string "true"/"false" (column is TEXT per DB change request)
+            cmd.Parameters.AddWithValue("@isBuildZone", room.IsBuildZone ? "true" : "false");
 
             var last = room.LastSpawnTime == DateTime.MinValue ? DateTime.UtcNow : room.LastSpawnTime;
             cmd.Parameters.AddWithValue("@lastSpawn", last.ToString("o"));

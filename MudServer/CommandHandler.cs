@@ -702,6 +702,41 @@ namespace MudServer
                         return MudNetworking.MessageHandler.Inventory(invItems);
                     }
 
+                // NEW: player 'stats' command - show computed effective combat/physics values and effect lists
+                case string s when s.Equals("stats", StringComparison.OrdinalIgnoreCase):
+                    {
+                        if (player == null) return MessageHandler.System("Invalid player.");
+
+                        // Ensure effective fields are up to date
+                        try
+                        {
+                            Combat.InitializeSizeDefaults(player);
+                            Combat.UpdateEffectiveStats(player);
+                        }
+                        catch { }
+
+                        var flags = player.Flags ?? new List<string>();
+                        var buffs = player.Buffs ?? new List<string>();
+                        var debuffs = player.Debuffs ?? new List<string>();
+
+                        var lines = new List<string>
+                {
+                    $"Stats for {player.Name}:",
+                    $"Level: {player.Level}",
+                    $"Health: {player.Health}/{player.MaxHealth}",
+                    $"Size (SizeEnum): {player.SizeEnum}",
+                    $"Effective Mass: {player.EffMass:F2}",
+                    $"Effective Combat Skill: {player.EffCombatSkill:F2}",
+                    $"Effective Armor Class: {player.EffArmorClass:F2}",
+                    $"Effective Damage Dice: {player.EffDmgDice:F2}",
+                    $"Flags: {(flags.Count == 0 ? "(none)" : string.Join(", ", flags))}",
+                    $"Buffs: {(buffs.Count == 0 ? "(none)" : string.Join(", ", buffs))}",
+                    $"Debuffs: {(debuffs.Count == 0 ? "(none)" : string.Join(", ", debuffs))}"
+                };
+
+                        return MessageHandler.System(string.Join("\n", lines));
+                    }
+
                 case string s when s.StartsWith("wear", StringComparison.OrdinalIgnoreCase):
                     {
                         // Handles: "wear item", "wear   item", "wear\titem"
@@ -848,22 +883,60 @@ namespace MudServer
                     player.Health = Math.Min(player.MaxHealth, player.Health + appliedHeal);
             }
 
-            // Remove item from inventory & persist removal
-            if (player.Inventory.Contains(item))
-                player.Inventory.Remove(item);
-
+            // Consume one unit from the stack when applicable; preserve stack when Quantity > 1.
             try
             {
-                ItemPersistence.DeleteItem(_dbConnection, item.ItemID);
+                if (item.Quantity > 1)
+                {
+                    // Decrement quantity in-memory
+                    item.Quantity = Math.Max(0, item.Quantity - 1);
+
+                    // Persist new quantity
+                    try
+                    {
+                        MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[EAT] Failed to save item quantity for ItemID={item.ItemID}: {ex.Message}");
+                    }
+
+                    // If quantity dropped to zero for any reason, remove & delete
+                    if (item.Quantity <= 0)
+                    {
+                        if (player.Inventory.Contains(item))
+                            player.Inventory.Remove(item);
+                        try { ItemPersistence.DeleteItem(_dbConnection, item.ItemID); } catch (Exception ex) { Console.WriteLine($"[EAT] Failed to delete item {item.ItemID}: {ex.Message}"); }
+                    }
+                }
+                else
+                {
+                    // Single-quantity item: remove and delete
+                    if (player.Inventory.Contains(item))
+                        player.Inventory.Remove(item);
+
+                    try
+                    {
+                        ItemPersistence.DeleteItem(_dbConnection, item.ItemID);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[EAT] Failed to delete item {item.ItemID}: {ex.Message}");
+                    }
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[EAT] Failed to delete item {item.ItemID}: {ex.Message}");
+                Console.WriteLine($"[EAT] Consumption error for ItemID={item?.ItemID}: {ex.Message}");
             }
 
             string msg = $"You eat {item.Name}.";
             if (canHeal && appliedHeal > 0)
                 msg += $" You feel better (+{appliedHeal} HP).";
+
+            // If there are remaining stacked units, show count to player
+            if (item.Quantity > 0)
+                msg += $" Remaining: {item.Quantity}.";
 
             // Persist player health immediately (centralized helper)
             PersistPlayerHealth(player);
@@ -1144,8 +1217,8 @@ namespace MudServer
         // -------------------------------
         // DROP
         // -------------------------------
-        
-private Message? DropItem(Player player, string requested, int requestedQuantity = 0)
+
+        private Message? DropItem(Player player, string requested, int requestedQuantity = 0)
         {
             // requestedQuantity meanings:
             //   0  => no explicit quantity provided (prompt for stacks)

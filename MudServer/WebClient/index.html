@@ -172,13 +172,13 @@
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-              <td>${displayName}</td>
-              <td>${escapeHtml(String(it.weight ?? ''))}</td>
-              <td>${escapeHtml(String(it.condition ?? ''))}</td>
-              <td>${escapeHtml(it.itemCategory ?? '')}</td>
-              <td>${escapeHtml(it.shortDesc ?? '')}</td>
-              <td>${escapeHtml(status)}</td>
-            `;
+                  <td>${displayName}</td>
+                  <td>${escapeHtml(String(it.weight ?? ''))}</td>
+                  <td>${escapeHtml(String(it.condition ?? ''))}</td>
+                  <td>${escapeHtml(it.itemCategory ?? '')}</td>
+                  <td>${escapeHtml(it.shortDesc ?? '')}</td>
+                  <td>${escapeHtml(status)}</td>
+                `;
                 invTableBody.appendChild(tr);
             });
         }
@@ -292,7 +292,7 @@
                     return;
                 }
 
-                if (msg.type === 'system') { addLog(msg.text || '[system]', 'system'); return; }
+                if (msg.type === 'system') { renderSystemMessage(msg.text || '[system]'); return; }
                 if (msg.type === 'chat') { addLog(msg.text || '', 'chat'); return; }
 
                 addLog(JSON.stringify(msg), 'debug');
@@ -371,6 +371,79 @@
         });
 
         invModal.style.display = 'none';
+    </script>
+    <script>
+        // Client-side critical-hit formatter and renderer.
+        // Insert this before </body> and call renderSystemMessage(msg.text)
+        // from your websocket message handler for system messages.
+
+        (function () {
+            // Escapes HTML to avoid XSS for arbitrary server text.
+            function escapeHtml(str) {
+                if (str == null) return "";
+                return String(str)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#39;");
+            }
+
+            // Wraps canonical critical phrases in safe spans so CSS can style them.
+            function formatCriticalHtml(text) {
+                if (!text) return "";
+
+                // If server already included HTML tags, treat as plain escaped text (do not trust)
+                // We still highlight canonical phrases discovered in the escaped result.
+                var raw = escapeHtml(text);
+
+                // 1) exact self phrase
+                var selfPhrase = "You score a critical hit!";
+                if (raw.indexOf(escapeHtml(selfPhrase)) !== -1) {
+                    return raw.split(escapeHtml(selfPhrase)).map(escapeHtml).join("") // keep escaped pieces
+                        .replace(escapeHtml(selfPhrase), `<span class="msg-crit-self">${escapeHtml(selfPhrase)}</span>`)
+                        || raw.replace(escapeHtml(selfPhrase), `<span class="msg-crit-self">${escapeHtml(selfPhrase)}</span>`);
+                }
+
+                // 2) "<attacker> scores a critical hit on you!" anywhere in text
+                var hitRegex = /(.+?) scores a critical hit on you!/i;
+                var m = text.match(hitRegex);
+                if (m) {
+                    var attacker = escapeHtml(m[1]);
+                    var wrapped = `<span class="msg-crit-hit">${attacker} scores a critical hit on you!</span>`;
+                    // Replace first occurrence in the escaped string
+                    var escPattern = escapeHtml(m[0]);
+                    return raw.replace(escPattern, wrapped);
+                }
+
+                // Default: return escaped text
+                return raw;
+            }
+
+            // Append a system message to the in-page log pane, using formatted HTML for crits.
+            window.renderSystemMessage = function (text) {
+                try {
+                    var logPane = document.querySelector('.logpane');
+                    if (!logPane) return;
+
+                    var div = document.createElement('div');
+                    div.className = 'log-line system';
+
+                    // Use innerHTML only for the small, controlled HTML produced by formatCriticalHtml
+                    div.innerHTML = formatCriticalHtml(text);
+
+                    logPane.appendChild(div);
+                    // Auto-scroll to bottom
+                    logPane.scrollTop = logPane.scrollHeight;
+                } catch (e) {
+                    console.error('renderSystemMessage error', e);
+                }
+            };
+
+            // Optional helper: adapt your websocket handler to call this helper:
+            // Example (replace your existing system handling):
+            // if (msg.type === 'system') renderSystemMessage(msg.text || '');
+        })();
     </script>
 </body>
 </html>

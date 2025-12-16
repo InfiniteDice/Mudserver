@@ -225,6 +225,122 @@ namespace MudServer
                 // Refresh effective stats each tick
                 RefreshEffectiveStats(state);
 
+                // NEW: Process per-tick effects for all participants before resolving attacks.
+                // Effects.TickEffects is side-effect free and returns actions/removals for caller to apply/persist.
+                foreach (var part in state.AllParticipants().ToList())
+                {
+                    if (!part.Alive) continue;
+
+                    try
+                    {
+                        var outcome = Effects.TickEffects(part.Entity);
+                        if (outcome == null) continue;
+
+                        // Apply heal/damage actions
+                        foreach (var act in outcome.Actions)
+                        {
+                            try
+                            {
+                                switch (act.Type)
+                                {
+                                    case Effects.TickActionType.Damage:
+                                        // Apply tick damage
+                                        Combat.ApplyDamage(part.Entity, act.Amount);
+                                        break;
+                                    case Effects.TickActionType.Heal:
+                                        // Apply heal (mirror of ApplyDamage but additive)
+                                        try
+                                        {
+                                            var t = part.Entity.GetType();
+                                            var p = t.GetProperty("Health");
+                                            var pm = t.GetProperty("MaxHealth") ?? t.GetProperty("HealthMax");
+                                            if (p != null)
+                                            {
+                                                double curr = Convert.ToDouble(p.GetValue(part.Entity));
+                                                double max = pm != null ? Convert.ToDouble(pm.GetValue(part.Entity)) : curr;
+                                                double newHp = Math.Min(max, curr + Math.Max(0, act.Amount));
+                                                if (p.PropertyType == typeof(int) || p.PropertyType == typeof(int?))
+                                                    p.SetValue(part.Entity, (int)Math.Round(newHp));
+                                                else
+                                                    p.SetValue(part.Entity, newHp);
+                                            }
+                                        }
+                                        catch { }
+                                        break;
+                                    case Effects.TickActionType.RemoveEffect:
+                                        // removal handled below (EffectsToRemove)
+                                        break;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[COMBAT][TICK] Failed applying action {act.Type} for participant {part.DisplayName}: {ex.Message}");
+                            }
+                        }
+
+                        // Handle effect removals
+                        foreach (var rem in outcome.EffectsToRemove)
+                        {
+                            try
+                            {
+                                var (ename, _, _) = Effects.ParseEffectToken(rem);
+                                var removed = Effects.RemoveEffect(part.Entity, ename);
+                                if (removed)
+                                {
+                                    // Persist removal when connection is available
+                                    try
+                                    {
+                                        if (conn != null)
+                                        {
+                                            if (part.IsPlayer && part.AsPlayer != null)
+                                                PlayerPersistence.SavePlayer(conn, part.AsPlayer);
+                                            else if (!part.IsPlayer && part.AsNpc != null)
+                                                NpcPersistence.UpdateNpc(conn, part.AsNpc);
+                                        }
+                                    }
+                                    catch { }
+
+                                    // Inform room if participant is in room
+                                    try
+                                    {
+                                        if (part.IsPlayer && part.AsPlayer != null && part.AsPlayer.CurrentRoom != null)
+                                            BroadcastSystem(part.AsPlayer.CurrentRoom, $"{part.DisplayName} is no longer affected by {ename}.");
+                                        else if (!part.IsPlayer && part.AsNpc != null && part.AsNpc.CurrentRoom != null)
+                                            BroadcastSystem(part.AsNpc.CurrentRoom, $"{part.DisplayName} is no longer affected by {ename}.");
+                                    }
+                                    catch { }
+                                }
+                            }
+                            catch { }
+                        }
+
+                        // Post-action: if entity died from tick damage handle removal/death paths
+                        if (!part.IsPlayer && part.AsNpc != null && part.AsNpc.Health <= 0)
+                        {
+                            // determine killer player if present
+                            Player? killer = null;
+                            if (part.LastHitByEntity is Player p && part.Alive) killer = p;
+                            try
+                            {
+                                Combat.HandleNpcDeath(killer ?? state.Room.Players.FirstOrDefault(), part.AsNpc, world, conn);
+                            }
+                            catch { }
+                        }
+                        else if (part.IsPlayer && part.AsPlayer != null && part.AsPlayer.Health <= 0)
+                        {
+                            try
+                            {
+                                Combat.Messaging.PlayerKo(part.AsPlayer, part.LastHitByEntity is Player ph ? ph.Name : "unknown");
+                            }
+                            catch { }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[COMBAT][TICK] Effects processing failed for {part.DisplayName}: {ex.Message}");
+                    }
+                }
+
                 // CHANGED: sum as double, then cast to int where needed
                 double skillASum = state.TeamA.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);
                 double skillBSum = state.TeamB.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);
@@ -313,7 +429,8 @@ namespace MudServer
                 var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
                 if (defender == null) break;
 
-                double dmg = Combat.CalculateDamage(attacker.Entity, defender.Entity);
+                // Calculate damage and whether it was a critical
+                var (dmg, isCrit) = Combat.CalculateDamage(attacker.Entity, defender.Entity);
 
                 if (!attacker.IsPlayer && attacker.AsNpc != null)
                 {
@@ -350,6 +467,36 @@ namespace MudServer
                     defMax,
                     defender.AsPlayer);
 
+                // CRITICAL: notify players when a critical occurred
+                if (isCrit)
+                {
+                    try
+                    {
+                        if (attacker.IsPlayer && attacker.AsPlayer != null)
+                        {
+                            foreach (var p in state.Room.Players)
+                            {
+                                if (p == attacker.AsPlayer)
+                                    MessageHandler.SendSystem(p, "You score a critical hit!");
+                                else
+                                    MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on {defender.DisplayName}!");
+                            }
+                        }
+                        else
+                        {
+                            // NPC attacker
+                            foreach (var p in state.Room.Players)
+                            {
+                                if (defender.IsPlayer && defender.AsPlayer != null && p == defender.AsPlayer)
+                                    MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on you!");
+                                else
+                                    MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on {defender.DisplayName}!");
+                            }
+                        }
+                    }
+                    catch { /* best-effort only */ }
+                }
+
                 // Ensure any affected player(s) receive an authoritative player_update (health + xp)
                 if (attacker.IsPlayer && attacker.AsPlayer != null)
                 {
@@ -368,6 +515,60 @@ namespace MudServer
                 if (DebugCombat)
                 {
                     Console.WriteLine($"[COMBAT] Attack State={state.Id} {attacker.DisplayName} -> {defender.DisplayName} dmg={Math.Round(dmg,2)} hp={defender.CurrentHealth}/{defender.MaxHealth}");
+                }
+
+                // Apply hit-trigger effects on critical hits
+                if (isCrit)
+                {
+                    try
+                    {
+                        var effectTokens = Effects.EvaluateHitTriggers(attacker.Entity, true);
+                        if (effectTokens != null && effectTokens.Count > 0)
+                        {
+                            foreach (var token in effectTokens)
+                            {
+                                try
+                                {
+                                    var (added, needsPersist) = Effects.AddDebuff(defender.Entity, token);
+                                    if (added)
+                                    {
+                                        var (ename, _, _) = Effects.ParseEffectToken(token);
+                                        foreach (var p in state.Room.Players)
+                                        {
+                                            if (attacker.IsPlayer && attacker.AsPlayer != null && p == attacker.AsPlayer)
+                                                MessageHandler.SendSystem(p, $"Your critical hit afflicted {defender.DisplayName} with {ename}.");
+                                            else
+                                                MessageHandler.SendSystem(p, $"{attacker.DisplayName}'s critical hit afflicted {defender.DisplayName} with {ename}.");
+                                        }
+
+                                        // Persist the change (persist temporary and permanent effects so they survive restarts)
+                                        try
+                                        {
+                                            if (conn != null)
+                                            {
+                                                if (defender.IsPlayer && defender.AsPlayer != null)
+                                                    PlayerPersistence.SavePlayer(conn, defender.AsPlayer);
+                                                else if (!defender.IsPlayer && defender.AsNpc != null)
+                                                    NpcPersistence.UpdateNpc(conn, defender.AsNpc);
+                                            }
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"[COMBAT] Failed to persist effect '{token}' for defender: {ex.Message}");
+                                        }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"[COMBAT] Failed to apply effect token '{token}' to {defender?.DisplayName}: {ex.Message}");
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[COMBAT] EvaluateHitTriggers failed: {ex.Message}");
+                    }
                 }
 
                 usedAttackers.Add(attacker.Entity);
@@ -605,13 +806,56 @@ namespace MudServer
             Combat.UpdateEffectiveStats(attacker);
             Combat.UpdateEffectiveStats(defender);
 
-            var dmg = Combat.CalculateDamage(attacker, defender);
+            // Calculate damage and critical flag
+            var (dmg, isCrit) = Combat.CalculateDamage(attacker, defender);
             var msg = $"{attacker.Name} attacks {defender.DisplayName} for {Math.Round(dmg, 1)} damage. ({Math.Round((double)defender.Health, 0)}/{Math.Round((double)defender.HealthMax, 0)})";
 
             foreach (var p in attacker.CurrentRoom.Players)
                 MessageHandler.SendSystem(p, msg);
 
             try { if (conn != null) NpcPersistence.UpdateNpc(conn, defender); } catch { }
+
+            // Apply hit-trigger effects on critical
+            if (isCrit)
+            {
+                try
+                {
+                    var effectTokens = Effects.EvaluateHitTriggers(attacker, true);
+                    if (effectTokens != null && effectTokens.Count > 0)
+                    {
+                        foreach (var token in effectTokens)
+                        {
+                            try
+                            {
+                                var (added, needsPersist) = Effects.AddDebuff(defender, token);
+                                if (added)
+                                {
+                                    var (ename, _, _) = Effects.ParseEffectToken(token);
+                                    foreach (var p in attacker.CurrentRoom.Players)
+                                        MessageHandler.SendSystem(p, $"{attacker.Name}'s critical hit afflicted {defender.DisplayName} with {ename}.");
+
+                                    try
+                                    {
+                                        if (conn != null) NpcPersistence.UpdateNpc(conn, defender);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"[COMBAT] Failed to persist effect '{token}' for defender: {ex.Message}");
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[COMBAT] Failed to apply effect token '{token}' to {defender?.DisplayName}: {ex.Message}");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[COMBAT] EvaluateHitTriggers failed: {ex.Message}");
+                }
+            }
 
             if (defender.Health <= 0)
             {

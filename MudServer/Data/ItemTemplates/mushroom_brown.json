@@ -9,5 +9,6 @@
   "WearLoc": "",
   "HandLoc": 0,
   "Flags": [ "Heal" ],
+  "Material": "Organic",
   "Stackable": "true"
 }

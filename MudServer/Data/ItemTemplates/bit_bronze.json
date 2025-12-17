@@ -1,0 +1,15 @@
+{
+  "Id": "bit_bronze",
+  "Name": "Bronze Bit",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "A bit of bronze",
+  "LongDesc": "A bit of bronze, this bronze bit can be used for crafting, or 10 bits can make one bar.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Bronze",
+  "Stackable": "true"
+}

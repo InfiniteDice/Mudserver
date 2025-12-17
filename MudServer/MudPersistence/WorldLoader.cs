@@ -366,21 +366,41 @@ WHERE AreaID = @aid";
             return rooms;
         }
 
+        // REPLACE FROM: private static List<Room.RoomExit> LoadRoomExits(SqliteConnection conn, int roomID)
+        // REPLACE TO: private static List<Room.RoomExit> LoadRoomExits(SqliteConnection conn, int roomID)
         private static List<Room.RoomExit> LoadRoomExits(SqliteConnection conn, int roomID)
         {
             var exits = new List<Room.RoomExit>();
             var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT Direction, ToRoomID, IsHidden, DiscoverKeyword FROM RoomExit WHERE RoomID = @rid";
+            // Load DoorId (nullable) instead of deprecated HasDoor/DoorState columns
+            cmd.CommandText = "SELECT Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId FROM RoomExit WHERE RoomID = @rid";
             cmd.Parameters.AddWithValue("@rid", roomID);
 
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
+                var direction = reader.IsDBNull(0) ? "" : reader.GetString(0);
+                var toRoom = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+                var isHidden = !reader.IsDBNull(2) && reader.GetInt32(2) != 0;
+                var keyword = reader.IsDBNull(3) ? null : reader.GetString(3);
+
+                int? doorId = null;
+                try
+                {
+                    if (!reader.IsDBNull(4))
+                        doorId = reader.GetInt32(4);
+                }
+                catch
+                {
+                    doorId = null;
+                }
+
                 exits.Add(new Room.RoomExit(
-                    reader.GetString(0),
-                    reader.GetInt32(1),
-                    !reader.IsDBNull(2) && reader.GetInt32(2) != 0,
-                    reader.IsDBNull(3) ? null : reader.GetString(3)
+                    direction,
+                    toRoom,
+                    isHidden,
+                    keyword,
+                    doorId
                 ));
             }
 

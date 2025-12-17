@@ -10,5 +10,6 @@
   "HandLoc": 0,
   "Flags": [],
   "BaseACBonus": 0.0,
+  "Material": "Nil",
   "Stackable": "true"
 }

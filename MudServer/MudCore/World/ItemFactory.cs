@@ -29,6 +29,7 @@ namespace MudCore.World
         // Many existing templates may use Flags with "Stackable" so we check both.
         [JsonPropertyName("Stackable")]
         public string? Stackable { get; set; } = null;
+        public string? Material { get; set; } = null;
 
         // Example new properties
         public int Condition { get; set; } = 100; // default condition
@@ -171,9 +172,11 @@ namespace MudCore.World
                 OwnerID = ownerId,
                 RoomID = roomId,
                 Condition = 100, // fully intact for freshly created items
-                // ensure template multiplier is applied to the new item
+                                 // ensure template multiplier is applied to the new item
                 DmgDiceMult = template.DmgDiceMult,
-                Quantity = 1 // default; may be updated below for stackables
+                Quantity = 1, // default; may be updated below for stackables
+                              // Propagate material from template into the item instance (nullable)
+                Material = template.Material
             };
 
             if (templateStackable)

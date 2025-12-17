@@ -225,121 +225,13 @@ namespace MudServer
                 // Refresh effective stats each tick
                 RefreshEffectiveStats(state);
 
-                // NEW: Process per-tick effects for all participants before resolving attacks.
-                // Effects.TickEffects is side-effect free and returns actions/removals for caller to apply/persist.
-                foreach (var part in state.AllParticipants().ToList())
-                {
-                    if (!part.Alive) continue;
+                // NOTE: Per-tick effects processing was relocated to the global GameLoop to ensure
+                // effects (spells, items, poison, regen) tick regardless of combat state.
+                // CombatManager must not apply effect tick damage/heal/removals to avoid duplicate
+                // application. The removed block below was replaced by a marker per CONTRIBUTING.md.
+                //CODE REMOVED - 2025-12-16 12:00:00 // 'foreach (var part in state.AllParticipants().ToList()) { var outcome = Effects.TickEffects(part.Entity); ... }'
+                // Rationale: Effects.TickEffects remains pure; the GameLoop is the single authoritative applier/persister.
 
-                    try
-                    {
-                        var outcome = Effects.TickEffects(part.Entity);
-                        if (outcome == null) continue;
-
-                        // Apply heal/damage actions
-                        foreach (var act in outcome.Actions)
-                        {
-                            try
-                            {
-                                switch (act.Type)
-                                {
-                                    case Effects.TickActionType.Damage:
-                                        // Apply tick damage
-                                        Combat.ApplyDamage(part.Entity, act.Amount);
-                                        break;
-                                    case Effects.TickActionType.Heal:
-                                        // Apply heal (mirror of ApplyDamage but additive)
-                                        try
-                                        {
-                                            var t = part.Entity.GetType();
-                                            var p = t.GetProperty("Health");
-                                            var pm = t.GetProperty("MaxHealth") ?? t.GetProperty("HealthMax");
-                                            if (p != null)
-                                            {
-                                                double curr = Convert.ToDouble(p.GetValue(part.Entity));
-                                                double max = pm != null ? Convert.ToDouble(pm.GetValue(part.Entity)) : curr;
-                                                double newHp = Math.Min(max, curr + Math.Max(0, act.Amount));
-                                                if (p.PropertyType == typeof(int) || p.PropertyType == typeof(int?))
-                                                    p.SetValue(part.Entity, (int)Math.Round(newHp));
-                                                else
-                                                    p.SetValue(part.Entity, newHp);
-                                            }
-                                        }
-                                        catch { }
-                                        break;
-                                    case Effects.TickActionType.RemoveEffect:
-                                        // removal handled below (EffectsToRemove)
-                                        break;
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"[COMBAT][TICK] Failed applying action {act.Type} for participant {part.DisplayName}: {ex.Message}");
-                            }
-                        }
-
-                        // Handle effect removals
-                        foreach (var rem in outcome.EffectsToRemove)
-                        {
-                            try
-                            {
-                                var (ename, _, _) = Effects.ParseEffectToken(rem);
-                                var removed = Effects.RemoveEffect(part.Entity, ename);
-                                if (removed)
-                                {
-                                    // Persist removal when connection is available
-                                    try
-                                    {
-                                        if (conn != null)
-                                        {
-                                            if (part.IsPlayer && part.AsPlayer != null)
-                                                PlayerPersistence.SavePlayer(conn, part.AsPlayer);
-                                            else if (!part.IsPlayer && part.AsNpc != null)
-                                                NpcPersistence.UpdateNpc(conn, part.AsNpc);
-                                        }
-                                    }
-                                    catch { }
-
-                                    // Inform room if participant is in room
-                                    try
-                                    {
-                                        if (part.IsPlayer && part.AsPlayer != null && part.AsPlayer.CurrentRoom != null)
-                                            BroadcastSystem(part.AsPlayer.CurrentRoom, $"{part.DisplayName} is no longer affected by {ename}.");
-                                        else if (!part.IsPlayer && part.AsNpc != null && part.AsNpc.CurrentRoom != null)
-                                            BroadcastSystem(part.AsNpc.CurrentRoom, $"{part.DisplayName} is no longer affected by {ename}.");
-                                    }
-                                    catch { }
-                                }
-                            }
-                            catch { }
-                        }
-
-                        // Post-action: if entity died from tick damage handle removal/death paths
-                        if (!part.IsPlayer && part.AsNpc != null && part.AsNpc.Health <= 0)
-                        {
-                            // determine killer player if present
-                            Player? killer = null;
-                            if (part.LastHitByEntity is Player p && part.Alive) killer = p;
-                            try
-                            {
-                                Combat.HandleNpcDeath(killer ?? state.Room.Players.FirstOrDefault(), part.AsNpc, world, conn);
-                            }
-                            catch { }
-                        }
-                        else if (part.IsPlayer && part.AsPlayer != null && part.AsPlayer.Health <= 0)
-                        {
-                            try
-                            {
-                                Combat.Messaging.PlayerKo(part.AsPlayer, part.LastHitByEntity is Player ph ? ph.Name : "unknown");
-                            }
-                            catch { }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[COMBAT][TICK] Effects processing failed for {part.DisplayName}: {ex.Message}");
-                    }
-                }
 
                 // CHANGED: sum as double, then cast to int where needed
                 double skillASum = state.TeamA.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);

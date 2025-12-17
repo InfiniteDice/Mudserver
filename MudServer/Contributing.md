@@ -21,16 +21,10 @@ Examples:
 
 Scope:
 - Applies to all files in this repository.
-- For larger removals, add a reference line:
-  //REF: PR #123 or Issue #456
 
-Notes:
-- Use __Format Document__ before committing.
-- Keep changes small and include a short rationale alongside markers.
 
-## Required Patch Output Format (MANDATORY)
-
-To reduce friction when applying fixes to large files, every contributor and every AI assistant must follow this exact procedure when proposing code changes or patches that modify existing methods or add new methods. Failing to follow this format will cause the patch to be rejected.
+Use the following when applying fixes to large files.
+Every contributor and every AI assistant must follow this exact procedure when proposing code changes or patches that modify existing methods or add new methods. Failing to follow this format will cause the patch to be rejected.
 
 1) Always output the whole changed method
 - For any method that is changed, the patch must include the entire method declaration and body (from the method signature line to the closing brace that ends the method). Partial-method diffs are not acceptable.

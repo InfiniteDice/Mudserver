@@ -121,13 +121,19 @@ public static void SaveRoom(SqliteConnection conn, Room room)
                 using var updateCmd = conn.CreateCommand();
                 updateCmd.CommandText = @"
                     UPDATE RoomExit
-                    SET ToRoomID = @toRid, IsHidden = @hidden, DiscoverKeyword = @keyword
+                    SET ToRoomID = @toRid, IsHidden = @hidden, DiscoverKeyword = @keyword, DoorId = @doorId
                     WHERE RoomID = @rid AND Direction = @dir;";
                 updateCmd.Parameters.AddWithValue("@rid", room.ID);
                 updateCmd.Parameters.AddWithValue("@dir", exit.Direction ?? "");
                 updateCmd.Parameters.AddWithValue("@toRid", exit.ToRoomID);
                 updateCmd.Parameters.AddWithValue("@hidden", exit.IsHidden ? 1 : 0);
                 updateCmd.Parameters.AddWithValue("@keyword", exit.DiscoverKeyword ?? "");
+                // DoorId is nullable in DB; write NULL when not present.
+                if (exit.DoorId.HasValue)
+                    updateCmd.Parameters.AddWithValue("@doorId", exit.DoorId.Value);
+                else
+                    updateCmd.Parameters.AddWithValue("@doorId", DBNull.Value);
+
                 EnsureOpen(conn);
                 var rows = updateCmd.ExecuteNonQuery();
 
@@ -135,20 +141,24 @@ public static void SaveRoom(SqliteConnection conn, Room room)
                 {
                     using var insertCmd = conn.CreateCommand();
                     insertCmd.CommandText = @"
-                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword)
-                        VALUES (@rid, @dir, @toRid, @hidden, @keyword);";
+                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId)
+                        VALUES (@rid, @dir, @toRid, @hidden, @keyword, @doorId);";
                     insertCmd.Parameters.AddWithValue("@rid", room.ID);
                     insertCmd.Parameters.AddWithValue("@dir", exit.Direction ?? "");
                     insertCmd.Parameters.AddWithValue("@toRid", exit.ToRoomID);
                     insertCmd.Parameters.AddWithValue("@hidden", exit.IsHidden ? 1 : 0);
                     insertCmd.Parameters.AddWithValue("@keyword", exit.DiscoverKeyword ?? "");
+                    if (exit.DoorId.HasValue)
+                        insertCmd.Parameters.AddWithValue("@doorId", exit.DoorId.Value);
+                    else
+                        insertCmd.Parameters.AddWithValue("@doorId", DBNull.Value);
                     EnsureOpen(conn);
                     insertCmd.ExecuteNonQuery();
-                    if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] Inserted Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID}");
+                    if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] Inserted Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID} DoorId={exit.DoorId}");
                 }
                 else
                 {
-                    if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] Updated Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID}");
+                    if (setVerboseServerLogs) Console.WriteLine($"[RoomPersistence][TRACE] Updated Exit RoomID={room.ID} Dir='{exit.Direction}' ToRoomID={exit.ToRoomID} DoorId={exit.DoorId}");
                 }
             }
         }

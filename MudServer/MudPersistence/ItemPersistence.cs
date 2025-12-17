@@ -48,13 +48,23 @@ namespace MudPersistence
             if (string.Equals(item.OwnerType, "PLAYER", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "Player";
             if (string.Equals(item.OwnerType, "NPC", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "NPC";
 
-            // Only synchronize FlagsJson from Flags when Flags is non-null AND differs
+            // Normalize and deterministically serialize FlagsJson when Flags is present.
+            // Sorting ensures stable JSON so merge queries that compare Flags text behave predictably.
             if (item.Flags != null)
             {
-                var serialized = JsonSerializer.Serialize(item.Flags);
-                if (!string.Equals(item.FlagsJson ?? "[]", serialized, StringComparison.Ordinal))
+                try
                 {
-                    item.FlagsJson = serialized;
+                    var flagsList = item.Flags ?? new List<string>();
+                    var sorted = flagsList.OrderBy(s => s ?? string.Empty, StringComparer.OrdinalIgnoreCase).ToList();
+                    var serialized = JsonSerializer.Serialize(sorted);
+                    if (!string.Equals(item.FlagsJson ?? "[]", serialized, StringComparison.Ordinal))
+                    {
+                        item.FlagsJson = serialized;
+                    }
+                }
+                catch
+                {
+                    // If flag normalization fails, fall back to existing FlagsJson as-is.
                 }
             }
 
@@ -75,10 +85,20 @@ namespace MudPersistence
                     if (!hasQuantity.HasValue)
                         hasQuantity = TryHasColumn(conn, "Quantity");
 
+                    // Do a quick existence check for Material column (do not cache to avoid schema drift on long-running servers)
+                    bool hasMaterial = TryHasColumn(conn, "Material");
+
                     if (setVerboseServerLogs)
                         Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ConnState={conn.State}, ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}', DmgDiceMult={item.DmgDiceMult}, Quantity={item.Quantity}");
 
-                    // MERGE PATH: if inserting a new item and DB supports Quantity and item declares Stackable
+                    // MERGE PATH: only attempt to merge into an existing stack when ALL of:
+                    //  - DB supports Quantity,
+                    //  - this is a new insert (ItemID <= 0),
+                    //  - the item explicitly declares the "Stackable" flag in its FlagsJson,
+                    //  - AND the incoming operation is trying to add more than one unit (item.Quantity > 1).
+                    //
+                    // Rationale: do NOT treat presence of a Quantity column alone as a condition to merge.
+                    // Do NOT merge when callers create single-unit rows for non-stackable templates.
                     if (item.ItemID <= 0 && hasQuantity == true)
                     {
                         bool isStackable = false;
@@ -89,17 +109,19 @@ namespace MudPersistence
                         }
                         catch { isStackable = false; }
 
-                        if (isStackable && !string.IsNullOrEmpty(item.TemplateID))
+                        // Strict merge requirement: declared stackable AND incoming quantity indicates a stack addition.
+                        if (isStackable && item.Quantity > 1 && !string.IsNullOrEmpty(item.TemplateID))
                         {
                             // Try to find an existing stack with the same TemplateID, owner and identical flags JSON.
                             using var findCmd = new SqliteCommand(
                                 @"SELECT ItemID, Quantity FROM Item
-                          WHERE TemplateID = @template
-                            AND OwnerType = @otype
-                            AND OwnerID = @oid
-                            AND RoomID = @rid
-                            AND Flags = @flags
-                          ORDER BY ItemID LIMIT 1;", conn);
+              WHERE TemplateID = @template
+                AND OwnerType = @otype
+                AND OwnerID = @oid
+                AND RoomID = @rid
+                AND Flags = @flags"
+                                + (hasMaterial ? " AND Material = @material" : string.Empty)
+                                + @" ORDER BY ItemID LIMIT 1;", conn);
 
                             if (tx != null) findCmd.Transaction = tx;
 
@@ -108,6 +130,7 @@ namespace MudPersistence
                             findCmd.Parameters.AddWithValue("@oid", item.OwnerID);
                             findCmd.Parameters.AddWithValue("@rid", item.RoomID);
                             findCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                            if (hasMaterial) findCmd.Parameters.AddWithValue("@material", item.Material ?? "");
 
                             using var rdr = findCmd.ExecuteReader();
                             if (rdr.Read())
@@ -141,14 +164,16 @@ namespace MudPersistence
                     {
                         using var cmd = new SqliteCommand(
                             @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags"
+                            + (hasMaterial ? ", Material" : string.Empty)
                             + (hasQuantity == true ? ", Quantity" : string.Empty)
                             + ", DmgDiceMult, OwnerAreaID"
                             + (hasBaseAcBonus == true ? ", BaseACBonus" : string.Empty) + @")
-                      VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags"
+          VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags"
+                            + (hasMaterial ? ", @material" : string.Empty)
                             + (hasQuantity == true ? ", @quantity" : string.Empty)
                             + ", @dmgmult, @ownerarea"
                             + (hasBaseAcBonus == true ? ", @baseac" : string.Empty) + @");
-                      SELECT last_insert_rowid();", conn);
+          SELECT last_insert_rowid();", conn);
 
                         if (tx != null) cmd.Transaction = tx;
 
@@ -167,6 +192,7 @@ namespace MudPersistence
                         cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
                         cmd.Parameters.AddWithValue("@cond", item.Condition);
                         cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
                         if (hasQuantity == true) cmd.Parameters.AddWithValue("@quantity", item.Quantity);
                         cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
                         cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
@@ -177,6 +203,7 @@ namespace MudPersistence
                             Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (INSERT): " + (item.FlagsJson ?? "null"));
                             Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (INSERT): " + item.DmgDiceMult);
                             if (hasQuantity == true) Console.WriteLine($"[ItemPersistence][TRACE] QUANTITY param (INSERT): {item.Quantity}");
+                            if (hasMaterial) Console.WriteLine($"[ItemPersistence][TRACE] MATERIAL param (INSERT): {item.Material}");
                             Console.WriteLine($"[ItemPersistence][TRACE] INSERT Exec: ConnState={conn.State}");
                         }
 
@@ -189,25 +216,26 @@ namespace MudPersistence
                     {
                         using var cmd = new SqliteCommand(
                             @"UPDATE Item SET
-                        Name = @name,
-                        OwnerType = @otype,
-                        OwnerID = @oid,
-                        RoomID = @rid,
-                        OwnerAreaID = @ownerarea,
-                        Value = @value,
-                        Weight = @weight,
-                        WearLoc = @wear,
-                        HandLoc = @hand,
-                        ItemCategory = @category,
-                        ShortDesc = @short,
-                        LongDesc = @long,
-                        Creator = @creator,
-                        Condition = @cond,
-                        Flags = @flags,"
+            Name = @name,
+            OwnerType = @otype,
+            OwnerID = @oid,
+            RoomID = @rid,
+            OwnerAreaID = @ownerarea,
+            Value = @value,
+            Weight = @weight,
+            WearLoc = @wear,
+            HandLoc = @hand,
+            ItemCategory = @category,
+            ShortDesc = @short,
+            LongDesc = @long,
+            Creator = @creator,
+            Condition = @cond,
+            Flags = @flags,"
+                            + (hasMaterial ? " Material = @material," : string.Empty)
                             + (hasQuantity == true ? " Quantity = @quantity," : string.Empty) + @"
-                        DmgDiceMult = @dmgmult"
+            DmgDiceMult = @dmgmult"
                             + (hasBaseAcBonus == true ? ", BaseACBonus = @baseac" : string.Empty) + @"
-                    WHERE ItemID = @id;", conn);
+        WHERE ItemID = @id;", conn);
 
                         if (tx != null) cmd.Transaction = tx;
 
@@ -226,6 +254,7 @@ namespace MudPersistence
                         cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
                         cmd.Parameters.AddWithValue("@cond", item.Condition);
                         cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
                         if (hasQuantity == true) cmd.Parameters.AddWithValue("@quantity", item.Quantity);
                         cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
                         if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
@@ -236,6 +265,7 @@ namespace MudPersistence
                             Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (UPDATE): " + (item.FlagsJson ?? "null"));
                             Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (UPDATE): " + item.DmgDiceMult);
                             if (hasQuantity == true) Console.WriteLine($"[ItemPersistence][TRACE] QUANTITY param (UPDATE): {item.Quantity}");
+                            if (hasMaterial) Console.WriteLine($"[ItemPersistence][TRACE] MATERIAL param (UPDATE): {item.Material}");
                             Console.WriteLine($"[ItemPersistence][TRACE] UPDATE Exec: ConnState={conn.State}, ItemID={item.ItemID}");
                         }
 
@@ -289,11 +319,15 @@ namespace MudPersistence
                 if (!hasQuantity.HasValue) hasQuantity = TryHasColumn(conn, "Quantity");
                 includeQuantity = hasQuantity == true;
 
+                // detect Material column on the fly (do not cache globally here)
+                bool includeMaterial = TryHasColumn(conn, "Material");
+
                 using var cmd = new SqliteCommand(@"
-                    SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
-                           Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
-                           LongDesc, Creator, Condition, Flags"
-                           + (includeQuantity ? ", Quantity" : "")
+            SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
+                   Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
+                   LongDesc, Creator, Condition, Flags"
+                           + (includeMaterial ? ", Material" : string.Empty)
+                           + (includeQuantity ? ", Quantity" : string.Empty)
                            + ", DmgDiceMult"
                            + (includeBaseAc ? ", BaseACBonus" : ""), conn);
 
@@ -306,28 +340,44 @@ namespace MudPersistence
                 {
                     var it = new Item
                     {
-                        ItemID      = !reader.IsDBNull(0)  ? reader.GetInt32(0)  : 0,
-                        TemplateID  = !reader.IsDBNull(1)  ? reader.GetString(1) : "",
-                        Name        = !reader.IsDBNull(2)  ? reader.GetString(2) : "",
-                        OwnerType   = !reader.IsDBNull(3)  ? reader.GetString(3) : "",
-                        OwnerID     = !reader.IsDBNull(4)  ? reader.GetInt32(4)  : 0,
-                        RoomID      = !reader.IsDBNull(5)  ? reader.GetInt32(5)  : 0,
-                        Value       = !reader.IsDBNull(6)  ? reader.GetInt32(6)  : 0,
-                        Weight      = !reader.IsDBNull(7)  ? reader.GetDouble(7) : 0.0,
-                        WearLoc     = !reader.IsDBNull(8)  ? reader.GetString(8) : "",
-                        HandLoc     = !reader.IsDBNull(9)  ? reader.GetInt32(9)  : 0,
-                        ItemCategory= !reader.IsDBNull(10) ? reader.GetString(10): "",
-                        ShortDesc   = !reader.IsDBNull(11) ? reader.GetString(11): "",
-                        LongDesc    = !reader.IsDBNull(12) ? reader.GetString(12): "",
-                        Creator     = !reader.IsDBNull(13) ? reader.GetString(13): "",
-                        Condition   = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
-                        FlagsJson   = !reader.IsDBNull(15) ? reader.GetString(15): "[]"
+                        ItemID = !reader.IsDBNull(0) ? reader.GetInt32(0) : 0,
+                        TemplateID = !reader.IsDBNull(1) ? reader.GetString(1) : "",
+                        Name = !reader.IsDBNull(2) ? reader.GetString(2) : "",
+                        OwnerType = !reader.IsDBNull(3) ? reader.GetString(3) : "",
+                        OwnerID = !reader.IsDBNull(4) ? reader.GetInt32(4) : 0,
+                        RoomID = !reader.IsDBNull(5) ? reader.GetInt32(5) : 0,
+                        Value = !reader.IsDBNull(6) ? reader.GetInt32(6) : 0,
+                        Weight = !reader.IsDBNull(7) ? reader.GetDouble(7) : 0.0,
+                        WearLoc = !reader.IsDBNull(8) ? reader.GetString(8) : "",
+                        HandLoc = !reader.IsDBNull(9) ? reader.GetInt32(9) : 0,
+                        ItemCategory = !reader.IsDBNull(10) ? reader.GetString(10) : "",
+                        ShortDesc = !reader.IsDBNull(11) ? reader.GetString(11) : "",
+                        LongDesc = !reader.IsDBNull(12) ? reader.GetString(12) : "",
+                        Creator = !reader.IsDBNull(13) ? reader.GetString(13) : "",
+                        Condition = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
+                        FlagsJson = !reader.IsDBNull(15) ? reader.GetString(15) : "[]"
                     };
 
-                    // Determine ordinals for optional fields (Quantity, DmgDiceMult, BaseACBonus)
-                    int qtyOrd = includeQuantity ? 16 : -1;
-                    int dmgOrd = includeQuantity ? 17 : 16;
-                    int baseAcOrd = includeBaseAc ? (includeQuantity ? 18 : 17) : -1;
+                    // Determine ordinals for optional fields in a robust way
+                    int nextOrd = 16; // first ordinal after Flags
+                    int materialOrd = -1;
+                    int qtyOrd = -1;
+                    int dmgOrd = -1;
+                    int baseAcOrd = -1;
+
+                    if (includeMaterial)
+                    {
+                        materialOrd = nextOrd++;
+                    }
+                    if (includeQuantity)
+                    {
+                        qtyOrd = nextOrd++;
+                    }
+
+                    // DmgDiceMult is always present after optional columns
+                    dmgOrd = nextOrd++;
+                    if (includeBaseAc)
+                        baseAcOrd = nextOrd++;
 
                     // Quantity (if present)
                     try
@@ -357,6 +407,16 @@ namespace MudPersistence
                         if (!reader.IsDBNull(baseAcOrd))
                             it.BaseACBonus = reader.GetDouble(baseAcOrd);
                     }
+
+                    // Material (if present)
+                    try
+                    {
+                        if (materialOrd != -1 && !reader.IsDBNull(materialOrd))
+                            it.Material = reader.GetString(materialOrd);
+                        else
+                            it.Material = null;
+                    }
+                    catch { it.Material = null; }
 
                     try
                     {

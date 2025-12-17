@@ -1,0 +1,15 @@
+{
+  "Id": "bar_bronze",
+  "Name": "Bronze Bar",
+  "ItemCategory": "Component",
+  "Weight": 1.0,
+  "Value": 10,
+  "ShortDesc": "A bar of bronze",
+  "LongDesc": "A bar of bronze, this can be used for crafting, or can be divided into 10 bits of bronze.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Bronze",
+  "Stackable": "true"
+}

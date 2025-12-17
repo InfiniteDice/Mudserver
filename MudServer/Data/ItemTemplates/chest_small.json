@@ -8,6 +8,7 @@
   "LongDesc": "A small chest made of oak, this can be locked.",
   "WearLoc": "",
   "HandLoc": 0,
-  "Flags": ["Capacity80","Accept:All","Lockable"],
+  "Flags": [ "Capacity80", "Accept:All", "Lockable" ],
+  "Material": "Oak",
   "BaseACBonus": 0.0
 }

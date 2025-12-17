@@ -9,5 +9,6 @@
   "WearLoc": "",
   "HandLoc": 0,
   "Flags": [],
+  "Material": "Iron",
   "BaseACBonus": 0.0
 }

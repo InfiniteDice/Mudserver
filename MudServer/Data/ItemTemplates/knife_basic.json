@@ -9,5 +9,6 @@
   "WearLoc": "Hand",
   "HandLoc": 1,
   "Flags": [],
+  "Material": "Iron",
   "DmgDiceMult": 1.5
 }

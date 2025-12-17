@@ -17,6 +17,7 @@ namespace MudServer
         private readonly SqliteConnection _dbConnection;
         private readonly PlayerAuthentication _auth;
         private readonly AdminService _adminService; // new
+        private readonly MudServer.MudCore.Actions.DoorService _doorService; // door helper
 
         private static readonly HashSet<string> AllowedWearLocs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -33,6 +34,7 @@ namespace MudServer
             _dbConnection = dbConnection;
             _auth = new PlayerAuthentication(world, dbConnection);
             _adminService = new AdminService(world, dbConnection); // initialize admin service
+            _doorService = new MudServer.MudCore.Actions.DoorService(world, dbConnection); // initialize door service
         }
 
         public Message? ProcessCommand(Player player, string rawCommand)
@@ -41,6 +43,37 @@ namespace MudServer
             if (pendingMsg != null) return pendingMsg;
 
             string command = ExtractCommandText(rawCommand).Trim();
+
+            // --- OPEN / CLOSE door commands ---
+            if (command.StartsWith("open ", StringComparison.OrdinalIgnoreCase))
+            {
+                var arg = command.Substring(5).Trim();
+                if (string.IsNullOrWhiteSpace(arg)) return MessageHandler.System("Usage: open <direction>");
+                try
+                {
+                    return _doorService.OpenDoor(player, arg);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD] Open command failed: {ex}");
+                    return MessageHandler.System("Failed to open the door due to a server error.");
+                }
+            }
+
+            if (command.StartsWith("close ", StringComparison.OrdinalIgnoreCase))
+            {
+                var arg = command.Substring(6).Trim();
+                if (string.IsNullOrWhiteSpace(arg)) return MessageHandler.System("Usage: close <direction>");
+                try
+                {
+                    return _doorService.CloseDoor(player, arg);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD] Close command failed: {ex}");
+                    return MessageHandler.System("Failed to close the door due to a server error.");
+                }
+            }
 
             // EAT command (new)
             if (command.StartsWith("eat", StringComparison.OrdinalIgnoreCase))
@@ -633,6 +666,10 @@ namespace MudServer
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     return _adminService.HandleEditRoom(player);
 
+                case string s when s.StartsWith("editexit", StringComparison.OrdinalIgnoreCase):
+                    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                    return _adminService.HandleEditExit(player, command);
+
                 case string s when s.StartsWith("createnpc", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     var parts = command.Split(' ', 2);
@@ -735,6 +772,23 @@ namespace MudServer
                 };
 
                         return MessageHandler.System(string.Join("\n", lines));
+                    }
+
+                // NEW: Smelt command integration
+                case string s when s.StartsWith("smelt", StringComparison.OrdinalIgnoreCase):
+                    {
+                        // Extract arguments after 'smelt '
+                        var idx = command.IndexOf(' ');
+                        var args = idx >= 0 ? command.Substring(idx + 1).Trim() : string.Empty;
+                        try
+                        {
+                            return MudServer.MudCore.Actions.Crafting.Smelt(player, args, _world, _dbConnection);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD] Smelt command failed: {ex.Message}");
+                            return MessageHandler.System("Smelting failed due to a server error.");
+                        }
                     }
 
                 case string s when s.StartsWith("wear", StringComparison.OrdinalIgnoreCase):
@@ -1472,6 +1526,21 @@ namespace MudServer
             var authHandled = _auth.HandleAuthPending(player, rawCommand);
             if (authHandled != null) return authHandled;
 
+            // NEW: delegate pending actions to AdminService first so admin flows (EditExit, EditRoom, etc.)
+            // get priority processing. If AdminService handles it, consume the pending action.
+            try
+            {
+                var adminHandled = _adminService.HandlePendingAction(player, pa, input);
+                if (adminHandled != null) return adminHandled;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PENDING][ADMIN] HandlePendingAction failed: {ex}");
+                // Fail-safe: clear pending to avoid blocking, and return an error to the user.
+                player.PendingAction = null!;
+                return MessageHandler.System("Server error while processing pending admin action.");
+            }
+
             // The rest of the existing pending action handling follows (GetItem, DropItem, EditRoom, CreateArea, CreateRoom, etc.)
             // (Preserved existing logic below.)
 
@@ -1698,9 +1767,9 @@ namespace MudServer
                 {
                     using var ins = _dbConnection.CreateCommand();
                     ins.CommandText = @"
-                        INSERT INTO Area (Name, Description, WorldID, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner)
-                        VALUES (@name, @desc, @wid, @theme, @min, @max, @pvp, @owner);
-                        SELECT last_insert_rowid();";
+                INSERT INTO Area (Name, Description, WorldID, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner)
+                VALUES (@name, @desc, @wid, @theme, @min, @max, @pvp, @owner);
+                SELECT last_insert_rowid();";
                     ins.Parameters.AddWithValue("@name", newArea.Name ?? "");
                     ins.Parameters.AddWithValue("@desc", newArea.Description ?? "");
                     ins.Parameters.AddWithValue("@wid", _world.WorldID);

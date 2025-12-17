@@ -1,11 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 using MudCore.Entities;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace MudServer
 {
@@ -109,7 +110,7 @@ namespace MudServer
                 {
                     "copper" => ("coin_copper", 1L),
                     "silver" => ("coin_silver", (long)Currency.CopperPerSilver),
-                    "gold"   => ("coin_gold", Currency.CopperPerGold),
+                    "gold" => ("coin_gold", Currency.CopperPerGold),
                     _ => ("", 0L)
                 };
             }
@@ -336,6 +337,45 @@ namespace MudServer
             );
         }
 
+        public Message? HandleEditExit(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            var parts = command.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2)
+                return MessageHandler.System("Usage: editexit <direction>");
+
+            string dir = parts[1].Trim();
+            if (string.IsNullOrWhiteSpace(dir))
+                return MessageHandler.System("Usage: editexit <direction>");
+
+            // Normalize direction (store raw string on pending; matching will normalize on lookup)
+            player.PendingAction = new PendingAction
+            {
+                Command = "EditExit",
+                Direction = dir,
+                Step = "SelectField"
+            };
+
+            var room = player.CurrentRoom;
+            string exitName = dir;
+            if (room != null)
+            {
+                // Try to resolve a friendly title for the exit if present
+                var match = room.Exits.FirstOrDefault(e => string.Equals(NormalizeDirection(e.Direction), NormalizeDirection(dir), StringComparison.OrdinalIgnoreCase));
+                if (match != null)
+                    exitName = match.Direction;
+            }
+
+            return MessageHandler.System(
+                $"Editing exit: {exitName}\n" +
+                "Choose a field to edit:\n" +
+                "1) HasDoor\n" +
+                "Type the option name/number, or type EndEdit to finish."
+            );
+        }
+
         public Message? HandleCreateNpc(Player player, string templateId)
         {
             var room = player.CurrentRoom;
@@ -533,6 +573,115 @@ namespace MudServer
         {
             if (pa == null) return null;
 
+            // --- EditExit pending action ---
+            if (pa.Command == "EditExit")
+            {
+                if (!player.IsAdmin)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Permission denied. Admins only.");
+                }
+
+                var room = player.CurrentRoom;
+                if (room == null)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("You are not inside a valid room.");
+                }
+
+                if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase))
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Edit exit cancelled.");
+                }
+
+                if (pa.Step == "SelectField")
+                {
+                    if (input == "1" || input.Equals("HasDoor", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditHasDoor";
+                        return MessageHandler.System("Set HasDoor: type 't' for true or 'f' for false.");
+                    }
+
+                    return MessageHandler.System("Invalid option. Type '1' or 'HasDoor', or 'EndEdit'.");
+                }
+
+
+
+                if (pa.Step == "EditHasDoor")
+                {
+                    var v = input?.Trim().ToLowerInvariant();
+                    if (v != "t" && v != "f" && v != "true" && v != "false")
+                        return MessageHandler.System("Invalid value. Type 't' (true) or 'f' (false).");
+
+                    bool newVal = (v == "t" || v == "true");
+
+                    // Find the exit by normalized direction
+                    var exit = room.Exits.FirstOrDefault(e => string.Equals(NormalizeDirection(e.Direction), NormalizeDirection(pa.Direction), StringComparison.OrdinalIgnoreCase));
+                    if (exit == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"No exit found for direction '{pa.Direction}'.");
+                    }
+
+                    // Transition from boolean HasDoor -> DoorId nullable:
+                    // - true: create a new Doors row (closed by default) if one not already linked and assign DoorId
+                    // - false: unlink DoorId (set to null). Do NOT delete Doors rows automatically.
+                    try
+                    {
+                        if (newVal)
+                        {
+                            if (!exit.DoorId.HasValue)
+                            {
+                                using var ins = _db.CreateCommand();
+                                ins.CommandText = "INSERT INTO Doors (IsOpen, DoorType, Flags) VALUES (0, NULL, NULL);";
+                                ins.ExecuteNonQuery();
+                                using var last = _db.CreateCommand();
+                                last.CommandText = "SELECT last_insert_rowid();";
+                                var vobj = last.ExecuteScalar();
+                                var newDoorId = Convert.ToInt32(vobj);
+                                exit.DoorId = newDoorId;
+                            }
+                        }
+                        else
+                        {
+                            // unlink only
+                            exit.DoorId = null;
+                        }
+
+                        room.IsDirty = true;
+                        RoomPersistence.SaveRoomExits(_db, room);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EDITEXIT] Failed saving exit change: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save exit changes due to a server error.");
+                    }
+
+                    // Broadcast updated room to occupants
+                    try
+                    {
+                        foreach (var p in room.Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(
+                                room,
+                                room.Npcs.Select(n => n.DisplayName).ToList(),
+                                room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world, _db));
+                        }
+                    }
+                    catch { /* best-effort */ }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Exit '{exit.Direction}' HasDoor set to {(exit.DoorId.HasValue ? "true" : "false")}.");
+                }
+
+                return null;
+            }
+
+            // ... existing pending handling for EditRoom/CreateArea/CreateRoom follows unchanged ...
+
             // EditRoom pending action
             if (pa.Command == "EditRoom")
             {
@@ -715,6 +864,26 @@ namespace MudServer
         {
             string[] valid = { "N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN" };
             return valid.Any(v => v.Equals(dir, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string NormalizeDirection(string d)
+        {
+            if (string.IsNullOrWhiteSpace(d)) return string.Empty;
+            var s = d.Trim().ToUpperInvariant();
+            return s switch
+            {
+                "N" or "NORTH" => "N",
+                "S" or "SOUTH" => "S",
+                "E" or "EAST" => "E",
+                "W" or "WEST" => "W",
+                "NE" or "NORTHEAST" => "NE",
+                "NW" or "NORTHWEST" => "NW",
+                "SE" or "SOUTHEAST" => "SE",
+                "SW" or "SOUTHWEST" => "SW",
+                "U" or "UP" => "UP",
+                "D" or "DOWN" => "DOWN",
+                _ => s
+            };
         }
 
         private static string OppositeDirection(string dir) => dir.ToUpper() switch

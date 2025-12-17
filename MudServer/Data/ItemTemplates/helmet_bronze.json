@@ -9,5 +9,6 @@
   "WearLoc": "Head",
   "HandLoc": 0,
   "Flags": [],
+  "Material": "Bronze",
   "BaseACBonus": 2.0
 }

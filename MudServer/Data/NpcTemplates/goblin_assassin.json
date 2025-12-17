@@ -16,7 +16,7 @@
   "CurrentAiTask": null,
   "HealthMax": 35,
   "Health": 35,
-  "Flags": ["PoisonHit90T"],
+  "Flags": ["PoisonHit30T"],
   "Level": 3,
   "Mass": 20.0,
   "EffMass": 20.0,

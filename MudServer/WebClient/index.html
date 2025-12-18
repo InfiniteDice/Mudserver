@@ -236,11 +236,21 @@
                     roomTitleEl.textContent = title || 'Unknown room';
                     roomDescEl.textContent = desc || '';
 
-                    // update top title to "WorldName -- AreaName"
+                    // update top title to "WorldName -- AreaName" and include stylized game header when provided
                     const worldName = msg.worldName || '';
                     const areaName = msg.areaName || '';
+                    const gameHeader = msg.gameHeader || '';
+
                     if (worldName || areaName) {
-                        siteTitleEl.textContent = worldName && areaName ? `${worldName} -- ${areaName}` : (worldName || areaName || 'MUD');
+                        const base = worldName && areaName ? `${worldName} -- ${areaName}` : (worldName || areaName || 'MUD');
+
+                        if (gameHeader) {
+                            // include descriptive period + ordinal date + month + year
+                            siteTitleEl.textContent = `${base} — ${gameHeader}`;
+                        } else {
+                            siteTitleEl.textContent = base;
+                        }
+
                         document.title = siteTitleEl.textContent;
                     }
 

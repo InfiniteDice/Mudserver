@@ -366,8 +366,6 @@ WHERE AreaID = @aid";
             return rooms;
         }
 
-        // REPLACE FROM: private static List<Room.RoomExit> LoadRoomExits(SqliteConnection conn, int roomID)
-        // REPLACE TO: private static List<Room.RoomExit> LoadRoomExits(SqliteConnection conn, int roomID)
         private static List<Room.RoomExit> LoadRoomExits(SqliteConnection conn, int roomID)
         {
             var exits = new List<Room.RoomExit>();
@@ -395,13 +393,43 @@ WHERE AreaID = @aid";
                     doorId = null;
                 }
 
-                exits.Add(new Room.RoomExit(
+                var exit = new Room.RoomExit(
                     direction,
                     toRoom,
                     isHidden,
                     keyword,
                     doorId
-                ));
+                );
+
+                // Initialize in-memory cached door state from authoritative Doors table when available.
+                // This ensures the renderer shows the correct open/closed state immediately after world load.
+                if (doorId.HasValue)
+                {
+                    try
+                    {
+                        EnsureOpen(conn);
+                        using var dq = conn.CreateCommand();
+                        dq.CommandText = "SELECT IsOpen FROM Doors WHERE DoorId = @did";
+                        dq.Parameters.AddWithValue("@did", doorId.Value);
+                        var obj = dq.ExecuteScalar();
+                        if (obj != null && !(obj is DBNull))
+                        {
+                            exit.DoorIsOpen = Convert.ToInt32(obj) != 0;
+                        }
+                        else
+                        {
+                            // No row found -> leave cache as null (renderer may treat as closed by default)
+                            exit.DoorIsOpen = null;
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort: leave DoorIsOpen null on any error so we don't fail world load
+                        exit.DoorIsOpen = null;
+                    }
+                }
+
+                exits.Add(exit);
             }
 
             return exits;

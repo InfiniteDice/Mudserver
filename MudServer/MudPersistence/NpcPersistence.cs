@@ -49,21 +49,23 @@ namespace MudPersistence
             using var cmd = conn.CreateCommand();
             // Include optional columns when present
             cmd.CommandText = @"
-                INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID"
+        INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID"
                 + (Has("Description") ? ", Description" : "")
                 + (Has("IsHumanoid") ? ", IsHumanoid" : "")
                 + (Has("WanderChance") ? ", WanderChance" : "")
                 + (Has("Level") ? ", Level" : "")
                 + (Has("CombatSkill") ? ", CombatSkill" : "")
-                + (Has("EffCombatSkill") ? ", EffCombatSkill" : "") + @")
-                VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area"
+                + (Has("EffCombatSkill") ? ", EffCombatSkill" : "")
+                + (Has("Flags") ? ", Flags" : "") + @")
+        VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area"
                 + (Has("Description") ? ", @desc" : "")
                 + (Has("IsHumanoid") ? ", @isHumanoid" : "")
                 + (Has("WanderChance") ? ", @wc" : "")
                 + (Has("Level") ? ", @lvl" : "")
                 + (Has("CombatSkill") ? ", @cs" : "")
-                + (Has("EffCombatSkill") ? ", @ecs" : "") + @");
-                SELECT last_insert_rowid();";
+                + (Has("EffCombatSkill") ? ", @ecs" : "")
+                + (Has("Flags") ? ", @flags" : "") + @");
+        SELECT last_insert_rowid();";
 
             cmd.Parameters.AddWithValue("@tid", npc.TemplateID ?? "");
             cmd.Parameters.AddWithValue("@name", npc.Name ?? "");
@@ -80,6 +82,22 @@ namespace MudPersistence
             if (Has("Level")) cmd.Parameters.AddWithValue("@lvl", Math.Max(1, npc.Level ?? 1));
             if (Has("CombatSkill")) cmd.Parameters.AddWithValue("@cs", npc.CombatSkill ?? 0.0);
             if (Has("EffCombatSkill")) cmd.Parameters.AddWithValue("@ecs", npc.EffCombatSkill ?? (npc.CombatSkill ?? 0.0));
+
+            // NEW: Flags parameter (serialize deterministically) for initial insert
+            if (Has("Flags"))
+            {
+                try
+                {
+                    var flagsList = npc.Flags ?? new List<string>();
+                    flagsList.Sort(System.StringComparer.OrdinalIgnoreCase);
+                    var flagsJson = System.Text.Json.JsonSerializer.Serialize(flagsList);
+                    cmd.Parameters.AddWithValue("@flags", flagsJson);
+                }
+                catch
+                {
+                    cmd.Parameters.AddWithValue("@flags", "[]");
+                }
+            }
 
             int newId = (int)(long)cmd.ExecuteScalar();
             npc.NpcID = newId;
@@ -129,19 +147,20 @@ namespace MudPersistence
 
             using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
-                UPDATE Npc SET
-                    Health = @hp,
-                    MaxHealth = @maxhp,
-                    CurrentRoomID = @room,
-                    VisualTrait = @trait,
-                    CurrentAreaID = @area"
+        UPDATE Npc SET
+            Health = @hp,
+            MaxHealth = @maxhp,
+            CurrentRoomID = @room,
+            VisualTrait = @trait,
+            CurrentAreaID = @area"
                     + (Has("Description") ? ", Description = @desc" : "")
                     + (Has("IsHumanoid") ? ", IsHumanoid = @isHumanoid" : "")
                     + (Has("WanderChance") ? ", WanderChance = @wc" : "")
                     + (Has("Level") ? ", Level = @lvl" : "")
                     + (Has("CombatSkill") ? ", CombatSkill = @cs" : "")
-                    + (Has("EffCombatSkill") ? ", EffCombatSkill = @ecs" : "") + @"
-                WHERE NpcID = @id;";
+                    + (Has("EffCombatSkill") ? ", EffCombatSkill = @ecs" : "")
+                    + (Has("Flags") ? ", Flags = @flags" : "") + @"
+        WHERE NpcID = @id;";
             cmd.Parameters.AddWithValue("@hp", npc.Health);
             cmd.Parameters.AddWithValue("@maxhp", npc.HealthMax);
             cmd.Parameters.AddWithValue("@room", npc.CurrentRoomID);
@@ -154,6 +173,22 @@ namespace MudPersistence
             if (Has("Level")) cmd.Parameters.AddWithValue("@lvl", Math.Max(1, npc.Level ?? 1));
             if (Has("CombatSkill")) cmd.Parameters.AddWithValue("@cs", npc.CombatSkill ?? 0.0);
             if (Has("EffCombatSkill")) cmd.Parameters.AddWithValue("@ecs", npc.EffCombatSkill ?? (npc.CombatSkill ?? 0.0));
+
+            // NEW: Flags parameter for update
+            if (Has("Flags"))
+            {
+                try
+                {
+                    var flagsList = npc.Flags ?? new List<string>();
+                    flagsList.Sort(System.StringComparer.OrdinalIgnoreCase);
+                    var flagsJson = System.Text.Json.JsonSerializer.Serialize(flagsList);
+                    cmd.Parameters.AddWithValue("@flags", flagsJson);
+                }
+                catch
+                {
+                    cmd.Parameters.AddWithValue("@flags", "[]");
+                }
+            }
 
             try { cmd.ExecuteNonQuery(); } catch { }
 
@@ -230,6 +265,8 @@ namespace MudPersistence
             if (Has("Debuffs")) assignments.Add("Debuffs = @Debuffs");
             // NEW: persist Level if column exists
             if (Has("Level")) assignments.Add("Level = @Level");
+            // NEW: persist Flags if column exists
+            if (Has("Flags")) assignments.Add("Flags = @Flags");
 
             if (assignments.Count == 0) return;
 
@@ -252,6 +289,22 @@ namespace MudPersistence
             var debuffsJson = JsonSerializer.Serialize(npc.Debuffs ?? new List<string>());
             up.Parameters.AddWithValue("@Buffs", buffsJson);
             up.Parameters.AddWithValue("@Debuffs", debuffsJson);
+
+            // NEW: Flags parameter (serialize deterministically)
+            if (Has("Flags"))
+            {
+                try
+                {
+                    var flagsList = npc.Flags ?? new List<string>();
+                    flagsList.Sort(System.StringComparer.OrdinalIgnoreCase);
+                    var flagsJson = System.Text.Json.JsonSerializer.Serialize(flagsList);
+                    up.Parameters.AddWithValue("@Flags", flagsJson);
+                }
+                catch
+                {
+                    up.Parameters.AddWithValue("@Flags", "[]");
+                }
+            }
 
             try { up.ExecuteNonQuery(); } catch { }
         }
@@ -340,6 +393,21 @@ namespace MudPersistence
                         npc.Buffs = TryDeserializeList(GetString(rdr, "Buffs", "[]"));
                     if (Has("Debuffs"))
                         npc.Debuffs = TryDeserializeList(GetString(rdr, "Debuffs", "[]"));
+
+                    // NEW: read Flags column when present
+                    if (Has("Flags"))
+                    {
+                        try
+                        {
+                            npc.Flags = TryDeserializeList(GetString(rdr, "Flags", "[]"));
+                            npc.FlagsJson = string.IsNullOrEmpty(npc.FlagsJson) ? (npc.Flags != null ? JsonSerializer.Serialize(npc.Flags) : "[]") : npc.FlagsJson;
+                        }
+                        catch
+                        {
+                            npc.Flags = new List<string>();
+                            npc.FlagsJson = "[]";
+                        }
+                    }
 
                     npc.CurrentRoom = world.Rooms.Find(r => r.RoomID == npc.CurrentRoomID);
 

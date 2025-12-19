@@ -1,0 +1,14 @@
+{
+  "Id": "pot",
+  "Name": "Pot",
+  "ItemCategory": "Container",
+  "Weight": 0.3,
+  "Value": 4,
+  "ShortDesc": "A simple iron cooking pot",
+  "LongDesc": "A simple iron pot, this can be used to cook food.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity5","Accept:Food", "HoldsLiquid" ],
+  "Material": "Iron",
+  "BaseACBonus": 0.0
+}

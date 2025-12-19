@@ -1,0 +1,15 @@
+{
+  "Id": "hare_foot_lucky",
+  "Name": "Lucky Hares Foot",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 10,
+  "ShortDesc": "A special foot from a hare",
+  "LongDesc": "A foot from a hare, this is special, you can use this for something.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "false"
+}

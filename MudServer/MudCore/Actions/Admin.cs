@@ -333,6 +333,7 @@ namespace MudServer
                 "1) Name\n" +
                 "2) Description\n" +
                 "3) DistantDescription\n" +
+                "4) Generate Description from Prompt\n" +
                 "Type the option name/number, or type EndEdit to finish."
             );
         }
@@ -718,7 +719,16 @@ namespace MudServer
                         return MessageHandler.System("Enter new distant description for this room:");
                     }
 
-                    return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, 1, 2, 3, or EndEdit.");
+                    // NEW: LLM generation option
+                    if (input == "4" || input.Equals("GenerateDescription", StringComparison.OrdinalIgnoreCase) ||
+                        input.Equals("Generate Description", StringComparison.OrdinalIgnoreCase) ||
+                        input.Equals("Generate Description from Prompt", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "GenerateDescriptionPrompt";
+                        return MessageHandler.System("Enter Prompt:");
+                    }
+
+                    return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, GenerateDescription, 1, 2, 3, 4, or EndEdit.");
                 }
 
                 if (pa.Step == "EditName")
@@ -737,6 +747,115 @@ namespace MudServer
                     _world.SaveDirtyRooms(_db);
                     player.PendingAction = null!;
                     return MessageHandler.System("Room description updated.");
+                }
+
+                // handle generate-from-prompt flow
+                if (pa.Step == "GenerateDescriptionPrompt")
+                {
+                    var prompt = input;
+                    player.PendingAction = null!; // consume the pending action
+
+                    var lmUrl = Environment.GetEnvironmentVariable("LMSTUDIO_URL") ?? "http://127.0.0.1:8000/";
+                    var lmModel = Environment.GetEnvironmentVariable("LMSTUDIO_MODEL") ?? "default";
+
+                    // Build a system message to ensure context/rules are enforced by the model.
+                    // Allow override via LMSTUDIO_SYSTEM_PROMPT env var.
+                    var systemPrompt = Environment.GetEnvironmentVariable("LMSTUDIO_SYSTEM_PROMPT") ??
+                        "You are a concise immersive worldbuilding assistant. Follow all provided context rules. Produce a single-room description suitable for a text-based MUD. Do not mention model or system internals. Use present-tense evocative language, keep output under 100 words, avoid using descriptive words like heat and sun, and avoid lists or markup.";
+
+                    try
+                    {
+                        using var lmClient = new MudServer.Integrations.LmStudioClient(lmUrl);
+                        using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+                        // Prefer chat/completions endpoint so we can provide a system role (context/instruction) first.
+                        var messages = new List<(string role, string content)>
+                {
+                    ("system", systemPrompt),
+                    // Provide minimal room context to help the model (room name + existing description if any)
+                    ("user", $"Room: {room?.Name ?? "Unknown"}\nExisting description: {room?.Description ?? ""}\nPrompt: {prompt}\n\nGenerate a refined room description based on the Prompt and the Existing description. Keep it immersive and focused on sensory details.")
+                };
+
+                        using var respDoc = lmClient.CreateChatCompletionAsync(lmModel, messages, temperature: 0.7, ct: cts.Token)
+                                                   .GetAwaiter().GetResult();
+
+                        string generated = "";
+
+                        try
+                        {
+                            var root = respDoc.RootElement;
+
+                            // chat/completions: choices[0].message.content (preferred)
+                            if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == System.Text.Json.JsonValueKind.Array && choices.GetArrayLength() > 0)
+                            {
+                                var first = choices[0];
+                                if (first.TryGetProperty("message", out var msg) && msg.ValueKind == System.Text.Json.JsonValueKind.Object && msg.TryGetProperty("content", out var content))
+                                {
+                                    generated = content.GetString() ?? "";
+                                }
+                                else if (first.TryGetProperty("text", out var textProp))
+                                {
+                                    generated = textProp.GetString() ?? "";
+                                }
+                            }
+
+                            // fallback: responses style
+                            if (string.IsNullOrWhiteSpace(generated) && root.TryGetProperty("output_text", out var outText) && outText.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                generated = outText.GetString() ?? "";
+                            }
+
+                            if (string.IsNullOrWhiteSpace(generated) && root.TryGetProperty("output", out var outNode))
+                            {
+                                if (outNode.ValueKind == System.Text.Json.JsonValueKind.String)
+                                    generated = outNode.GetString() ?? "";
+                                else if (outNode.ValueKind == System.Text.Json.JsonValueKind.Array && outNode.GetArrayLength() > 0)
+                                    generated = string.Join("\n", outNode.EnumerateArray().Select(e => e.GetString() ?? ""));
+                            }
+
+                            if (string.IsNullOrWhiteSpace(generated))
+                                generated = root.ToString();
+                        }
+                        catch (Exception exParse)
+                        {
+                            Console.WriteLine($"[LLM][WARN] Failed to parse LM response: {exParse.Message}");
+                            generated = "";
+                        }
+
+                        generated = (generated ?? "").Trim();
+                        if (string.IsNullOrWhiteSpace(generated))
+                        {
+                            return MessageHandler.System("LLM returned empty description. Try a different prompt.");
+                        }
+
+                        try
+                        {
+                            room.Description = generated;
+                            room.IsDirty = true;
+                            _world.SaveDirtyRooms(_db);
+
+                            foreach (var p in room.Players)
+                            {
+                                p.PendingMessageQueue.Add(MessageHandler.Room(
+                                    room,
+                                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                    _world));
+                            }
+
+                            return MessageHandler.System("Generated description saved.");
+                        }
+                        catch (Exception exSave)
+                        {
+                            Console.WriteLine($"[LLM][ERROR] Failed to save generated description: {exSave.Message}");
+                            return MessageHandler.System("Failed to save generated description due to a server error.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[LLM] Generation failed: {ex.Message}");
+                        return MessageHandler.System($"LLM generation failed: {ex.Message}");
+                    }
                 }
 
                 // NEW: persist DistantDescription edits

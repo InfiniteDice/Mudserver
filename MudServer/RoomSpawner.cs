@@ -300,7 +300,7 @@ namespace MudServer
                                     MessageHandler.SendSystem(p, text);
                                 }
 
-                                Console.WriteLine($"[Spawner] Item '{proto.Name}' spawned in room {room.RoomID} (qty added={spawnQty}, newTotal={room.Inventory.FirstOrDefault(i => i.TemplateID == templateId && string.Equals(i.FlagsJson ?? "[]", protoFlagsJson, StringComparison.Ordinal))?.Quantity}).");
+                                if (useVerboseLogging) Console.WriteLine($"[Spawner] Item '{proto.Name}' spawned in room {room.RoomID} (qty added={spawnQty}, newTotal={room.Inventory.FirstOrDefault(i => i.TemplateID == templateId && string.Equals(i.FlagsJson ?? "[]", protoFlagsJson, StringComparison.Ordinal))?.Quantity}).");
                             }
                             else
                             {

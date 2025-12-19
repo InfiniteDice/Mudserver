@@ -44,9 +44,9 @@ namespace MudServer.MudCore.Actions
 
             // Allowed metals (editable list) - keep lower/upper flexible via OrdinalIgnoreCase
             var allowedMetals = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","aluminium","cobalt","titanium"
-    };
+{
+    "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","aluminium","cobalt","titanium"
+};
 
             // Accept singular or plural source/dest tokens (bit/bits, ore/ores, bar/bars)
             var m = Regex.Match(args.Trim(), @"^\s*(\w+)\s+(bits?|ores?|bars?)\s+to\s+(bars?|bits?)\s*$", RegexOptions.IgnoreCase);
@@ -71,6 +71,22 @@ namespace MudServer.MudCore.Actions
                     }
 
                     string NormalizeTemplate(string? tid) => (tid ?? "").Replace('_', ' ').Replace('-', ' ').ToLowerInvariant();
+
+                    // Helper runtime state checks
+                    static bool IsRuntimeWorn(Item it)
+                    {
+                        if (it == null) return false;
+                        if (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Worn", StringComparison.OrdinalIgnoreCase))) return true;
+                        if (!string.IsNullOrEmpty(it.FlagsJson) && it.FlagsJson.IndexOf("\"Worn\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                        return false;
+                    }
+                    static bool IsRuntimeHeld(Item it)
+                    {
+                        if (it == null) return false;
+                        if (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase))) return true;
+                        if (!string.IsNullOrEmpty(it.FlagsJson) && it.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                        return false;
+                    }
 
                     // Build candidates
                     var inv = player.Inventory ?? new List<Item>();
@@ -127,7 +143,67 @@ namespace MudServer.MudCore.Actions
 
                     if (found != null)
                     {
-                        // Prevent smelting worn/held items
+                        // Prefer non-worn/non-held alternative when the parser found an equipped instance.
+                        try
+                        {
+                            if (IsRuntimeWorn(found) || IsRuntimeHeld(found))
+                            {
+                                // Search for an alternative match that is NOT worn/held using the same matching heuristics.
+                                Item? alt = null;
+                                try
+                                {
+                                    // 1) exact non-equipped
+                                    alt = inv.FirstOrDefault(i =>
+                                        i != null && !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
+                                        ((!string.IsNullOrEmpty(i.TemplateID) && string.Equals(i.TemplateID, req, StringComparison.OrdinalIgnoreCase)) ||
+                                         (!string.IsNullOrEmpty(i.Name) && string.Equals(i.Name, req, StringComparison.OrdinalIgnoreCase))));
+
+                                    // 2) token-equals non-equipped
+                                    if (alt == null)
+                                    {
+                                        var reqTok = req.ToLowerInvariant();
+                                        alt = inv.FirstOrDefault(i =>
+                                            i != null && !IsRuntimeWorn(i) && !IsRuntimeHeld(i) && (
+                                                Tokenize(i.Name).Any(t => string.Equals(t, reqTok, StringComparison.OrdinalIgnoreCase)) ||
+                                                Tokenize(NormalizeTemplate(i.TemplateID)).Any(t => string.Equals(t, reqTok, StringComparison.OrdinalIgnoreCase))
+                                            ));
+                                    }
+
+                                    // 3) starts-with non-equipped
+                                    if (alt == null)
+                                    {
+                                        alt = inv.FirstOrDefault(i => i != null && !IsRuntimeWorn(i) && !IsRuntimeHeld(i) && !string.IsNullOrEmpty(i.Name) && i.Name.StartsWith(req, StringComparison.OrdinalIgnoreCase));
+                                    }
+
+                                    // 4) token starts-with non-equipped
+                                    if (alt == null)
+                                    {
+                                        var reqTok = req.ToLowerInvariant();
+                                        alt = inv.FirstOrDefault(i => i != null && !IsRuntimeWorn(i) && !IsRuntimeHeld(i) && (Tokenize(i.Name).Any(t => t.StartsWith(reqTok, StringComparison.OrdinalIgnoreCase)) || Tokenize(NormalizeTemplate(i.TemplateID)).Any(t => t.StartsWith(reqTok, StringComparison.OrdinalIgnoreCase))));
+                                    }
+
+                                    // 5) substring non-equipped
+                                    if (alt == null)
+                                    {
+                                        var reqTok = req.ToLowerInvariant();
+                                        alt = inv.FirstOrDefault(i =>
+                                            i != null && !IsRuntimeWorn(i) && !IsRuntimeHeld(i) && (
+                                                (!string.IsNullOrEmpty(i.Name) && i.Name.IndexOf(req, StringComparison.OrdinalIgnoreCase) >= 0) ||
+                                                NormalizeTemplate(i.TemplateID).IndexOf(reqTok, StringComparison.OrdinalIgnoreCase) >= 0
+                                            ));
+                                    }
+                                }
+                                catch { alt = null; }
+
+                                if (alt != null)
+                                {
+                                    found = alt;
+                                }
+                            }
+                        }
+                        catch { /* best-effort */ }
+
+                        // Prevent smelting worn/held items (if still equipped after alternative search)
                         try
                         {
                             var flags = found.Flags ?? new List<string>();

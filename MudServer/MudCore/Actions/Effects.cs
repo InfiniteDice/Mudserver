@@ -305,6 +305,7 @@ namespace MudServer
         private static readonly Dictionary<string, string> TriggerToEffect = new(StringComparer.OrdinalIgnoreCase)
         {
             { "PoisonHit", "Poisoned" },
+            { "SlashHit", "Bleeding" }, // example for slashing weapons/attacks.
             { "DrainLife", "Weakened" } // example mapping
         };
 
@@ -318,27 +319,123 @@ namespace MudServer
             // Only evaluate on critical hits for now (caller decides)
             if (!isCritical) return result;
 
-            var flags = GetStringListProp(attacker, "Flags");
-            foreach (var flag in flags)
+            // Gather flags from the attacker entity itself
+            var flags = new List<string>();
+            try
             {
-                var (name, severity, isPerm) = ParseEffectToken(flag);
-                if (string.IsNullOrWhiteSpace(name)) continue;
+                flags.AddRange(GetStringListProp(attacker, "Flags"));
+            }
+            catch { /* best-effort */ }
 
-                foreach (var kv in TriggerToEffect)
+            // Also gather flags from held weapon(s) in attacker's inventory (if present).
+            // This allows weapon templates (e.g. "SlashHit30T") to trigger effects.
+            try
+            {
+                var atype = attacker.GetType();
+                var pinv = atype.GetProperty("Inventory");
+                if (pinv != null)
                 {
-                    if (name.StartsWith(kv.Key, StringComparison.OrdinalIgnoreCase))
+                    var invObj = pinv.GetValue(attacker);
+                    if (invObj is System.Collections.IEnumerable ien)
                     {
-                        int chance = Math.Max(0, Math.Min(100, severity));
-                        if (chance <= 0) continue;
-
-                        if (_rng.Next(0, 100) < chance)
+                        foreach (var o in ien)
                         {
-                            var effName = kv.Value;
-                            var effToken = BuildEffectToken(effName, severity, isPerm);
-                            result.Add(effToken);
+                            if (o == null) continue;
+                            try
+                            {
+                                // Prefer Item typed objects (runtime Item class)
+                                if (o is Item it)
+                                {
+                                    // Only consider held offensive items (Held + Weapon/Handheld category)
+                                    bool isHeld = false;
+                                    if (it.Flags != null) isHeld = it.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase));
+                                    if (!isHeld && !string.IsNullOrEmpty(it.FlagsJson) && it.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        isHeld = true;
+
+                                    var cat = it.ItemCategory ?? string.Empty;
+                                    if (!isHeld) continue;
+                                    if (!string.Equals(cat, "Weapon", StringComparison.OrdinalIgnoreCase) &&
+                                        !string.Equals(cat, "Handheld", StringComparison.OrdinalIgnoreCase))
+                                        continue;
+
+                                    // merge flags from the held item
+                                    if (it.Flags != null) flags.AddRange(it.Flags);
+                                    if (!string.IsNullOrEmpty(it.FlagsJson))
+                                    {
+                                        try
+                                        {
+                                            var jlist = System.Text.Json.JsonSerializer.Deserialize<List<string>>(it.FlagsJson);
+                                            if (jlist != null) flags.AddRange(jlist);
+                                        }
+                                        catch { /* ignore malformed item FlagsJson */ }
+                                    }
+                                }
+                                else
+                                {
+                                    // Generic fallback: try reflection properties Flags / FlagsJson on inventory object
+                                    var t = o.GetType();
+                                    var pFlags = t.GetProperty("Flags");
+                                    if (pFlags != null)
+                                    {
+                                        if (pFlags.GetValue(o) is System.Collections.IEnumerable pf)
+                                        {
+                                            foreach (var v in pf) if (v != null) flags.Add(v.ToString() ?? "");
+                                        }
+                                    }
+                                    var pFlagsJson = t.GetProperty("FlagsJson");
+                                    if (pFlagsJson != null)
+                                    {
+                                        try
+                                        {
+                                            var fj = pFlagsJson.GetValue(o) as string;
+                                            if (!string.IsNullOrEmpty(fj))
+                                            {
+                                                var jlist = System.Text.Json.JsonSerializer.Deserialize<List<string>>(fj);
+                                                if (jlist != null) flags.AddRange(jlist);
+                                            }
+                                        }
+                                        catch { }
+                                    }
+                                }
+                            }
+                            catch { /* ignore per-item */ }
                         }
                     }
                 }
+            }
+            catch { /* best-effort inventory inspection */ }
+
+            // Evaluate unique flags (dedupe)
+            var uniqueFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in flags)
+            {
+                if (!string.IsNullOrWhiteSpace(f)) uniqueFlags.Add(f);
+            }
+
+            foreach (var flag in uniqueFlags)
+            {
+                try
+                {
+                    var (name, severity, isPerm) = ParseEffectToken(flag);
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    foreach (var kv in TriggerToEffect)
+                    {
+                        if (name.StartsWith(kv.Key, StringComparison.OrdinalIgnoreCase))
+                        {
+                            int chance = Math.Max(0, Math.Min(100, severity));
+                            if (chance <= 0) continue;
+
+                            if (_rng.Next(0, 100) < chance)
+                            {
+                                var effName = kv.Value;
+                                var effToken = BuildEffectToken(effName, severity, isPerm);
+                                result.Add(effToken);
+                            }
+                        }
+                    }
+                }
+                catch { /* ignore per-flag */ }
             }
 
             return result;

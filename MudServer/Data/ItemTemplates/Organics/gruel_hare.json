@@ -1,0 +1,14 @@
+{
+  "Id": "gruel_hare",
+  "Name": "Hare Gruel",
+  "ItemCategory": "Food",
+  "Weight": 0.4,
+  "Value": 5,
+  "ShortDesc": "A plain gruel",
+  "LongDesc": "A gruel made from meat of hare, I bet you could eat this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Heal", "IsLiquid" ],
+  "Material": "Organic",
+  "Stackable": "false"
+}

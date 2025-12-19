@@ -1,0 +1,14 @@
+{
+  "Id": "meat_hare",
+  "Name": "Hare Meat",
+  "ItemCategory": "Food",
+  "Weight": 0.2,
+  "Value": 3,
+  "ShortDesc": "Some raw meat from a hare",
+  "LongDesc": "A portion of meat from a hare, I bet you could cook this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "false"
+}

@@ -8,7 +8,7 @@
   "LongDesc": "A small bag made of linen, this can hold some stuff.",
   "WearLoc": "",
   "HandLoc": 0,
-  "Flags": [ "Capacity50", "Accept:All" ],
+  "Flags": [ "Capacity5", "Accept:All" ],
   "Material": "Cloth",
   "BaseACBonus": 0.0
 }

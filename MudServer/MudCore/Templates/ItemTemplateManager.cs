@@ -61,7 +61,8 @@ namespace MudCore.Templates
                 Converters = { new JsonStringEnumConverter() }
             };
 
-            foreach (var file in Directory.GetFiles(folderToUse, "*.json"))
+            // NOTE: changed to search subdirectories as well so templates may be organized into folders.
+            foreach (var file in Directory.GetFiles(folderToUse, "*.json", SearchOption.AllDirectories))
             {
                 try
                 {
@@ -78,7 +79,7 @@ namespace MudCore.Templates
                     Console.WriteLine($"Failed to load item template from {file}: {ex.Message}");
                 }
             }
-        }
+        } // end LoadTemplates
 
         public ItemTemplate Get(string id)
         {

@@ -1,0 +1,14 @@
+{
+  "Id": "tool_spoon",
+  "Name": "Spoon",
+  "ItemCategory": "Handheld",
+  "Weight": 0.1,
+  "Value": 2,
+  "ShortDesc": "A simple spoon",
+  "LongDesc": "A spoon of oaken wood, you need to hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": [],
+  "Material": "Oak",
+  "DmgDiceMult": 1.1
+}

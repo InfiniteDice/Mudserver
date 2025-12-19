@@ -8,7 +8,7 @@
   "LongDesc": "A sturdy iron shortsword, slightly worn but usable.",
   "WearLoc": "Hand",
   "HandLoc": 1,
-  "Flags": [],
+  "Flags": ["SlashHit20T"],
   "Material": "Iron",
   "DmgDiceMult": 4.0
 }

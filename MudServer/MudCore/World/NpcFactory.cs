@@ -45,8 +45,20 @@ namespace MudCore.World
                 EffCombatSkill = template.EffCombatSkill
             };
 
+            // Select visual trait. Prefer category-aware selection when available.
             if (VisualTraitManager.HasTraits && Random.Shared.NextDouble() < 0.9)
-                npc.VisualTrait = VisualTraitManager.GetRandomTrait(Random.Shared);
+            {
+                // If template marks the NPC as humanoid, request a humanoid trait; otherwise request creature trait.
+                // VisualTraitManager falls back to the combined pool if the category is missing or empty.
+                if (template.IsHumanoid)
+                {
+                    npc.VisualTrait = VisualTraitManager.GetRandomTrait("humanoid", Random.Shared) ?? VisualTraitManager.GetRandomTrait(Random.Shared);
+                }
+                else
+                {
+                    npc.VisualTrait = VisualTraitManager.GetRandomTrait("creature", Random.Shared) ?? VisualTraitManager.GetRandomTrait(Random.Shared);
+                }
+            }
 
             npc.ApplyTemplateDefaults();
             MudServer.Combat.InitializeSizeDefaults(npc);

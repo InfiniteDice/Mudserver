@@ -1,0 +1,58 @@
+{
+  "Id": "hare",
+  "Name": "Hare",
+  "Alignment": "Neutral",
+  "Description": "A small furry hare, quick reflexes and big ears.",
+  "IdleActions": [
+    "uses it's hindfoot to scratch that itch",
+    "sniffs for greens",
+    "hops around on the ground",
+    "looking cautiously for trouble"
+  ],
+  "WanderChance": 0.04,
+  "WanderAreas": [],
+  "AiBehaviors": [ "FindFood", "Evade" ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 5,
+  "Health": 5,
+  "Flags": [],
+  "Level": 1,
+  "Mass": 1.0,
+  "EffMass": 1.0,
+  "SizeEnum": 2,
+  "CombatSkill": 55.0,
+  "EffCombatSkill": 55.0,
+  "BaseDmgDice": 1.15,
+  "EffDmgDice": 1.15,
+  "BaseArmorClass": 0.0,
+  "EffArmorClass": 0.0,
+  "IsHumanoid": false,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.50,
+  "DropCountMin": 1,
+  "DropCountMax": 1,
+  "DropPool": [
+    {
+      "TemplateId": "meat_hare",
+      "Weight": 90,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "Consumable"
+    },
+    {
+      "TemplateId": "hare_foot_lucky",
+      "Weight": 10,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "spell/potion component"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "VisualTrait":""
+}

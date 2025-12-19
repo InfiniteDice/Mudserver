@@ -1,0 +1,14 @@
+{
+  "Id": "bowl",
+  "Name": "Bowl",
+  "ItemCategory": "Container",
+  "Weight": 0.15,
+  "Value": 3,
+  "ShortDesc": "A simple wooden bowl",
+  "LongDesc": "A small wooden bowl, this can be used to eat or mix food.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity2","Accept:Food", "HoldsLiquid" ],
+  "Material": "Oak",
+  "BaseACBonus": 0.0
+}

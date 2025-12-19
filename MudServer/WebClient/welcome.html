@@ -1,0 +1,381 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Mythica — Welcome</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+            margin: 24px;
+            color: #111;
+            background: #f6f7fb;
+        }
+
+        .card {
+            background: #fff;
+            border: 1px solid #e2e6ef;
+            border-radius: 8px;
+            padding: 18px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(16,24,40,0.04);
+        }
+
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 20px;
+        }
+
+        h2 {
+            margin: 0 0 12px 0;
+            font-size: 16px;
+        }
+
+        pre {
+            background: #0b1220;
+            color: #dbeafe;
+            padding: 10px;
+            border-radius: 6px;
+            overflow: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #eef2ff;
+            vertical-align: top;
+        }
+
+        .muted {
+            color: #6b7280;
+            font-size: 13px;
+        }
+
+        .example {
+            font-family: monospace;
+            background: #f3f4f6;
+            padding: 6px 8px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #e6eefc;
+            border-radius: 6px;
+        }
+
+        button {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 0;
+            background: #2563eb;
+            color: #fff;
+            cursor: pointer;
+        }
+
+            button.secondary {
+                background: #64748b;
+            }
+
+        .log {
+            max-height: 160px;
+            overflow: auto;
+            background: #0b1220;
+            color: #dbeafe;
+            padding: 8px;
+            border-radius: 6px;
+            margin-top: 8px;
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        .status-row {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .status-badge {
+            padding: 6px 10px;
+            border-radius: 6px;
+            color: #fff;
+            font-weight: 600;
+        }
+
+        .up {
+            background: #16a34a;
+        }
+
+        .down {
+            background: #ef4444;
+        }
+
+        .warn {
+            background: #f59e0b;
+            color: #111;
+        }
+
+        .small-muted {
+            font-size: 12px;
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1><b>Welcome to Mythica</b></h1>
+        <p class="muted">A small test welcome page and command reference.</p>
+
+        <h2>Backstory</h2>
+        <p>
+            Mythica begins in the year 150AF 'after the Fracture' — the day the ancient seal that once bound the malevolent forces split asunder.
+            For a thousand years the Seal held that tide of evil at bay. Following the fracture the rumours of old evils,
+            scattered cults, and restless spirits returned. The land holds an uneasy peace; ruins leak unnatural fog; heroes and scavengers seek
+            relics to mend the Seal or use its shards. You arrive in Mythica amid this time of rumors! Do you fight for good? or Support the return
+            of evil? Will you salvage a shard, aid a village, or find another way to carve your name into the world.
+        </p>
+
+        <h2>How combat works</h2>
+        <p class="muted">
+            Combat is turn‑based and processed on a 3 second interval. When you issue an attack command the server resolves hit checks,
+            damage, effects and notifies you with short messages. Some effects tick over time (poison damage, health regen) and the server applies
+            them on every interval. Decisions (damage, XP, deaths) are handled by the server; players send simple text commands from the client like
+            <code>attack goblin</code>.
+        </p>
+    </div>
+
+    <div class="card">
+        <h2>Player commands (reference)</h2>
+        <p class="muted">Below are common commands supported by the server with a short example for each. Use the input box below to try them.</p>
+
+        <table>
+            <thead>
+                <tr><th>Command</th><th>Description</th><th>Example</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>look</strong></td>
+                    <td>Show the current room description, NPCs, players, items and exits.</td>
+                    <td><span class="example">look</span></td>
+                </tr>
+                <tr>
+                    <td><strong>n / s / e / w / u / d </strong></td>
+                    <td>Move in a compass direction (north, south, east, west, up, down).</td>
+                    <td><span class="example">n</span> or <span class="example">east or e</span></td>
+                </tr>
+                <tr>
+                    <td><strong>say &lt;message&gt;</strong></td>
+                    <td>Send a chat message to everyone in your room.</td>
+                    <td><span class="example">say Hello everyone!</span></td>
+                </tr>
+                <tr>
+                    <td><strong>yell &lt;message&gt;</strong></td>
+                    <td>Send a chat message to everyone in your room, and all adjacent rooms.</td>
+                    <td><span class="example">yell Help I'm being attacked!</span></td>
+                </tr>
+                <tr>
+                    <td><strong>inventory</strong></td>
+                    <td>List items you are carrying.</td>
+                    <td><span class="example">inventory or use button</span></td>
+                </tr>
+                <tr>
+                    <td><strong>get/take</strong></td>
+                    <td>To get/take an item.</td>
+                    <td><span class="example">get [item], get [item] from bag</span></td>
+                </tr>
+                <tr>
+                    <td><strong>put</strong></td>
+                    <td>To put an item into a container.</td>
+                    <td><span class="example">put [item] in bag</span></td>
+                </tr>
+                <tr>
+                    <td><strong>wear/hold</strong></td>
+                    <td>To wear or hold an item.</td>
+                    <td><span class="example">wear helmet, hold sword</span></td>
+                </tr>
+                <tr>
+                    <td><strong>unwear/unhold</strong></td>
+                    <td>To unwear or unhold an item.</td>
+                    <td><span class="example">unwear glove, unhold spear</span></td>
+                </tr>
+                <tr>
+                    <td><strong>attack &lt;target&gt;</strong></td>
+                    <td>Start an attack against a target (NPC or player if allowed).</td>
+                    <td><span class="example">attack goblin</span></td>
+                </tr>
+                <tr>
+                    <td><strong>inspect &lt;container&gt;</strong></td>
+                    <td>Get detailed info about any containers inventory.</td>
+                    <td><span class="example">inspect bag</span></td>
+                </tr>
+                <tr>
+                    <td><strong>lock/unlock</strong></td>
+                    <td>Locks or unlocks a container with a key. (some containers can't be locked)</td>
+                    <td><span class="example">lock [container], lock chest</span></td>
+                </tr>
+                <tr>
+                    <td><strong>open/close</strong></td>
+                    <td>To open or close a door.</td>
+                    <td><span class="example">open [direction], open e</span></td>
+                </tr>
+                <tr>
+                    <td><strong>who</strong></td>
+                    <td>List players who are currently online.</td>
+                    <td><span class="example">who</span></td>
+                </tr>
+                <tr>
+                    <td><strong>smelt</strong></td>
+                    <td>Turn Ore or smelt items into bars or bits.</td>
+                    <td><span class="example">smelt helmet, smelt iron bars to bits</span></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card" id="serverStatusCard">
+        <h2>Server status</h2>
+        <div class="status-row">
+            <div>
+                <div id="serverBadge" class="status-badge down">Server: unknown</div>
+                <div class="small-muted" style="margin-top:6px">Status endpoint: <code id="statusHost">/status</code></div>
+            </div>
+            <div style="min-width:160px">
+                <div class="small-muted">Total players (DB)</div>
+                <div id="totalPlayers" style="font-weight:700">—</div>
+            </div>
+            <div style="min-width:160px">
+                <div class="small-muted">Players online (in-memory)</div>
+                <div id="playersOnline" style="font-weight:700">—</div>
+            </div>
+            <div style="min-width:220px">
+                <div class="small-muted">Last check</div>
+                <div id="lastCheck" style="font-weight:700">—</div>
+            </div>
+            <div style="margin-left:auto">
+                <button id="checkNow" class="secondary">Check now</button>
+                <button id="playBtn">Play</button>
+            </div>
+        </div>
+
+        <p class="muted" style="margin-top:10px">
+            Use the "Check now" button to query the server status. The card shows both total player accounts (DB)
+            and the current in‑memory authenticated player count.
+        </p>
+
+        <div id="statusLog" class="log" aria-live="polite"></div>
+    </div>
+
+    <script>
+        (function () {
+            // Use same-origin relative path so the page always queries the server that served it.
+            const statusPath = '/status';
+            document.getElementById('statusHost').textContent = location.origin + statusPath;
+
+            const serverBadge = document.getElementById('serverBadge');
+            const totalPlayersEl = document.getElementById('totalPlayers');
+            const playersOnlineEl = document.getElementById('playersOnline');
+            const lastCheckEl = document.getElementById('lastCheck');
+            const statusLog = document.getElementById('statusLog');
+            const checkNowBtn = document.getElementById('checkNow');
+            const playBtn = document.getElementById('playBtn');
+
+            function logStatus(s) {
+                const d = document.createElement('div');
+                d.textContent = `${new Date().toISOString()} — ${s}`;
+                statusLog.appendChild(d);
+                statusLog.scrollTop = statusLog.scrollHeight;
+            }
+
+            async function fetchStatus(timeoutMs = 3000) {
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), timeoutMs);
+
+                try {
+                    updateBadgeChecking();
+                    totalPlayersEl.textContent = '—';
+                    playersOnlineEl.textContent = '—';
+
+                    const resp = await fetch(statusPath, { signal: controller.signal, cache: 'no-store' });
+                    clearTimeout(id);
+
+                    if (!resp.ok) {
+                        updateBadgeDown();
+                        logStatus(`HTTP ${resp.status} ${resp.statusText}`);
+                        return;
+                    }
+
+                    const data = await resp.json();
+
+                    // totalPlayers: integer or -1 when unknown
+                    if (typeof data.totalPlayers === 'number' && data.totalPlayers >= 0) {
+                        totalPlayersEl.textContent = String(data.totalPlayers);
+                    } else {
+                        totalPlayersEl.textContent = 'unknown';
+                    }
+
+                    // playersOnline: in-memory authenticated players
+                    if (typeof data.playersOnline === 'number') {
+                        playersOnlineEl.textContent = String(data.playersOnline);
+                    } else {
+                        playersOnlineEl.textContent = 'unknown';
+                    }
+
+                    lastCheckEl.textContent = new Date().toLocaleString();
+                    updateBadgeUp();
+                    logStatus('Status fetched successfully.');
+                } catch (err) {
+                    clearTimeout(id);
+                    updateBadgeDown();
+                    if (err.name === 'AbortError') {
+                        logStatus('Status request timed out.');
+                    } else {
+                        logStatus('Status fetch failed: ' + (err.message || String(err)));
+                    }
+                }
+            }
+
+            function updateBadgeUp() {
+                serverBadge.className = 'status-badge up';
+                serverBadge.textContent = 'Server: up';
+            }
+            function updateBadgeDown() {
+                serverBadge.className = 'status-badge down';
+                serverBadge.textContent = 'Server: down';
+            }
+            function updateBadgeChecking() {
+                serverBadge.className = 'status-badge warn';
+                serverBadge.textContent = 'Server: checking...';
+            }
+
+            checkNowBtn.addEventListener('click', () => {
+                logStatus('Manual check triggered.');
+                fetchStatus();
+            });
+
+            // Navigate to the application root (index.html) when Play is clicked
+            playBtn.addEventListener('click', () => {
+                // Use location.origin so the scheme/host/port remain correct
+                window.location.href = location.origin + '/';
+            });
+
+            // initial probe shortly after page load
+            setTimeout(() => fetchStatus(), 250);
+        })();
+    </script>
+</body>
+</html>

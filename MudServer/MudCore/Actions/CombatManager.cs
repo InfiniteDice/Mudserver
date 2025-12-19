@@ -12,7 +12,7 @@ namespace MudServer
     // Phase 1+2: Add tick-based multi-party combat loop (one attack per participant per tick)
     public static class CombatManager
     {
-        private static readonly bool DebugCombat = true;
+        private static readonly bool DebugCombat = false;
 
         private const int CAP_CS = 200;               // Max effective combat skill used in priority score
         private const int GLOBAL_TEAM_CAP = 5;        // Max attacks per team per tick
@@ -593,102 +593,7 @@ namespace MudServer
             }
         }
 
-        // NEW: end NPC with team share for combat skill awards
-//        private static void CombatManager_EndNpc(CombatState state, CombatTeam winningTeam, Player killer, Npc npc, World world, SqliteConnection conn)
-//        {
-//            var room = npc.CurrentRoom;
-//            if (room == null)
-//            {
-//                world.Npcs.Remove(npc);
-//                try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
-//                return;
-//            }
-
-//            // Drops (unchanged)
-//            if (npc.Inventory != null && npc.Inventory.Count > 0)
-//            {
-//                foreach (var it in npc.Inventory)
-//                {
-//                    it.OwnerType = "Room";
-//                    it.OwnerID = room.RoomID;
-//                    it.RoomID = room.RoomID;
-
-//                    try { if (conn != null) ItemPersistence.SaveItem(conn, it); } catch (Exception ex) { Console.WriteLine($"[COMBAT] Item drop persist failed: {ex.Message}"); }
-
-//                    if (!room.Inventory.Contains(it))
-//                        room.Inventory.Add(it);
-//                }
-
-//                room.IsDirty = true;
-//                try { if (conn != null) RoomPersistence.SaveRoom(conn, room); } catch { }
-//            }
-
-//            // XP award (unchanged baseline)
-//            double mass = npc.Mass ?? 85.0;
-//            double vSkill = npc.CombatSkill ?? 50.0;
-//            int xpGain = (int)Math.Round(mass * vSkill);
-//            if (killer != null)
-//            {
-//                killer.Experience += xpGain;
-//                try { if (conn != null) PlayerPersistence.SavePlayer(conn, killer); } catch { }
-//            }
-
-//            // NEW: Combat skill base award (victim-based)
-//            double victimCs = npc.CombatSkill ?? 1.0;
-//            int victimLvl = npc.Level ?? 1;
-//            int victimSize = npc.SizeEnum ?? 4;
-//            double baseAward = victimCs * victimLvl * victimSize * Combat.CombatSkillScalar;
-
-//            // Team share: collect players on winning team (alive, in room)
-//            var winners = winningTeam.Members
-//                .Where(m => m.IsPlayer && m.AsPlayer != null && m.Alive && m.AsPlayer.CurrentRoom == room)
-//                .Select(m => m.AsPlayer!)
-//                .ToList();
-
-//            if (winners.Count == 0 && killer != null)
-//            {
-//                winners = new List<Player> { killer };
-//            }
-
-//            int totalLevels = Math.Max(1, winners.Sum(p => Math.Max(1, p.Level)));
-//            foreach (var p in winners)
-//            {
-//                var share = (double)Math.Max(1, p.Level) / totalLevels;
-//                var award = baseAward * share;
-
-//                p.CombatSkill += award;
-//                Combat.UpdateEffectiveStats(p);
-//                try { if (conn != null) PlayerPersistence.SavePlayer(conn, p); } catch { }
-
-//                // Notify the player of skill increase
-//                var suffix = winners.Count > 1 ? " (team share)" : "";
-//                MessageHandler.SendSystem(p, $"+{award:F3} Combat Skill{suffix}");
-//            }
-
-//            // Remove NPC and delete from DB
-//            room.Npcs.Remove(npc);
-//            world.Npcs.Remove(npc);
-//            try { if (conn != null && npc.NpcID > 0) NpcPersistence.DeleteNpc(conn, npc.NpcID); } catch { }
-
-//            foreach (var p in room.Players)
-//            {
-//                if (killer != null && p == killer) MessageHandler.SendSystem(p, $"You killed {npc.DisplayName}! (+{xpGain} XP)");
-//                else MessageHandler.SendSystem(p, $"{npc.DisplayName} has been killed.");
-//            }
-
-//            foreach (var p in room.Players)
-//            {
-//                p.PendingMessageQueue.Add(MessageHandler.Room(
-//                    room,
-//                    room.Npcs.Select(n => n.DisplayName).ToList(),
-//                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-//                    world));
-//            }
-
-//            // after computing xpGain and baseAward per player and updating states,
-//// replace the foreach that sends "+XP" kill messages:
-//Combat.Messaging.NpcDeath(room, killer, npc, xpGain, baseAward, includeCs: true);
-//        }
+  
 
         // Phase 1 immediate attack helper (updated to solo CS award fallback through new method)
         private static Message? PerformImmediateAttack(Player attacker, Npc defender, World world, SqliteConnection conn)

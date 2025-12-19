@@ -1,0 +1,14 @@
+{
+  "Id": "grain_barley",
+  "Name": "Barley Grain",
+  "ItemCategory": "Food",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "Grains of barley",
+  "LongDesc": "Some grains of barley, I bet you could make something with this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "true"
+}

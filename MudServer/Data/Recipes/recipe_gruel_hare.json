@@ -1,0 +1,32 @@
+{
+  "id": "recipe_gruel_hare",
+  "result": {
+    "template": "gruel_hare",
+    "quantity": 1
+  },
+  "ingredients": [
+    {
+      "template": "meat_hare",
+      "qty": 1
+    },
+    {
+      "template": "grain_barley",
+      "qty": 1
+    },
+    {
+      "template": "mushroom_brown",
+      "qty": 1
+    }
+  ],
+  "container": [ "Pot", "Cauldron" ],
+  "requiredSkill": "None",
+  "minSkillLevel": 0,
+  "toolsRequired": [ "Spoon" ],
+  "roomFlags": [ "Fire","Oven" ],
+  "timeSeconds": 15, 
+  "allowSubstitutions": true,
+  "substitutions": {
+    "grain_barley": [ "grain_wheat", "flour" ]
+  },
+  "notes": "Simple hare gruel recipe"
+}

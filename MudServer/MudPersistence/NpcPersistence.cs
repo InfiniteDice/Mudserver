@@ -43,39 +43,88 @@ namespace MudPersistence
         // Include CurrentAreaID on insert/update
         public static int InsertNpc(SqliteConnection conn, Npc npc)
         {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (npc == null) throw new ArgumentNullException(nameof(npc));
+
+            // Prefer the single-writer queue when available so NPC creation (and its follow-up updates)
+            // are atomic with other writer work. If the queue isn't started, fall back to direct insert.
+            try
+            {
+                var newId = MudServer.DbWriteQueue.Instance.RunWriteAndWait<int>((wConn, wTx) =>
+                {
+                    return InsertNpcInternal(wConn, npc, wTx);
+                }, timeout: TimeSpan.FromSeconds(5));
+
+                npc.NpcID = newId;
+                return newId;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall through to direct insert on provided connection.
+            }
+            catch
+            {
+                // best-effort: on enqueue error, fall back to direct insert to preserve prior behavior.
+            }
+
+            // Direct insert path (no external transaction)
+            var id = InsertNpcInternal(conn, npc, null);
+            npc.NpcID = id;
+            return id;
+        }
+
+        // Internal transactional insert used by the writer queue or direct callers.
+        // Accepts an optional transaction; when tx != null it will attach commands to it.
+        private static int InsertNpcInternal(SqliteConnection conn, Npc npc, SqliteTransaction? tx = null)
+        {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (npc == null) throw new ArgumentNullException(nameof(npc));
+
             EnsureOpen(conn);
             EnsureNpcColumns(conn);
 
             using var cmd = conn.CreateCommand();
+            if (tx != null) cmd.Transaction = tx;
+
             // Include optional columns when present
             cmd.CommandText = @"
         INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID"
-                + (Has("Description") ? ", Description" : "")
-                + (Has("IsHumanoid") ? ", IsHumanoid" : "")
-                + (Has("WanderChance") ? ", WanderChance" : "")
-                + (Has("Level") ? ", Level" : "")
-                + (Has("CombatSkill") ? ", CombatSkill" : "")
-                + (Has("EffCombatSkill") ? ", EffCombatSkill" : "")
-                + (Has("Flags") ? ", Flags" : "") + @")
+                        + (Has("Description") ? ", Description" : "")
+                        + (Has("IsHumanoid") ? ", IsHumanoid" : "")
+                        + (Has("WanderChance") ? ", WanderChance" : "")
+                        + (Has("Level") ? ", Level" : "")
+                        + (Has("CombatSkill") ? ", CombatSkill" : "")
+                        + (Has("EffCombatSkill") ? ", EffCombatSkill" : "")
+                        + (Has("Flags") ? ", Flags" : "") + @")
         VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area"
-                + (Has("Description") ? ", @desc" : "")
-                + (Has("IsHumanoid") ? ", @isHumanoid" : "")
-                + (Has("WanderChance") ? ", @wc" : "")
-                + (Has("Level") ? ", @lvl" : "")
-                + (Has("CombatSkill") ? ", @cs" : "")
-                + (Has("EffCombatSkill") ? ", @ecs" : "")
-                + (Has("Flags") ? ", @flags" : "") + @");
+                        + (Has("Description") ? ", @desc" : "")
+                        + (Has("IsHumanoid") ? ", @isHumanoid" : "")
+                        + (Has("WanderChance") ? ", @wc" : "")
+                        + (Has("Level") ? ", @lvl" : "")
+                        + (Has("CombatSkill") ? ", @cs" : "")
+                        + (Has("EffCombatSkill") ? ", @ecs" : "")
+                        + (Has("Flags") ? ", @flags" : "") + @");
         SELECT last_insert_rowid();";
 
             cmd.Parameters.AddWithValue("@tid", npc.TemplateID ?? "");
             cmd.Parameters.AddWithValue("@name", npc.Name ?? "");
-            cmd.Parameters.AddWithValue("@align", (int)npc.Alignment);
+
+            try
+            {
+                cmd.Parameters.AddWithValue("@align", npc.Alignment.ToString());
+            }
+            catch
+            {
+                cmd.Parameters.AddWithValue("@align", Alignment.Neutral.ToString());
+            }
+
             cmd.Parameters.AddWithValue("@maxhp", npc.HealthMax);
             cmd.Parameters.AddWithValue("@hp", npc.Health);
             cmd.Parameters.AddWithValue("@room", npc.CurrentRoomID);
             cmd.Parameters.AddWithValue("@persist", npc.IsPersistent ? 1 : 0);
             cmd.Parameters.AddWithValue("@trait", npc.VisualTrait ?? "");
-            cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
+            cmd.Parameters.AddWithValue("@area", npc.CurrentAreaID);
+
             if (Has("Description")) cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
             if (Has("IsHumanoid")) cmd.Parameters.AddWithValue("@isHumanoid", npc.IsHumanoid ? 1 : 0);
             if (Has("WanderChance")) cmd.Parameters.AddWithValue("@wc", npc.WanderChance);
@@ -83,7 +132,6 @@ namespace MudPersistence
             if (Has("CombatSkill")) cmd.Parameters.AddWithValue("@cs", npc.CombatSkill ?? 0.0);
             if (Has("EffCombatSkill")) cmd.Parameters.AddWithValue("@ecs", npc.EffCombatSkill ?? (npc.CombatSkill ?? 0.0));
 
-            // NEW: Flags parameter (serialize deterministically) for initial insert
             if (Has("Flags"))
             {
                 try
@@ -99,7 +147,18 @@ namespace MudPersistence
                 }
             }
 
-            int newId = (int)(long)cmd.ExecuteScalar();
+            long scalar;
+            try
+            {
+                scalar = (long)cmd.ExecuteScalar();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NpcPersistence][ERROR] InsertNpcInternal failed: {ex.Message}");
+                throw;
+            }
+
+            int newId = (int)scalar;
             npc.NpcID = newId;
 
             // Persist WanderAreas JSON if column exists
@@ -107,8 +166,8 @@ namespace MudPersistence
             {
                 try
                 {
-                    EnsureOpen(conn);
                     using var upWander = conn.CreateCommand();
+                    if (tx != null) upWander.Transaction = tx;
                     upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
                     var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
                     upWander.Parameters.AddWithValue("@wander", wanderJson);
@@ -126,8 +185,8 @@ namespace MudPersistence
             {
                 try
                 {
-                    EnsureOpen(conn);
                     using var upChance = conn.CreateCommand();
+                    if (tx != null) upChance.Transaction = tx;
                     upChance.CommandText = "UPDATE Npc SET WanderChance = @wc WHERE NpcID = @id;";
                     upChance.Parameters.AddWithValue("@wc", npc.WanderChance);
                     upChance.Parameters.AddWithValue("@id", npc.NpcID);
@@ -136,16 +195,26 @@ namespace MudPersistence
                 catch { }
             }
 
-            SaveNpcCombat(conn, npc);
+            // Persist combat-related fields; use the provided transaction if any
+            SaveNpcCombat(conn, npc, tx);
+
             return newId;
         }
 
-        public static void UpdateNpc(SqliteConnection conn, Npc npc)
+        // Updated UpdateNpc to call SaveNpcCombat with optional transaction null to preserve behavior.
+        // Internal transactional update used by the writer queue or direct callers.
+        // Accepts optional transaction so it can run inside the writer's transaction.
+        private static void UpdateNpcInternal(SqliteConnection conn, Npc npc, SqliteTransaction? tx = null)
         {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (npc == null) throw new ArgumentNullException(nameof(npc));
+
             EnsureOpen(conn);
             EnsureNpcColumns(conn);
 
             using var cmd = conn.CreateCommand();
+            if (tx != null) cmd.Transaction = tx;
+
             cmd.CommandText = @"
         UPDATE Npc SET
             Health = @hp,
@@ -161,6 +230,7 @@ namespace MudPersistence
                     + (Has("EffCombatSkill") ? ", EffCombatSkill = @ecs" : "")
                     + (Has("Flags") ? ", Flags = @flags" : "") + @"
         WHERE NpcID = @id;";
+
             cmd.Parameters.AddWithValue("@hp", npc.Health);
             cmd.Parameters.AddWithValue("@maxhp", npc.HealthMax);
             cmd.Parameters.AddWithValue("@room", npc.CurrentRoomID);
@@ -174,7 +244,6 @@ namespace MudPersistence
             if (Has("CombatSkill")) cmd.Parameters.AddWithValue("@cs", npc.CombatSkill ?? 0.0);
             if (Has("EffCombatSkill")) cmd.Parameters.AddWithValue("@ecs", npc.EffCombatSkill ?? (npc.CombatSkill ?? 0.0));
 
-            // NEW: Flags parameter for update
             if (Has("Flags"))
             {
                 try
@@ -197,8 +266,8 @@ namespace MudPersistence
             {
                 try
                 {
-                    EnsureOpen(conn);
                     using var upWander = conn.CreateCommand();
+                    if (tx != null) upWander.Transaction = tx;
                     upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
                     var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
                     upWander.Parameters.AddWithValue("@wander", wanderJson);
@@ -216,8 +285,8 @@ namespace MudPersistence
             {
                 try
                 {
-                    EnsureOpen(conn);
                     using var upChance = conn.CreateCommand();
+                    if (tx != null) upChance.Transaction = tx;
                     upChance.CommandText = "UPDATE Npc SET WanderChance = @wc WHERE NpcID = @id;";
                     upChance.Parameters.AddWithValue("@wc", npc.WanderChance);
                     upChance.Parameters.AddWithValue("@id", npc.NpcID);
@@ -226,16 +295,77 @@ namespace MudPersistence
                 catch { }
             }
 
-            SaveNpcCombat(conn, npc);
+            // Persist combat-related fields inside provided tx (if any)
+            SaveNpcCombat(conn, npc, tx);
         }
+
+        // Public UpdateNpc now routes through the writer queue when available to provide
+        // atomic, serialized updates. Falls back to direct UpdateNpcInternal when queue not running.
+        public static void UpdateNpc(SqliteConnection conn, Npc npc)
+        {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (npc == null) throw new ArgumentNullException(nameof(npc));
+
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    UpdateNpcInternal(wConn, npc, wTx);
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(5));
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall through to direct update on provided connection.
+            }
+            catch
+            {
+                // best-effort: on enqueue error, fall back to direct update to preserve prior behavior.
+            }
+
+            // Direct update path (no external transaction)
+            UpdateNpcInternal(conn, npc, null);
+        } // end UpdateNpc
 
         public static void DeleteNpc(SqliteConnection conn, int npcId)
         {
             if (conn == null || npcId <= 0) return;
+
+            // Prefer the single-writer queue so deletes are serialized and don't race with other writer operations.
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    DeleteNpcInternal(wConn, npcId, wTx);
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(5));
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall through to direct delete on provided connection.
+            }
+            catch
+            {
+                // best-effort: if enqueue fails, fall back to direct delete.
+            }
+
+            // Direct delete path
+            DeleteNpcInternal(conn, npcId, null);
+        }
+
+        // Internal transactional delete used by writer or direct callers.
+        private static void DeleteNpcInternal(SqliteConnection conn, int npcId, SqliteTransaction? tx = null)
+        {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (npcId <= 0) return;
+
             try
             {
                 EnsureOpen(conn);
                 using var cmd = conn.CreateCommand();
+                if (tx != null) cmd.Transaction = tx;
                 cmd.CommandText = "DELETE FROM Npc WHERE NpcID = @id;";
                 cmd.Parameters.AddWithValue("@id", npcId);
                 cmd.ExecuteNonQuery();
@@ -244,11 +374,15 @@ namespace MudPersistence
             catch (Exception ex)
             {
                 Console.WriteLine($"[NpcPersistence] Failed to delete NPC NpcID={npcId}: {ex.Message}");
+                throw;
             }
-        }
+        } // end DeleteNpc
 
-        private static void SaveNpcCombat(SqliteConnection conn, Npc npc)
+        private static void SaveNpcCombat(SqliteConnection conn, Npc npc, SqliteTransaction? tx = null)
         {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (npc == null) throw new ArgumentNullException(nameof(npc));
+
             EnsureOpen(conn);
             EnsureNpcColumns(conn);
 
@@ -263,14 +397,14 @@ namespace MudPersistence
             if (Has("EffArmorClass")) assignments.Add("EffArmorClass = @EffArmorClass");
             if (Has("Buffs")) assignments.Add("Buffs = @Buffs");
             if (Has("Debuffs")) assignments.Add("Debuffs = @Debuffs");
-            // NEW: persist Level if column exists
             if (Has("Level")) assignments.Add("Level = @Level");
-            // NEW: persist Flags if column exists
             if (Has("Flags")) assignments.Add("Flags = @Flags");
 
             if (assignments.Count == 0) return;
 
             using var up = conn.CreateCommand();
+            if (tx != null) up.Transaction = tx;
+
             up.CommandText = $"UPDATE Npc SET {string.Join(", ", assignments)} WHERE NpcID = @id;";
             up.Parameters.AddWithValue("@id", npc.NpcID);
 
@@ -282,7 +416,6 @@ namespace MudPersistence
             up.Parameters.AddWithValue("@BaseDmgDice", npc.BaseDmgDice);
             up.Parameters.AddWithValue("@BaseArmorClass", npc.BaseArmorClass);
             up.Parameters.AddWithValue("@EffArmorClass", npc.EffArmorClass);
-            // NEW: Level persist parameter (with clamp to >=1)
             up.Parameters.AddWithValue("@Level", Math.Max(1, npc.Level ?? 1));
 
             var buffsJson = JsonSerializer.Serialize(npc.Buffs ?? new List<string>());
@@ -290,7 +423,6 @@ namespace MudPersistence
             up.Parameters.AddWithValue("@Buffs", buffsJson);
             up.Parameters.AddWithValue("@Debuffs", debuffsJson);
 
-            // NEW: Flags parameter (serialize deterministically)
             if (Has("Flags"))
             {
                 try
@@ -307,7 +439,7 @@ namespace MudPersistence
             }
 
             try { up.ExecuteNonQuery(); } catch { }
-        }
+        } // end SaveNpcCombat
 
         // Add a harmless consistency warning in loader
         public static List<Npc> LoadAllNpcs(SqliteConnection conn, World world)
@@ -327,7 +459,37 @@ namespace MudPersistence
                     npc.NpcID = GetInt(rdr, "NpcID", 0);
                     npc.TemplateID = GetString(rdr, "TemplateID", "");
                     npc.Name = GetString(rdr, "Name", "");
-                    npc.Alignment = (Alignment)GetInt(rdr, "Alignment", 1);
+
+                    // Read Alignment flexibly: prefer textual enum names, fallback to numeric values for backwards compatibility.
+                    try
+                    {
+                        string? alignText = GetStringOrNull(rdr, "Alignment");
+                        if (!string.IsNullOrWhiteSpace(alignText))
+                        {
+                            if (System.Enum.TryParse<Alignment>(alignText.Trim(), true, out var a))
+                            {
+                                npc.Alignment = a;
+                            }
+                            else if (int.TryParse(alignText.Trim(), out var ai) && ai >= 0 && ai <= 2)
+                            {
+                                npc.Alignment = (Alignment)ai;
+                            }
+                            else
+                            {
+                                npc.Alignment = Alignment.Neutral;
+                            }
+                        }
+                        else
+                        {
+                            // Column may be numeric in some DBs
+                            npc.Alignment = (Alignment)GetInt(rdr, "Alignment", 1);
+                        }
+                    }
+                    catch
+                    {
+                        npc.Alignment = Alignment.Neutral;
+                    }
+
                     npc.HealthMax = GetInt(rdr, "MaxHealth", 100);
                     npc.Health = GetInt(rdr, "Health", npc.HealthMax);
                     npc.CurrentRoomID = GetInt(rdr, "CurrentRoomID", 0);
@@ -409,14 +571,9 @@ namespace MudPersistence
                         }
                     }
 
-                    npc.CurrentRoom = world.Rooms.Find(r => r.RoomID == npc.CurrentRoomID);
+                    npc.Description = Has("Description") ? GetString(rdr, "Description", "") : npc.Description;
 
-                    // NEW: warn if area linkage mismatches (do not correct automatically)
-                    if (npc.CurrentRoom != null && npc.CurrentRoom.AreaID > 0 && npc.CurrentAreaID > 0 && npc.CurrentAreaID != npc.CurrentRoom.AreaID)
-                    {
-                        Console.WriteLine($"[NpcPersistence][WARN] Area mismatch for NpcID={npc.NpcID}: CurrentAreaID={npc.CurrentAreaID}, Room.AreaID={npc.CurrentRoom.AreaID}.");
-                        // Keep loading as-is
-                    }
+                    npc.CurrentRoom = world.Rooms.Find(r => r.RoomID == npc.CurrentRoomID);
 
                     // Attach template from world's TemplateManager so AI has behaviors
                     try
@@ -436,6 +593,9 @@ namespace MudPersistence
                                 // NEW: hydrate Level from template if missing/invalid
                                 if (npc.Level == null || npc.Level <= 0)
                                     npc.Level = tmpl.Level ?? 1;
+
+                                // Apply template defaults so Description, IdleActions, etc. are populated when DB row omitted them.
+                                try { npc.ApplyTemplateDefaults(); } catch { /* best-effort */ }
                             }
                             else
                             {
@@ -469,9 +629,10 @@ namespace MudPersistence
                 }
             }
             return npcs;
-        }
+        } // end LoadAllNpcs
 
         // Helpers
+
         private static int GetInt(SqliteDataReader rdr, string name, int def)
         {
             try { var i = rdr.GetOrdinal(name); return rdr.IsDBNull(i) ? def : rdr.GetInt32(i); }

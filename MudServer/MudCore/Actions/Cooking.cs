@@ -359,49 +359,155 @@ namespace MudServer.MudCore.Actions
                 return MessageHandler.System("No known recipe matches the contents of that container.");
             }
 
-            // consume ingredients now (transactional)
+            // consume ingredients now (transactional) using the single-writer queue when available
             try
             {
-                EnsureOpen(conn);
-                using var tx = conn.BeginTransaction();
-
-                foreach (var kv in chosenIngredientItems)
+                try
                 {
-                    foreach (var alloc in kv.Value)
+                    MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
                     {
-                        if (alloc.Quantity <= 0) continue;
-
-                        using var q = conn.CreateCommand();
-                        q.Transaction = tx;
-                        q.CommandText = "SELECT Quantity FROM Item WHERE ItemID = @id";
-                        q.Parameters.AddWithValue("@id", alloc.ItemID);
-                        var obj = q.ExecuteScalar();
-                        int dbQty = 1;
-                        if (obj != null && obj is not DBNull)
-                            dbQty = Convert.ToInt32(obj);
-
-                        int remainingQty = dbQty - alloc.Quantity;
-                        if (remainingQty <= 0)
+                        // perform same consumption logic inside writer transaction
+                        foreach (var kv in chosenIngredientItems)
                         {
-                            using var del = conn.CreateCommand();
-                            del.Transaction = tx;
-                            del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
-                            del.Parameters.AddWithValue("@id", alloc.ItemID);
-                            del.ExecuteNonQuery();
+                            foreach (var alloc in kv.Value)
+                            {
+                                if (alloc.Quantity <= 0) continue;
+
+                                using var q = wConn.CreateCommand();
+                                q.Transaction = wTx;
+                                q.CommandText = "SELECT Quantity FROM Item WHERE ItemID = @id";
+                                q.Parameters.AddWithValue("@id", alloc.ItemID);
+                                var obj = q.ExecuteScalar();
+                                int dbQty = 1;
+                                if (obj != null && obj is not DBNull)
+                                    dbQty = Convert.ToInt32(obj);
+
+                                int remainingQty = dbQty - alloc.Quantity;
+                                if (remainingQty <= 0)
+                                {
+                                    using var del = wConn.CreateCommand();
+                                    del.Transaction = wTx;
+                                    del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                    del.Parameters.AddWithValue("@id", alloc.ItemID);
+                                    del.ExecuteNonQuery();
+                                }
+                                else
+                                {
+                                    using var upd = wConn.CreateCommand();
+                                    upd.Transaction = wTx;
+                                    upd.CommandText = "UPDATE Item SET Quantity = @q WHERE ItemID = @id";
+                                    upd.Parameters.AddWithValue("@q", remainingQty);
+                                    upd.Parameters.AddWithValue("@id", alloc.ItemID);
+                                    upd.ExecuteNonQuery();
+                                }
+                            }
                         }
-                        else
+
+                        // Also persist cooking flag on the container in the same transaction
+                        try
                         {
-                            using var upd = conn.CreateCommand();
-                            upd.Transaction = tx;
-                            upd.CommandText = "UPDATE Item SET Quantity = @q WHERE ItemID = @id";
-                            upd.Parameters.AddWithValue("@q", remainingQty);
-                            upd.Parameters.AddWithValue("@id", alloc.ItemID);
-                            upd.ExecuteNonQuery();
+                            // compute flags json
+                            using var sel = wConn.CreateCommand();
+                            sel.Transaction = wTx;
+                            sel.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
+                            sel.Parameters.AddWithValue("@id", container.ItemID);
+                            var fobj = sel.ExecuteScalar();
+                            string existingJson = fobj == null || fobj is DBNull ? "[]" : fobj.ToString() ?? "[]";
+                            List<string> flagsList;
+                            try { flagsList = JsonSerializer.Deserialize<List<string>>(existingJson) ?? new List<string>(); } catch { flagsList = new List<string>(); }
+
+                            flagsList.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Cooking", StringComparison.OrdinalIgnoreCase));
+                            flagsList.Add($"Cooking:{matched.Id}");
+                            var newFlagsJson = JsonSerializer.Serialize(flagsList);
+
+                            using var updFlags = wConn.CreateCommand();
+                            updFlags.Transaction = wTx;
+                            updFlags.CommandText = "UPDATE Item SET Flags = @flags WHERE ItemID = @id";
+                            updFlags.Parameters.AddWithValue("@flags", newFlagsJson);
+                            updFlags.Parameters.AddWithValue("@id", container.ItemID);
+                            updFlags.ExecuteNonQuery();
                         }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[COOK] Failed to persist container cooking flag inside writer tx for ItemID={container.ItemID}: {ex.Message}");
+                            throw;
+                        }
+
+                        return (object?)null;
+                    }, timeout: TimeSpan.FromSeconds(10));
+                }
+                catch (InvalidOperationException)
+                {
+                    // Queue not started — fall back to local transaction (legacy behavior)
+                    EnsureOpen(conn);
+                    using var tx = conn.BeginTransaction();
+                    try
+                    {
+                        foreach (var kv in chosenIngredientItems)
+                        {
+                            foreach (var alloc in kv.Value)
+                            {
+                                if (alloc.Quantity <= 0) continue;
+
+                                using var q = conn.CreateCommand();
+                                q.Transaction = tx;
+                                q.CommandText = "SELECT Quantity FROM Item WHERE ItemID = @id";
+                                q.Parameters.AddWithValue("@id", alloc.ItemID);
+                                var obj = q.ExecuteScalar();
+                                int dbQty = 1;
+                                if (obj != null && obj is not DBNull)
+                                    dbQty = Convert.ToInt32(obj);
+
+                                int remainingQty = dbQty - alloc.Quantity;
+                                if (remainingQty <= 0)
+                                {
+                                    using var del = conn.CreateCommand();
+                                    del.Transaction = tx;
+                                    del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                    del.Parameters.AddWithValue("@id", alloc.ItemID);
+                                    del.ExecuteNonQuery();
+                                }
+                                else
+                                {
+                                    using var upd = conn.CreateCommand();
+                                    upd.Transaction = tx;
+                                    upd.CommandText = "UPDATE Item SET Quantity = @q WHERE ItemID = @id";
+                                    upd.Parameters.AddWithValue("@q", remainingQty);
+                                    upd.Parameters.AddWithValue("@id", alloc.ItemID);
+                                    upd.ExecuteNonQuery();
+                                }
+                            }
+                        }
+
+                        // update container flags locally
+                        using var sel = conn.CreateCommand();
+                        sel.Transaction = tx;
+                        sel.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
+                        sel.Parameters.AddWithValue("@id", container.ItemID);
+                        var fobj = sel.ExecuteScalar();
+                        string existingJson = fobj == null || fobj is DBNull ? "[]" : fobj.ToString() ?? "[]";
+                        List<string> flagsList;
+                        try { flagsList = JsonSerializer.Deserialize<List<string>>(existingJson) ?? new List<string>(); } catch { flagsList = new List<string>(); }
+
+                        flagsList.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Cooking", StringComparison.OrdinalIgnoreCase));
+                        flagsList.Add($"Cooking:{matched.Id}");
+                        var newFlagsJson = JsonSerializer.Serialize(flagsList);
+
+                        using var updFlags = conn.CreateCommand();
+                        updFlags.Transaction = tx;
+                        updFlags.CommandText = "UPDATE Item SET Flags = @flags WHERE ItemID = @id";
+                        updFlags.Parameters.AddWithValue("@flags", newFlagsJson);
+                        updFlags.Parameters.AddWithValue("@id", container.ItemID);
+                        updFlags.ExecuteNonQuery();
+
+                        tx.Commit();
+                    }
+                    catch
+                    {
+                        try { tx.Rollback(); } catch { }
+                        throw;
                     }
                 }
-
-                tx.Commit();
             }
             catch (Exception ex)
             {
@@ -409,44 +515,43 @@ namespace MudServer.MudCore.Actions
                 return MessageHandler.System("Failed to consume ingredients due to a server error.");
             }
 
-            // add transient "Cooking" flag to container (persist and update in-memory room copy immediately)
+            // Update in-memory container flags and broadcast immediately (best-effort)
             try
             {
-                var flags = container.Flags ?? new List<string>();
-                flags.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Cooking", StringComparison.OrdinalIgnoreCase));
-                flags.Add($"Cooking:{matched.Id}");
-                container.Flags = flags;
-                try
+                var roomItem = room.Inventory.FirstOrDefault(i => i.ItemID == container.ItemID);
+                if (roomItem != null)
                 {
-                    ItemPersistence.SaveItem(conn, container);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[COOK] Failed to persist container cooking flag for ItemID={container.ItemID}: {ex.Message}");
-                }
-
-                // Update in-memory room item so Room view reflects busy state immediately
-                try
-                {
-                    var roomItem = room.Inventory.FirstOrDefault(i => i.ItemID == container.ItemID);
-                    if (roomItem != null)
+                    // Reload flags from DB to keep authoritative; best-effort: ignore failures
+                    try
                     {
-                        roomItem.Flags = container.Flags;
-                        roomItem.FlagsJson = JsonSerializer.Serialize(container.Flags ?? new List<string>());
+                        using var q = conn.CreateCommand();
+                        q.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
+                        q.Parameters.AddWithValue("@id", container.ItemID);
+                        var obj = q.ExecuteScalar();
+                        var flagsJson = obj == null || obj is DBNull ? "[]" : obj.ToString() ?? "[]";
+                        roomItem.Flags = JsonSerializer.Deserialize<List<string>>(flagsJson) ?? new List<string>();
+                        roomItem.FlagsJson = flagsJson;
+                        container.Flags = roomItem.Flags;
+                        container.FlagsJson = roomItem.FlagsJson;
                     }
-
-                    // Broadcast updated room payload so clients refresh Items list (shows Pot (Cooking))
-                    foreach (var p in room.Players)
+                    catch
                     {
-                        p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                        // best-effort: set cooking flag locally if DB read failed
+                        var fl = container.Flags ?? new List<string>();
+                        fl.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Cooking", StringComparison.OrdinalIgnoreCase));
+                        fl.Add($"Cooking:{matched.Id}");
+                        container.Flags = fl;
+                        container.FlagsJson = JsonSerializer.Serialize(fl);
+                        if (roomItem != null) { roomItem.Flags = container.Flags; roomItem.FlagsJson = container.FlagsJson; }
                     }
                 }
-                catch { /* best-effort */ }
+
+                foreach (var p in room.Players)
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[COOK] Unexpected while setting cooking flag: {ex.Message}");
-            }
+            catch { /* best-effort */ }
 
             // enqueue job
             var job = new CookJob
@@ -475,6 +580,35 @@ namespace MudServer.MudCore.Actions
 
         private static void FinishCooking(CookJob job, Recipe recipe, SqliteConnection conn)
         {
+            if (job == null || recipe == null)
+            {
+                Console.WriteLine("[COOK] Invalid job or recipe in FinishCooking.");
+                return;
+            }
+
+            // Prefer running finalization on the single-writer queue.
+            // The writer-path implementation is extracted to FinishCookingWriter so Tick can
+            // schedule it directly. If the queue is not available, fall back to the direct path.
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    FinishCookingWriter(wConn, wTx, job, recipe);
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(10));
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall through to direct completion using provided conn (legacy behavior)
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[COOK] Failed to enqueue finish job for Container={job.ContainerItemId} Recipe={recipe.Id}: {ex}");
+                // fall back to direct completion
+            }
+
+            // Direct completion (fallback)
             try
             {
                 EnsureOpen(conn);
@@ -496,24 +630,24 @@ namespace MudServer.MudCore.Actions
                 int ownerArea = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5);
                 rdr.Close();
 
-                // Remove cooking flag from DB (and keep in-memory consistent)
+                // Remove cooking flag from DB
                 try
                 {
                     using var sel = conn.CreateCommand();
                     sel.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
                     sel.Parameters.AddWithValue("@id", job.ContainerItemId);
                     var flagsObj = sel.ExecuteScalar();
-                    string flagsJson = flagsObj == null || flagsObj is DBNull ? "[]" : flagsObj.ToString() ?? "[]";
+                    string fj = flagsObj == null || flagsObj is DBNull ? "[]" : flagsObj.ToString() ?? "[]";
                     List<string> flagsList;
-                    try { flagsList = JsonSerializer.Deserialize<List<string>>(flagsJson) ?? new List<string>(); }
+                    try { flagsList = JsonSerializer.Deserialize<List<string>>(fj) ?? new List<string>(); }
                     catch { flagsList = new List<string>(); }
 
                     flagsList.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Cooking", StringComparison.OrdinalIgnoreCase));
-                    var newFlagsJson = JsonSerializer.Serialize(flagsList);
+                    var newFj = JsonSerializer.Serialize(flagsList);
 
                     using var upd = conn.CreateCommand();
                     upd.CommandText = "UPDATE Item SET Flags = @flags WHERE ItemID = @id";
-                    upd.Parameters.AddWithValue("@flags", newFlagsJson);
+                    upd.Parameters.AddWithValue("@flags", newFj);
                     upd.Parameters.AddWithValue("@id", job.ContainerItemId);
                     upd.ExecuteNonQuery();
 
@@ -528,7 +662,7 @@ namespace MudServer.MudCore.Actions
                                 if (it != null)
                                 {
                                     it.Flags = flagsList;
-                                    it.FlagsJson = newFlagsJson;
+                                    it.FlagsJson = newFj;
                                 }
                             }
 
@@ -539,7 +673,7 @@ namespace MudServer.MudCore.Actions
                                 if (it2 != null)
                                 {
                                     it2.Flags = flagsList;
-                                    it2.FlagsJson = newFlagsJson;
+                                    it2.FlagsJson = newFj;
                                 }
                             }
                         }
@@ -570,12 +704,12 @@ namespace MudServer.MudCore.Actions
                 }
 
                 var world = job.World;
-                var room = world.Rooms.FirstOrDefault(r => r.RoomID == roomId);
-                if (room != null)
+                var rroom = world.Rooms.FirstOrDefault(r => r.RoomID == roomId);
+                if (rroom != null)
                 {
                     try
                     {
-                        foreach (var p in room.Players)
+                        foreach (var p in rroom.Players)
                             MessageHandler.SendSystem(p, $"A {resultItem.Name} has finished cooking!");
                     }
                     catch { /* best-effort */ }
@@ -583,9 +717,124 @@ namespace MudServer.MudCore.Actions
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[COOK] FinishCooking failed for Container {job.ContainerItemId}, Recipe {recipe.Id}: {ex}");
+                Console.WriteLine($"[COOK] FinishCooking fallback failed for Container={job.ContainerItemId}, Recipe={recipe.Id}: {ex}");
             }
+            
         } // end FinishCooking
+
+        // Writer-path finalizer: performs the flag removal and result insertion using the provided
+        // writer connection + transaction so the operations are atomic with other writer jobs.
+        // Throws on error so caller (writer queue) can handle rollback.
+        private static void FinishCookingWriter(SqliteConnection wConn, SqliteTransaction wTx, CookJob job, Recipe recipe)
+        {
+            if (wConn == null) throw new ArgumentNullException(nameof(wConn));
+            if (wTx == null) throw new ArgumentNullException(nameof(wTx));
+            if (job == null || recipe == null)
+            {
+                Console.WriteLine("[COOK] Invalid job or recipe passed to FinishCookingWriter.");
+                return;
+            }
+
+            try
+            {
+                // Read container row (inside writer tx)
+                using var cmd = wConn.CreateCommand();
+                cmd.Transaction = wTx;
+                cmd.CommandText = "SELECT ItemID, TemplateID, OwnerType, OwnerID, RoomID, OwnerAreaID, Flags FROM Item WHERE ItemID = @id";
+                cmd.Parameters.AddWithValue("@id", job.ContainerItemId);
+
+                using var rdr = cmd.ExecuteReader();
+                if (!rdr.Read())
+                {
+                    Console.WriteLine($"[COOK] Container ItemID={job.ContainerItemId} missing at writer completion for recipe {recipe.Id}.");
+                    return;
+                }
+
+                int dbItemId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+                string tmpl = rdr.IsDBNull(1) ? "" : rdr.GetString(1);
+                string ownerType = rdr.IsDBNull(2) ? "" : rdr.GetString(2);
+                int ownerId = rdr.IsDBNull(3) ? 0 : rdr.GetInt32(3);
+                int roomId = rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4);
+                int ownerArea = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5);
+                string flagsJson = rdr.IsDBNull(6) ? "[]" : rdr.GetString(6);
+                rdr.Close();
+
+                // Remove Cooking flag
+                List<string> flagsList;
+                try { flagsList = JsonSerializer.Deserialize<List<string>>(flagsJson) ?? new List<string>(); }
+                catch { flagsList = new List<string>(); }
+
+                flagsList.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Cooking", StringComparison.OrdinalIgnoreCase));
+                var newFlagsJson = JsonSerializer.Serialize(flagsList);
+
+                using var upd = wConn.CreateCommand();
+                upd.Transaction = wTx;
+                upd.CommandText = "UPDATE Item SET Flags = @flags WHERE ItemID = @id";
+                upd.Parameters.AddWithValue("@flags", newFlagsJson);
+                upd.Parameters.AddWithValue("@id", job.ContainerItemId);
+                upd.ExecuteNonQuery();
+
+                // Create cooked result and persist inside writer tx using ItemPersistence internal contract
+                if (job.World == null || job.World.ItemFactory == null)
+                {
+                    Console.WriteLine("[COOK] World or ItemFactory unavailable at writer completion.");
+                    return;
+                }
+
+                var resultItem = job.World.ItemFactory.CreateItem(recipe.Result.Template, "Item", job.ContainerItemId, roomId, Math.Max(1, recipe.Result.Quantity));
+
+                // Persist result using writer connection + tx to avoid nested enqueueing
+                ItemPersistence.SaveItem(wConn, resultItem, wTx);
+
+                // Update in-memory container instances so clients see the pot cleared and notify players
+                try
+                {
+                    if (job.World != null)
+                    {
+                        foreach (var rm in job.World.Rooms)
+                        {
+                            var it = rm.Inventory.FirstOrDefault(i => i.ItemID == job.ContainerItemId);
+                            if (it != null)
+                            {
+                                it.Flags = flagsList;
+                                it.FlagsJson = newFlagsJson;
+                            }
+                        }
+
+                        foreach (var ply in job.World.Players)
+                        {
+                            if (ply.Inventory == null) continue;
+                            var it2 = ply.Inventory.FirstOrDefault(i => i.ItemID == job.ContainerItemId);
+                            if (it2 != null)
+                            {
+                                it2.Flags = flagsList;
+                                it2.FlagsJson = newFlagsJson;
+                            }
+                        }
+
+                        var roomObj = job.World.Rooms.FirstOrDefault(r => r.RoomID == roomId);
+                        if (roomObj != null)
+                        {
+                            try
+                            {
+                                foreach (var p in roomObj.Players)
+                                    MessageHandler.SendSystem(p, $"A {resultItem.Name} has finished cooking!");
+                            }
+                            catch { /* best-effort */ }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[COOK] In-memory update/notify failed in writer finalizer: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[COOK] FinishCookingWriter failed for Container={job.ContainerItemId}, Recipe={recipe.Id}: {ex}");
+                throw;
+            }
+        }
 
         public static void Tick(World world, SqliteConnection conn)
         {
@@ -611,7 +860,26 @@ namespace MudServer.MudCore.Actions
 
                 try
                 {
-                    FinishCooking(job, recipe, conn);
+                    // Prefer executing finish logic on the writer queue so completion runs with writer connection+tx.
+                    try
+                    {
+                        MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                        {
+                            FinishCookingWriter(wConn, wTx, job, recipe);
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(10));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Queue not started — fallback to direct finish on provided connection
+                        FinishCooking(job, recipe, conn);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[COOK] Failed to schedule finish on writer queue for Container={job.ContainerItemId}: {ex}");
+                        // fallback to direct
+                        FinishCooking(job, recipe, conn);
+                    }
                 }
                 catch (Exception ex)
                 {

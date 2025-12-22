@@ -16,6 +16,8 @@ namespace MudServer
     {
         private readonly World _world;
         private readonly SqliteConnection _db;
+        
+        private static bool setVerboseServerLogs = false;
 
         public AdminService(World world, SqliteConnection dbConnection)
         {
@@ -267,20 +269,19 @@ namespace MudServer
 
         public Message? HandleCreateArea(Player player, string command)
         {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            string dir = "";
             var parts = command.Trim().Split(' ', 2);
             if (parts.Length < 2)
                 return MessageHandler.System("Usage: CreateArea <Direction>");
 
-            string dir = parts[1].Trim().ToUpper();
+            dir = parts[1].Trim().ToUpper();
             if (!IsValidDirection(dir))
                 return MessageHandler.System("Invalid direction.");
 
-            if (player.CurrentRoom.Exits.Any(e =>
-                    e.Direction.Equals(dir, StringComparison.OrdinalIgnoreCase)))
-            {
-                return MessageHandler.System($"Cannot create area. An exit already exists in direction {dir}.");
-            }
-
+            // Prompt for area name
             player.PendingAction = new PendingAction
             {
                 Command = "CreateArea",
@@ -469,16 +470,177 @@ namespace MudServer
             if (_world.ItemFactory == null)
                 return MessageHandler.System("Item factory not available.");
 
+            if (string.IsNullOrWhiteSpace(itemTemplateId))
+                return MessageHandler.System("Usage: additem <item> [quantity] OR additem <item> to <player|container>");
+
+            // Allow admin to specify target: "itemName to targetName"
+            string payload = itemTemplateId.Trim();
+            string itemNamePart = payload;
+            string targetPart = "";
+            int idxTo = payload.IndexOf(" to ", StringComparison.OrdinalIgnoreCase);
+            if (idxTo >= 0)
+            {
+                itemNamePart = payload.Substring(0, idxTo).Trim();
+                targetPart = payload.Substring(idxTo + " to ".Length).Trim();
+            }
+
             try
             {
-                return InventoryManager.AddItemToRoom(_world, _db, player, itemTemplateId, quantity);
+                // If no explicit target, preserve existing behavior but disallow liquids in room.
+                if (string.IsNullOrWhiteSpace(targetPart))
+                {
+                    // instantiate from template so we can inspect flags (but do not yet persist)
+                    var preview = _world.ItemFactory.CreateItem(itemNamePart, "Room", room.RoomID, room.RoomID, Math.Max(1, quantity));
+                    bool isLiquid = (preview.Flags != null && preview.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                     || (!string.IsNullOrEmpty(preview.FlagsJson) && preview.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    if (isLiquid)
+                    {
+                        return MessageHandler.System("You cannot spawn liquids directly into a room. Use: additem <item> to <player> or additem <item> to <container>");
+                    }
+
+                    // fall back to existing room-add flow (re-use InventoryManager)
+                    return InventoryManager.AddItemToRoom(_world, _db, player, itemNamePart, quantity);
+                }
+
+                // Resolve target: prefer player match, then container match (player's inventory then room)
+                // 1) Try find a player by name (exact, starts-with, case-insensitive)
+                Player? targetPlayer = null;
+                try
+                {
+                    var candidates = _world.Players
+                        .Where(p => p != null && p.IsAuthenticated)
+                        .ToList();
+
+                    // exact
+                    targetPlayer = candidates.FirstOrDefault(p => string.Equals(p.Name, targetPart, StringComparison.OrdinalIgnoreCase));
+                    // starts-with
+                    if (targetPlayer == null)
+                        targetPlayer = candidates.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Name) && p.Name.StartsWith(targetPart, StringComparison.OrdinalIgnoreCase));
+                    // token contains
+                    if (targetPlayer == null)
+                        targetPlayer = candidates.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Name) && p.Name.IndexOf(targetPart, StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+                catch { targetPlayer = null; }
+
+                // 2) If not player, try to resolve a container (player inventory first then room) using InventoryManager
+                Item? targetContainer = null;
+                if (targetPlayer == null)
+                {
+                    try
+                    {
+                        targetContainer = InventoryManager.FindContainer(player, targetPart);
+                    }
+                    catch { targetContainer = null; }
+                }
+
+                if (targetPlayer == null && targetContainer == null)
+                {
+                    return MessageHandler.System($"No player or container matching '{targetPart}' found.");
+                }
+
+                // Create item with correct owner fields and persist
+                if (targetPlayer != null)
+                {
+                    // create item owned by the target player
+                    var newItem = _world.ItemFactory.CreateItem(itemNamePart, "Player", targetPlayer.DbPlayerID != 0 ? targetPlayer.DbPlayerID : 0,
+                                                                targetPlayer.CurrentRoom?.RoomID ?? room.RoomID, Math.Max(1, quantity));
+                    newItem.OwnerType = "Player";
+                    newItem.OwnerID = targetPlayer.DbPlayerID != 0 ? targetPlayer.DbPlayerID : 0;
+                    newItem.RoomID = targetPlayer.CurrentRoom?.RoomID ?? room.RoomID;
+                    newItem.OwnerAreaID = targetPlayer.CurrentRoom?.AreaID ?? room.AreaID;
+
+                    // disallow placing liquids into a room-owned player when target player is null (shouldn't happen) - already covered
+                    // persist
+                    ItemPersistence.SaveItem(_db, newItem);
+
+                    // Add to in-memory inventory for target player
+                    try
+                    {
+                        targetPlayer.Inventory.Add(newItem);
+                    }
+                    catch
+                    {
+                        // best-effort; even if in-memory add fails, DB contains the item.
+                    }
+
+                    // notify target player and room occupants
+                    try { MessageHandler.EnqueuePlayerUpdate(targetPlayer); } catch { }
+                    try
+                    {
+                        foreach (var p in (targetPlayer.CurrentRoom ?? room).Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(targetPlayer.CurrentRoom ?? room,
+                                (targetPlayer.CurrentRoom ?? room).Npcs.Select(n => n.DisplayName).ToList(),
+                                (targetPlayer.CurrentRoom ?? room).Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world));
+                        }
+                    }
+                    catch { }
+
+                    return MessageHandler.System($"Added {newItem.Name} to {targetPlayer.Name}.");
+                }
+                else // container target
+                {
+                    if (targetContainer == null) return MessageHandler.System("Target container resolution failed.");
+
+                    // Ensure container can accept liquids / items (respect Accept flag)
+                    var accepts = InventoryManager.ParseAcceptList(targetContainer);
+                    if (!accepts.Contains("All", StringComparer.OrdinalIgnoreCase))
+                    {
+                        // instantiate preview to get category
+                        var preview = _world.ItemFactory.CreateItem(itemNamePart, "Item", targetContainer.ItemID, targetContainer.RoomID, Math.Max(1, quantity));
+                        if (!accepts.Contains(preview.ItemCategory ?? "", StringComparer.OrdinalIgnoreCase))
+                        {
+                            return MessageHandler.System($"Container '{targetContainer.Name}' does not accept items of category '{preview.ItemCategory}'.");
+                        }
+                    }
+
+                    // create item owned by the container (OwnerType='Item', OwnerID = container.ItemID)
+                    var contItem = _world.ItemFactory.CreateItem(itemNamePart, "Item", targetContainer.ItemID, targetContainer.RoomID, Math.Max(1, quantity));
+                    contItem.OwnerType = "Item";
+                    contItem.OwnerID = targetContainer.ItemID;
+                    contItem.RoomID = targetContainer.RoomID;
+                    contItem.OwnerAreaID = targetContainer.OwnerAreaID;
+
+                    // Persist into DB
+                    ItemPersistence.SaveItem(_db, contItem);
+
+                    // No in-memory container contents list is maintained here (client will re-query via inspect).
+                    // Notify owner and room occupants so UI updates
+                    try
+                    {
+                        // If container is carried by a player, notify that player
+                        var ownerPlayer = (player.Inventory ?? new List<Item>()).Any(i => i.ItemID == targetContainer.ItemID)
+                                          ? player
+                                          : targetContainer.RoomID == room.RoomID ? player : null;
+
+                        // Broadcast room update
+                        foreach (var p in (player.CurrentRoom ?? room).Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(player.CurrentRoom ?? room,
+                                (player.CurrentRoom ?? room).Npcs.Select(n => n.DisplayName).ToList(),
+                                (player.CurrentRoom ?? room).Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world));
+                        }
+
+                        if (ownerPlayer != null) MessageHandler.EnqueuePlayerUpdate(ownerPlayer);
+                    }
+                    catch { /* best-effort */ }
+
+                    return MessageHandler.System($"Added {contItem.Name} into {targetContainer.Name}.");
+                }
+            }
+            catch (KeyNotFoundException)
+            {
+                return MessageHandler.System($"Item template not found: {itemNamePart}");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[AddItem][ERROR] AddItem failed: {ex}");
                 return MessageHandler.System($"Failed to add item: {ex.Message}");
             }
-        }
+        } // end AddItem
 
         public Message? RemoveItem(Player player, string identifier)
         {
@@ -568,6 +730,246 @@ namespace MudServer
             }
         }
 
+        public Message? DebugRooms(Player player, string args = "")
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null) return MessageHandler.System("World not available.");
+
+            try
+            {
+                IEnumerable<Room> rooms = _world.Rooms;
+
+                // If an area id was supplied, try parse and filter
+                if (!string.IsNullOrWhiteSpace(args))
+                {
+                    if (int.TryParse(args.Trim(), out var areaId))
+                    {
+                        rooms = rooms.Where(r => r.AreaID == areaId);
+                    }
+                    else
+                    {
+                        return MessageHandler.System("Usage: debugrooms [areaid] — areaid must be an integer.");
+                    }
+                }
+
+                var list = rooms
+                    .OrderBy(r => r.RoomID)
+                    .Select(r => $"{r.RoomID}: {r.Name}")
+                    .ToList();
+
+                if (list.Count == 0)
+                    return MessageHandler.System(string.IsNullOrWhiteSpace(args)
+                        ? "No rooms found."
+                        : $"No rooms found for AreaID = {args.Trim()}.");
+
+                // Limit output length to avoid very large payloads; admin can refine by areaId
+                const int maxLines = 500;
+                if (list.Count > maxLines)
+                {
+                    var head = list.Take(maxLines).ToList();
+                    head.Add($"... {list.Count - maxLines} more (specify an areaid to narrow results).");
+                    return MessageHandler.System(string.Join("\n", head));
+                }
+
+                return MessageHandler.System(string.Join("\n", list));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][DEBUGROOMS] Failed: {ex.Message}");
+                return MessageHandler.System("Failed to retrieve rooms due to a server error.");
+            }
+        }
+
+        // NEW: admin Kill command handler (supports pending flow and immediate execution)
+        // Usage:
+        //   kill <npcname>                         -> removes one matching NPC in current room
+        //   kill all <npcname> in room             -> removes all matching NPCs in current room
+        //   kill all <npcname> in area             -> removes all matching NPCs in the current area
+        // If called with just 'kill' this will set a pending action so admin can enter target next.
+        public Message? HandleKill(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null) return MessageHandler.System("World unavailable.");
+            if (player.CurrentRoom == null) return MessageHandler.System("You are not inside a valid room.");
+
+            // Normalize input after 'kill'
+            var payload = command ?? "";
+            if (payload.StartsWith("kill", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring(4).Trim();
+
+            // If no payload provided, enter pending flow (like CreateRoom)
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                player.PendingAction = new PendingAction
+                {
+                    Command = "Kill",
+                    Step = "SpecifyTarget"
+                };
+                return MessageHandler.System("Enter target to kill (examples: 'goblin' or 'all goblin in area' or 'all goblin in room'):");
+            }
+
+            // Parse pattern: optional leading "all", optional trailing "in room"/"in area"
+            bool all = false;
+            string scope = "room"; // "room" or "area"
+            string rest = payload;
+
+            if (rest.StartsWith("all ", StringComparison.OrdinalIgnoreCase))
+            {
+                all = true;
+                rest = rest.Substring(4).Trim();
+            }
+
+            // detect " in <scope>" suffix
+            var idxIn = rest.IndexOf(" in ", StringComparison.OrdinalIgnoreCase);
+            if (idxIn >= 0)
+            {
+                var scopeTok = rest.Substring(idxIn + 4).Trim().ToLowerInvariant();
+                rest = rest.Substring(0, idxIn).Trim();
+                if (scopeTok.StartsWith("area")) scope = "area";
+                else scope = "room";
+            }
+
+            var npcToken = rest.Trim();
+            if (string.IsNullOrWhiteSpace(npcToken))
+                return MessageHandler.System("Usage: kill [npcname] OR kill all [npcname] in [room|area]");
+
+            try
+            {
+                // Determine target rooms
+                List<Room> targetRooms;
+                if (scope == "area")
+                {
+                    var curAreaId = player.CurrentRoom.AreaID;
+                    targetRooms = _world.Rooms.Where(r => r.AreaID == curAreaId).ToList();
+                }
+                else
+                {
+                    targetRooms = new List<Room> { player.CurrentRoom };
+                }
+
+                var removedCount = 0;
+                var affectedRooms = new HashSet<int>();
+
+                foreach (var rm in targetRooms)
+                {
+                    if (rm.Npcs == null || rm.Npcs.Count == 0) continue;
+
+                    // Find matches according to name/template heuristics
+                    var matches = rm.Npcs.Where(n =>
+                        (!string.IsNullOrWhiteSpace(n.Name) && string.Equals(n.Name, npcToken, StringComparison.OrdinalIgnoreCase)) ||
+                        (!string.IsNullOrWhiteSpace(n.TemplateID) && string.Equals(n.TemplateID, npcToken, StringComparison.OrdinalIgnoreCase)) ||
+                        (n.Template != null && !string.IsNullOrWhiteSpace(n.Template.Id) && string.Equals(n.Template.Id, npcToken, StringComparison.OrdinalIgnoreCase)) ||
+                        (!string.IsNullOrWhiteSpace(n.Name) && n.Name.StartsWith(npcToken, StringComparison.OrdinalIgnoreCase))
+                    ).ToList();
+
+                    if (matches.Count == 0) continue;
+
+                    // If not 'all', remove only a single match (prefer first)
+                    var toRemove = all ? matches.ToList() : new List<Npc> { matches[0] };
+
+                    foreach (var npc in toRemove)
+                    {
+                        try
+                        {
+                            // Remove NPC-owned items (best-effort)
+                            try
+                            {
+                                if (npc.Inventory != null)
+                                {
+                                    foreach (var it in npc.Inventory.ToList())
+                                    {
+                                        try
+                                        {
+                                            if (it.ItemID != 0)
+                                                MudPersistence.ItemPersistence.DeleteItem(_db, it.ItemID);
+                                        }
+                                        catch (Exception iex)
+                                        {
+                                            Console.WriteLine($"[KILL][WARN] Failed to delete item {it.ItemID} for NPC {npc.NpcID}: {iex.Message}");
+                                        }
+                                    }
+                                }
+                            }
+                            catch { /* best-effort */ }
+
+                            // Delete NPC DB row (best-effort)
+                            try
+                            {
+                                if (npc.NpcID != 0)
+                                    MudPersistence.NpcPersistence.DeleteNpc(_db, npc.NpcID);
+                            }
+                            catch (Exception ne)
+                            {
+                                Console.WriteLine($"[KILL][WARN] Failed to delete NPC row {npc.NpcID}: {ne.Message}");
+                            }
+
+                            // Remove from room and world lists
+                            rm.Npcs.RemoveAll(n => n.NpcID == npc.NpcID);
+                            _world.Npcs.RemoveAll(n => n.NpcID == npc.NpcID);
+
+                            removedCount++;
+                            affectedRooms.Add(rm.RoomID);
+
+                            Console.WriteLine($"[KILL] Admin removed NPC '{npc.Name}' (NpcID={npc.NpcID}) from Room {rm.RoomID}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[KILL][ERROR] Failed removing NPC {npc?.NpcID}: {ex.Message}");
+                        }
+
+                        // If not removing 'all', break after first
+                        if (!all) break;
+                    }
+                }
+
+                // Persist any dirty room state (best-effort)
+                try
+                {
+                    // Mark affected rooms dirty so SaveDirtyRooms persists related state if needed
+                    foreach (var rid in affectedRooms)
+                    {
+                        var r = _world.Rooms.FirstOrDefault(rr => rr.RoomID == rid);
+                        if (r != null) r.IsDirty = true;
+                    }
+                    _world.SaveDirtyRooms(_db);
+                }
+                catch { /* best-effort */ }
+
+                // Notify players in affected rooms
+                try
+                {
+                    foreach (var rid in affectedRooms)
+                    {
+                        var r = _world.Rooms.FirstOrDefault(rr => rr.RoomID == rid);
+                        if (r == null) continue;
+                        foreach (var p in r.Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(
+                                r,
+                                r.Npcs.Select(n => n.DisplayName).ToList(),
+                                r.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world, _db));
+                        }
+                    }
+                }
+                catch { /* best-effort */ }
+
+                if (removedCount == 0)
+                {
+                    return MessageHandler.System($"No matching NPCs found for '{npcToken}' in the specified scope ({scope}).");
+                }
+
+                return MessageHandler.System($"Removed {removedCount} NPC(s) matching '{npcToken}' in {scope}.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][KILL] Failed: {ex.Message}");
+                return MessageHandler.System("Kill command failed due to a server error.");
+            }
+        }
+
         // Handles admin-related pending actions: EditRoom, CreateArea, CreateRoom.
         // Returns non-null Message if handled and the pending action consumed.
         public Message? HandlePendingAction(Player player, PendingAction pa, string input)
@@ -607,8 +1009,6 @@ namespace MudServer
                     return MessageHandler.System("Invalid option. Type '1' or 'HasDoor', or 'EndEdit'.");
                 }
 
-
-
                 if (pa.Step == "EditHasDoor")
                 {
                     var v = input?.Trim().ToLowerInvariant();
@@ -634,24 +1034,210 @@ namespace MudServer
                         {
                             if (!exit.DoorId.HasValue)
                             {
-                                using var ins = _db.CreateCommand();
-                                ins.CommandText = "INSERT INTO Doors (IsOpen, DoorType, Flags) VALUES (0, NULL, NULL);";
-                                ins.ExecuteNonQuery();
-                                using var last = _db.CreateCommand();
-                                last.CommandText = "SELECT last_insert_rowid();";
-                                var vobj = last.ExecuteScalar();
-                                var newDoorId = Convert.ToInt32(vobj);
+                                // Enqueue an atomic writer job to create Doors row and upsert both mirrored RoomExit rows.
+                                int newDoorId = DbWriteQueue.Instance.RunWriteAndWait<int>((conn, tx) =>
+                                {
+                                    // Insert Door
+                                    using var ins = conn.CreateCommand();
+                                    ins.Transaction = tx;
+                                    ins.CommandText = "INSERT INTO Doors (IsOpen, DoorType, Flags) VALUES (0, NULL, NULL);";
+                                    ins.ExecuteNonQuery();
+
+                                    using var last = conn.CreateCommand();
+                                    last.Transaction = tx;
+                                    last.CommandText = "SELECT last_insert_rowid();";
+                                    var vobj = last.ExecuteScalar();
+                                    var createdId = Convert.ToInt32(vobj);
+
+                                    // Helper upsert by RoomID+ToRoomID (deterministic)
+                                    void UpsertExitInternal(int rRoomId, string dir, int toRoomId, int doorIdVal, bool isHidden, string? keyword)
+                                    {
+                                        using var upd = conn.CreateCommand();
+                                        upd.Transaction = tx;
+                                        upd.CommandText = @"
+                                    UPDATE RoomExit
+                                    SET Direction = @dir,
+                                        IsHidden = @hidden,
+                                        DiscoverKeyword = @keyword,
+                                        DoorId = @doorId
+                                    WHERE RoomID = @rid AND ToRoomID = @toRid;";
+                                        upd.Parameters.AddWithValue("@rid", rRoomId);
+                                        upd.Parameters.AddWithValue("@dir", dir ?? "");
+                                        upd.Parameters.AddWithValue("@toRid", toRoomId);
+                                        upd.Parameters.AddWithValue("@hidden", isHidden ? 1 : 0);
+                                        upd.Parameters.AddWithValue("@keyword", keyword ?? "");
+                                        upd.Parameters.AddWithValue("@doorId", doorIdVal);
+
+                                        var affected = upd.ExecuteNonQuery();
+                                        if (affected == 0)
+                                        {
+                                            using var insCmd = conn.CreateCommand();
+                                            insCmd.Transaction = tx;
+                                            insCmd.CommandText = @"
+                                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId)
+                                        VALUES (@rid, @dir, @toRid, @hidden, @keyword, @doorId);";
+                                            insCmd.Parameters.AddWithValue("@rid", rRoomId);
+                                            insCmd.Parameters.AddWithValue("@dir", dir ?? "");
+                                            insCmd.Parameters.AddWithValue("@toRid", toRoomId);
+                                            insCmd.Parameters.AddWithValue("@hidden", isHidden ? 1 : 0);
+                                            insCmd.Parameters.AddWithValue("@keyword", keyword ?? "");
+                                            insCmd.Parameters.AddWithValue("@doorId", doorIdVal);
+                                            insCmd.ExecuteNonQuery();
+                                        }
+                                    }
+
+                                    // Attempt to find mate exit in-memory to determine its metadata (direction/isHidden/keyword)
+                                    var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                                    Room.RoomExit? mateExit = null;
+                                    if (mateRoom != null && mateRoom.Exits != null)
+                                    {
+                                        string opp = OppositeDirection(NormalizeDirection(exit.Direction));
+                                        mateExit = mateRoom.Exits.FirstOrDefault(e =>
+                                            e.ToRoomID == room.RoomID &&
+                                            string.Equals(NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase))
+                                            ?? mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == room.RoomID);
+                                    }
+
+                                    // Upsert mate side first (if exists) using its in-memory values; otherwise still upsert with best-effort placeholders
+                                    if (mateExit != null && mateRoom != null)
+                                    {
+                                        UpsertExitInternal(mateRoom.RoomID, mateExit.Direction, room.RoomID, createdId, mateExit.IsHidden, mateExit.DiscoverKeyword);
+                                    }
+
+                                    // Upsert original side using current in-memory exit metadata
+                                    UpsertExitInternal(room.RoomID, exit.Direction, exit.ToRoomID, createdId, exit.IsHidden, exit.DiscoverKeyword);
+
+                                    return createdId;
+                                }, timeout: TimeSpan.FromSeconds(5)); // short timeout for interactive admin
+
+                                // Apply newDoorId to in-memory model (avoid stomping if concurrent)
                                 exit.DoorId = newDoorId;
+                                exit.DoorIsOpen = false;
+                                room.IsDirty = true;
+
+                                try
+                                {
+                                    var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                                    Room.RoomExit? mateExit = null;
+                                    if (mateRoom != null && mateRoom.Exits != null)
+                                    {
+                                        string opp = OppositeDirection(NormalizeDirection(exit.Direction));
+                                        mateExit = mateRoom.Exits.FirstOrDefault(e =>
+                                            e.ToRoomID == room.RoomID &&
+                                            string.Equals(NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase))
+                                            ?? mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == room.RoomID);
+                                    }
+
+                                    if (mateExit != null && !mateExit.DoorId.HasValue)
+                                    {
+                                        mateExit.DoorId = newDoorId;
+                                        mateExit.DoorIsOpen = false;
+                                        mateRoom!.IsDirty = true;
+                                    }
+                                }
+                                catch { /* best-effort in-memory sync */ }
                             }
                         }
                         else
                         {
-                            // unlink only
+                            // unlink only: if this exit had a DoorId, clear it and also clear mate exit if it referenced the same DoorId.
+                            int? oldDoor = exit.DoorId;
                             exit.DoorId = null;
+
+                            if (oldDoor.HasValue)
+                            {
+                                // Enqueue an atomic job to clear DoorId = 0 on both mirrored rows, but only when they currently reference the same DoorId.
+                                DbWriteQueue.Instance.RunWriteAndWait<object?>((conn, tx) =>
+                                {
+                                    try
+                                    {
+                                        // Find mate room and mate exit in-memory to get RoomIDs
+                                        var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                                        Room.RoomExit? mateExit = null;
+                                        if (mateRoom != null && mateRoom.Exits != null)
+                                        {
+                                            string opp = OppositeDirection(NormalizeDirection(exit.Direction));
+                                            mateExit = mateRoom.Exits.FirstOrDefault(e =>
+                                                e.ToRoomID == room.RoomID &&
+                                                string.Equals(NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase))
+                                                ?? mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == room.RoomID);
+                                        }
+
+                                        if (mateRoom != null && mateExit != null)
+                                        {
+                                            using var cmd = conn.CreateCommand();
+                                            cmd.Transaction = tx;
+                                            cmd.CommandText = @"
+                                        UPDATE RoomExit
+                                        SET DoorId = 0
+                                        WHERE RoomID = @mrid AND ToRoomID = @toRid AND DoorId = @door;";
+                                            cmd.Parameters.AddWithValue("@mrid", mateRoom.RoomID);
+                                            cmd.Parameters.AddWithValue("@toRid", room.RoomID);
+                                            cmd.Parameters.AddWithValue("@door", oldDoor.Value);
+                                            cmd.ExecuteNonQuery();
+                                        }
+
+                                        using var cmd2 = conn.CreateCommand();
+                                        cmd2.Transaction = tx;
+                                        cmd2.CommandText = @"
+                                    UPDATE RoomExit
+                                    SET DoorId = 0
+                                    WHERE RoomID = @rid AND ToRoomID = @toRid AND DoorId = @door;";
+                                        cmd2.Parameters.AddWithValue("@rid", room.RoomID);
+                                        cmd2.Parameters.AddWithValue("@toRid", exit.ToRoomID);
+                                        cmd2.Parameters.AddWithValue("@door", oldDoor.Value);
+                                        cmd2.ExecuteNonQuery();
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        throw new Exception("Failed to clear DoorId in DB: " + ex.Message, ex);
+                                    }
+                                    return (object?)null;
+                                }, timeout: TimeSpan.FromSeconds(5));
+
+                                // Also clear mate in-memory if it referenced the same door
+                                try
+                                {
+                                    var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                                    Room.RoomExit? mateExit = null;
+                                    if (mateRoom != null && mateRoom.Exits != null)
+                                    {
+                                        string opp = OppositeDirection(NormalizeDirection(exit.Direction));
+                                        mateExit = mateRoom.Exits.FirstOrDefault(e =>
+                                            e.ToRoomID == room.RoomID &&
+                                            string.Equals(NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase))
+                                            ?? mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == room.RoomID);
+                                    }
+
+                                    if (mateExit != null && mateExit.DoorId.HasValue && mateExit.DoorId.Value == oldDoor.Value)
+                                    {
+                                        mateExit.DoorId = null;
+                                        mateExit.DoorIsOpen = null;
+                                        mateRoom!.IsDirty = true;
+                                    }
+                                }
+                                catch { /* best-effort */ }
+                            }
                         }
 
+                        // Mark dirty and persist via RoomPersistence to keep other exit metadata consistent.
                         room.IsDirty = true;
-                        RoomPersistence.SaveRoomExits(_db, room);
+                        _world.SaveDirtyRooms(_db); // Persist any other dirty rooms in world (safe)
+
+                        // Persist both rooms' exits via RoomPersistence so SaveRoomExits has canonical state to write.
+                        try
+                        {
+                            // Persist mateRoom first if present so both sides are synchronized in DB and cache.
+                            var mateRoomForSave = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                            if (mateRoomForSave != null)
+                                RoomPersistence.SaveRoomExits(_db, mateRoomForSave);
+
+                            RoomPersistence.SaveRoomExits(_db, room);
+                        }
+                        catch (Exception exSave)
+                        {
+                            Console.WriteLine($"[ADMIN][EditExit] SaveRoomExits failed: {exSave.Message}");
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -660,7 +1246,7 @@ namespace MudServer
                         return MessageHandler.System("Failed to save exit changes due to a server error.");
                     }
 
-                    // Broadcast updated room to occupants
+                    // Broadcast updated room to occupants (and mate room if modified)
                     try
                     {
                         foreach (var p in room.Players)
@@ -671,6 +1257,24 @@ namespace MudServer
                                 room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                 _world, _db));
                         }
+
+                        // notify mate room players if mate exit exists and was modified
+                        try
+                        {
+                            var mateRoomNotify = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                            if (mateRoomNotify != null)
+                            {
+                                foreach (var p in mateRoomNotify.Players)
+                                {
+                                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                                        mateRoomNotify,
+                                        mateRoomNotify.Npcs.Select(n => n.DisplayName).ToList(),
+                                        mateRoomNotify.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                        _world, _db));
+                                }
+                            }
+                        }
+                        catch { /* best-effort */ }
                     }
                     catch { /* best-effort */ }
 
@@ -681,7 +1285,24 @@ namespace MudServer
                 return null;
             }
 
-            // ... existing pending handling for EditRoom/CreateArea/CreateRoom follows unchanged ...
+            // --- Kill pending action ---
+            if (pa.Command == "Kill")
+            {
+                if (!player.IsAdmin)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Permission denied. Admins only.");
+                }
+
+                if (pa.Step == "SpecifyTarget")
+                {
+                    // input contains the target string the admin typed after the prompt
+                    player.PendingAction = null!; // consume pending
+                    return HandleKill(player, "kill " + (input ?? ""));
+                }
+
+                return null;
+            }
 
             // EditRoom pending action
             if (pa.Command == "EditRoom")
@@ -770,11 +1391,11 @@ namespace MudServer
 
                         // Prefer chat/completions endpoint so we can provide a system role (context/instruction) first.
                         var messages = new List<(string role, string content)>
-                {
-                    ("system", systemPrompt),
-                    // Provide minimal room context to help the model (room name + existing description if any)
-                    ("user", $"Room: {room?.Name ?? "Unknown"}\nExisting description: {room?.Description ?? ""}\nPrompt: {prompt}\n\nGenerate a refined room description based on the Prompt and the Existing description. Keep it immersive and focused on sensory details.")
-                };
+        {
+            ("system", systemPrompt),
+            // Provide minimal room context to help the model (room name + existing description if any)
+            ("user", $"Room: {room?.Name ?? "Unknown"}\nExisting description: {room?.Description ?? ""}\nPrompt: {prompt}\n\nGenerate a refined room description based on the Prompt and the Existing description. Keep it immersive and focused on sensory details.")
+        };
 
                         using var respDoc = lmClient.CreateChatCompletionAsync(lmModel, messages, temperature: 0.7, ct: cts.Token)
                                                    .GetAwaiter().GetResult();
@@ -885,22 +1506,110 @@ namespace MudServer
 
                 try
                 {
-                    using var ins = _db.CreateCommand();
-                    ins.CommandText = @"
-                        INSERT INTO Area (Name, Description, WorldID, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner)
-                        VALUES (@name, @desc, @wid, @theme, @min, @max, @pvp, @owner);
-                        SELECT last_insert_rowid();";
-                    ins.Parameters.AddWithValue("@name", newArea.Name ?? "");
-                    ins.Parameters.AddWithValue("@desc", newArea.Description ?? "");
-                    ins.Parameters.AddWithValue("@wid", _world.WorldID);
-                    ins.Parameters.AddWithValue("@theme", newArea.Theme ?? "Generic");
-                    ins.Parameters.AddWithValue("@min", newArea.LevelRangeMin);
-                    ins.Parameters.AddWithValue("@max", newArea.LevelRangeMax);
-                    ins.Parameters.AddWithValue("@pvp", newArea.IsPvPAllowed ? 1 : 0);
-                    ins.Parameters.AddWithValue("@owner", newArea.Owner ?? "System");
+                    // capture current room id and normalized directions for the writer
+                    int srcRoomId = player.CurrentRoom?.RoomID ?? 0;
+                    string dirNorm = dir;
+                    string oppDir = OppositeDirection(dirNorm);
 
-                    long newAreaId = (long)ins.ExecuteScalar();
-                    newArea.AreaID = (int)newAreaId;
+                    // Perform both Area insert and starting Room creation inside single-writer so they are atomic and serialized.
+                    var result = MudServer.DbWriteQueue.Instance.RunWriteAndWait<(int areaId, int roomId)>((wConn, wTx) =>
+                    {
+                        // Insert Area row
+                        using var ins = wConn.CreateCommand();
+                        ins.Transaction = wTx;
+                        ins.CommandText = @"
+                    INSERT INTO Area (Name, Description, WorldID, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner)
+                    VALUES (@name, @desc, @wid, @theme, @min, @max, @pvp, @owner);
+                    SELECT last_insert_rowid();";
+                        ins.Parameters.AddWithValue("@name", newArea.Name ?? "");
+                        ins.Parameters.AddWithValue("@desc", newArea.Description ?? "");
+                        ins.Parameters.AddWithValue("@wid", _world.WorldID);
+                        ins.Parameters.AddWithValue("@theme", newArea.Theme ?? "Generic");
+                        ins.Parameters.AddWithValue("@min", newArea.LevelRangeMin);
+                        ins.Parameters.AddWithValue("@max", newArea.LevelRangeMax);
+                        ins.Parameters.AddWithValue("@pvp", newArea.IsPvPAllowed ? 1 : 0);
+                        ins.Parameters.AddWithValue("@owner", newArea.Owner ?? "System");
+
+                        long newAreaIdLong = (long)ins.ExecuteScalar();
+                        int newAreaId = (int)newAreaIdLong;
+                        newArea.AreaID = newAreaId;
+
+                        // Create a starting room for the area using the writer connection/tx (atomic)
+                        var newRoom = new Room($"{input} - Undefined Room", "Starting room for the area")
+                        {
+                            AreaID = newArea.AreaID
+                        };
+
+                        int roomDbId = _world.CreateRoomInDB(newRoom, wConn, wTx);
+
+                        // Persist two RoomExit rows linking srcRoom <-> newRoom so reverse exit exists in DB.
+                        // Insert src -> new
+                        using (var e1 = wConn.CreateCommand())
+                        {
+                            e1.Transaction = wTx;
+                            e1.CommandText = @"
+                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId)
+                        VALUES (@rid, @dir, @toRid, 0, '', 0);";
+                            e1.Parameters.AddWithValue("@rid", srcRoomId);
+                            e1.Parameters.AddWithValue("@dir", dirNorm ?? "");
+                            e1.Parameters.AddWithValue("@toRid", roomDbId);
+                            e1.ExecuteNonQuery();
+                        }
+
+                        // Insert new -> src (reverse)
+                        using (var e2 = wConn.CreateCommand())
+                        {
+                            e2.Transaction = wTx;
+                            e2.CommandText = @"
+                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId)
+                        VALUES (@rid, @dir, @toRid, 0, '', 0);";
+                            e2.Parameters.AddWithValue("@rid", roomDbId);
+                            e2.Parameters.AddWithValue("@dir", oppDir ?? "");
+                            e2.Parameters.AddWithValue("@toRid", srcRoomId);
+                            e2.ExecuteNonQuery();
+                        }
+
+                        return (newAreaId, roomDbId);
+                    }, timeout: TimeSpan.FromSeconds(10));
+
+                    // Update in-memory world with new area and room
+                    newArea.AreaID = result.areaId;
+
+                    // Try to find the room instance that CreateRoomInDB likely added (writer may have added to _world.Rooms).
+                    Room createdRoomInstance = _world.Rooms.FirstOrDefault(r => r.RoomID == result.roomId);
+                    if (createdRoomInstance == null)
+                    {
+                        // If not present, create a local instance and add to world's Rooms.
+                        createdRoomInstance = new Room($"{input} - Undefined Room", "Starting room for the area") { AreaID = newArea.AreaID, RoomID = result.roomId };
+                        _world.Rooms.Add(createdRoomInstance);
+                    }
+                    else
+                    {
+                        // Ensure AreaID is set correctly
+                        createdRoomInstance.AreaID = newArea.AreaID;
+                    }
+
+                    newArea.Rooms.Add(createdRoomInstance);
+                    _world.Areas.Add(newArea);
+
+                    var currentArea = _world.Areas.FirstOrDefault(a => a.Rooms.Contains(player.CurrentRoom));
+                    //CODE REMOVED - 2025-12-21 12:00:00 // 'currentArea.Rooms.Add(createdRoomInstance);' // Rationale: Do not add the new-area room into the previous area's Rooms collection — this caused the client header to resolve the wrong area via Rooms.Contains(...) leading to a flicker.
+                    // ensure we didn't accidentally duplicate the room into the wrong area's Rooms list
+
+                    // Link exits in-memory using the authoritative room instance from world.Rooms
+                    // ensure we don't duplicate exits
+                    if (!player.CurrentRoom.Exits.Any(x => x.ToRoomID == createdRoomInstance.RoomID && string.Equals(NormalizeDirection(x.Direction), NormalizeDirection(dir), StringComparison.OrdinalIgnoreCase)))
+                        player.CurrentRoom.Exits.Add(new Room.RoomExit(dir, createdRoomInstance.RoomID));
+
+                    if (!createdRoomInstance.Exits.Any(x => x.ToRoomID == player.CurrentRoom.RoomID && string.Equals(NormalizeDirection(x.Direction), NormalizeDirection(OppositeDirection(dir)), StringComparison.OrdinalIgnoreCase)))
+                        createdRoomInstance.Exits.Add(new Room.RoomExit(OppositeDirection(dir), player.CurrentRoom.RoomID));
+
+                    player.CurrentRoom.IsDirty = true;
+                    createdRoomInstance.IsDirty = true;
+                    _world.SaveDirtyRooms(_db);
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Area created.");
                 }
                 catch (Exception ex)
                 {
@@ -908,31 +1617,6 @@ namespace MudServer
                     Console.WriteLine($"[CREATEAREA][ERROR] Failed to insert Area '{input}': {ex.Message}");
                     return MessageHandler.System($"Error creating area {input}: {ex.Message}");
                 }
-
-                var newRoom = new Room($"{input} - Undefined Room", "Starting room for the area")
-                {
-                    AreaID = newArea.AreaID
-                };
-
-                int dbID = _world.CreateRoomInDB(newRoom, _db);
-                if (dbID == 0)
-                {
-                    player.PendingAction = null!;
-                    return MessageHandler.System("Failed to create room in database.");
-                }
-
-                var currentArea = _world.Areas.FirstOrDefault(a => a.Rooms.Contains(player.CurrentRoom));
-                if (currentArea != null)
-                    currentArea.Rooms.Add(newRoom);
-                player.CurrentRoom.Exits.Add(new Room.RoomExit(dir, newRoom.RoomID));
-                newRoom.Exits.Add(new Room.RoomExit(OppositeDirection(dir), player.CurrentRoom.RoomID));
-
-                player.CurrentRoom.IsDirty = true;
-                newRoom.IsDirty = true;
-                _world.SaveDirtyRooms(_db);
-
-                player.PendingAction = null!;
-                return MessageHandler.System("Area created.");
             }
 
             // CreateRoom pending action
@@ -957,27 +1641,91 @@ namespace MudServer
                     AreaID = currentArea.AreaID
                 };
 
-                int dbID = _world.CreateRoomInDB(newRoom, _db);
-                if (dbID == 0)
+                try
+                {
+                    int srcRoomId = player.CurrentRoom?.RoomID ?? 0;
+                    string dirNorm = dir;
+                    string oppDir = OppositeDirection(dirNorm);
+
+                    // Create the room using writer queue so the DB insert and related writes are serialized.
+                    int createdRoomId = MudServer.DbWriteQueue.Instance.RunWriteAndWait<int>((wConn, wTx) =>
+                    {
+                        int id = _world.CreateRoomInDB(newRoom, wConn, wTx);
+
+                        // Persist exits linking both sides inside writer tx
+                        using (var e1 = wConn.CreateCommand())
+                        {
+                            e1.Transaction = wTx;
+                            e1.CommandText = @"
+                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId)
+                        VALUES (@rid, @dir, @toRid, 0, '', 0);";
+                            e1.Parameters.AddWithValue("@rid", srcRoomId);
+                            e1.Parameters.AddWithValue("@dir", dirNorm ?? "");
+                            e1.Parameters.AddWithValue("@toRid", id);
+                            e1.ExecuteNonQuery();
+                        }
+
+                        using (var e2 = wConn.CreateCommand())
+                        {
+                            e2.Transaction = wTx;
+                            e2.CommandText = @"
+                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId)
+                        VALUES (@rid, @dir, @toRid, 0, '', 0);";
+                            e2.Parameters.AddWithValue("@rid", id);
+                            e2.Parameters.AddWithValue("@dir", oppDir ?? "");
+                            e2.Parameters.AddWithValue("@toRid", srcRoomId);
+                            e2.ExecuteNonQuery();
+                        }
+
+                        return id;
+                    }, timeout: TimeSpan.FromSeconds(10));
+
+                    if (createdRoomId == 0)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to create room in database.");
+                    }
+
+                    // Prefer to locate the authoritative room instance that may have been added by CreateRoomInDB.
+                    Room createdRoomInstance = _world.Rooms.FirstOrDefault(r => r.RoomID == createdRoomId);
+                    if (createdRoomInstance == null)
+                    {
+                        createdRoomInstance = new Room(input, "Newly created room") { AreaID = currentArea.AreaID, RoomID = createdRoomId };
+                        _world.Rooms.Add(createdRoomInstance);
+                    }
+                    else
+                    {
+                        // ensure name/area set
+                        createdRoomInstance.Name = input;
+                        createdRoomInstance.AreaID = currentArea.AreaID;
+                    }
+
+                    currentArea.Rooms.Add(createdRoomInstance);
+
+                    // Link exits in-memory (avoid duplicates)
+                    if (!player.CurrentRoom.Exits.Any(x => x.ToRoomID == createdRoomInstance.RoomID && string.Equals(NormalizeDirection(x.Direction), NormalizeDirection(dir), StringComparison.OrdinalIgnoreCase)))
+                        player.CurrentRoom.Exits.Add(new Room.RoomExit(dir, createdRoomInstance.RoomID));
+
+                    if (!createdRoomInstance.Exits.Any(x => x.ToRoomID == player.CurrentRoom.RoomID && string.Equals(NormalizeDirection(x.Direction), NormalizeDirection(oppDir), StringComparison.OrdinalIgnoreCase)))
+                        createdRoomInstance.Exits.Add(new Room.RoomExit(oppDir, player.CurrentRoom.RoomID));
+
+                    player.CurrentRoom.IsDirty = true;
+                    createdRoomInstance.IsDirty = true;
+                    _world.SaveDirtyRooms(_db);
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Room created.");
+                }
+                catch (Exception ex)
                 {
                     player.PendingAction = null!;
-                    return MessageHandler.System("Failed to create room in database.");
+                    Console.WriteLine($"[CREATEROOM][ERROR] Failed to create room '{input}': {ex.Message}");
+                    return MessageHandler.System("Failed to create room due to a server error.");
                 }
-
-                currentArea.Rooms.Add(newRoom);
-                player.CurrentRoom.Exits.Add(new Room.RoomExit(dir, newRoom.RoomID));
-                newRoom.Exits.Add(new Room.RoomExit(OppositeDirection(dir), player.CurrentRoom.RoomID));
-
-                player.CurrentRoom.IsDirty = true;
-                newRoom.IsDirty = true;
-                _world.SaveDirtyRooms(_db);
-
-                player.PendingAction = null!;
-                return MessageHandler.System("Room created.");
             }
 
             return null;
-        }
+        } // end HandlePendingAction
 
         private static bool IsValidDirection(string dir)
         {

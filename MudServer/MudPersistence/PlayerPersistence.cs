@@ -153,6 +153,36 @@ namespace MudPersistence
         public static void SavePlayer(SqliteConnection conn, Player player)
         {
             if (conn == null || player == null) return;
+
+            // Prefer using the single-writer queue so Player writes are serialized with other writer work.
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    SavePlayerInternal(wConn, player, wTx);
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(5));
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall through to direct save on provided connection.
+            }
+            catch
+            {
+                // best-effort: if enqueue fails, fall back to direct save.
+            }
+
+            // Direct save path (no external transaction)
+            SavePlayerInternal(conn, player, null);
+        }
+
+        // Internal transactional implementation of SavePlayer.
+        // When tx != null, commands will be attached to the provided transaction to allow atomic writer jobs.
+        private static void SavePlayerInternal(SqliteConnection conn, Player player, SqliteTransaction? tx = null)
+        {
+            if (conn == null || player == null) return;
+
             EnsureOpen(conn);
             EnsureColumns(conn);
 
@@ -177,14 +207,14 @@ namespace MudPersistence
             if (Has("Buffs")) colAssignments.Add("Buffs = @Buffs");
             if (Has("Debuffs")) colAssignments.Add("Debuffs = @Debuffs");
             if (Has("Experience")) colAssignments.Add("Experience = @Experience");
-
-            // NEW: persist Flags column when present
             if (Has("Flags")) colAssignments.Add("Flags = @Flags");
 
             var sql = $"UPDATE Player SET {string.Join(", ", colAssignments)} WHERE PlayerID = @pid;";
 
             using var cmd = conn.CreateCommand();
+            if (tx != null) cmd.Transaction = tx;
             cmd.CommandText = sql;
+
             cmd.Parameters.AddWithValue("@pid", player.DbPlayerID);
             cmd.Parameters.AddWithValue("@health", player.Health);
             cmd.Parameters.AddWithValue("@maxHealth", player.MaxHealth);
@@ -211,6 +241,7 @@ namespace MudPersistence
                 try
                 {
                     using var q = conn.CreateCommand();
+                    if (tx != null) q.Transaction = tx;
                     q.CommandText = "SELECT Experience FROM Player WHERE PlayerID = @pid";
                     q.Parameters.AddWithValue("@pid", player.DbPlayerID);
                     var o = q.ExecuteScalar();
@@ -229,7 +260,6 @@ namespace MudPersistence
             try
             {
                 var flagsList = player.Flags ?? new List<string>();
-                // normalize order for deterministic DB storage
                 flagsList.Sort(System.StringComparer.OrdinalIgnoreCase);
                 var flagsJson = JsonSerializer.Serialize(flagsList);
                 cmd.Parameters.AddWithValue("@Flags", flagsJson);
@@ -239,11 +269,15 @@ namespace MudPersistence
                 cmd.Parameters.AddWithValue("@Flags", "[]");
             }
 
-            try { cmd.ExecuteNonQuery(); }
+            try
+            {
+                cmd.ExecuteNonQuery();
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[PlayerPersistence] SavePlayer failed (non-fatal): {ex.Message}");
+                throw;
             }
-        }
+        } // end SavePlayerInternal
     }
 }

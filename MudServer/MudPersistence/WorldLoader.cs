@@ -402,7 +402,7 @@ WHERE AreaID = @aid";
                 );
 
                 // Initialize in-memory cached door state from authoritative Doors table when available.
-                // This ensures the renderer shows the correct open/closed state immediately after world load.
+                // If the DoorId references no row in Doors, clear the DoorId so renderers/clients do not show a ghost door.
                 if (doorId.HasValue)
                 {
                     try
@@ -418,13 +418,18 @@ WHERE AreaID = @aid";
                         }
                         else
                         {
-                            // No row found -> leave cache as null (renderer may treat as closed by default)
+                            // Authoritative Doors row missing -> clear the stale reference.
+                            // Previously we left DoorIsOpen=null which left DoorId populated and caused the client to render a door.
+                            //Console.WriteLine($"[WorldLoader] Warning: RoomExit (RoomID={roomID}, Dir='{direction}') references missing DoorId={doorId.Value}; clearing reference.");
+                            exit.DoorId = null;
                             exit.DoorIsOpen = null;
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // best-effort: leave DoorIsOpen null on any error so we don't fail world load
+                        // best-effort: on error, clear the reference so we don't display a phantom door
+                        Console.WriteLine($"[WorldLoader] Error resolving DoorId {doorId.Value} for Room {roomID}, Dir '{direction}': {ex.Message}. Clearing reference.");
+                        exit.DoorId = null;
                         exit.DoorIsOpen = null;
                     }
                 }
@@ -433,7 +438,7 @@ WHERE AreaID = @aid";
             }
 
             return exits;
-        }
+        } // end LoadRoomExits
 
         private static List<string> LoadRoomKeywords(SqliteConnection conn, int roomID)
         {

@@ -463,6 +463,21 @@ namespace MudServer
                     }
                 }
 
+                // ---------------------------
+                // CALL-FOR-HELP : extracted to helper for readability and correctness
+                // - Only attempt when defender is an NPC and still alive after being hit.
+                // - Search same room + adjacent exits (one-hop) for matching template/name tokens.
+                // - Move responders runtime-only and have them immediately attack the player's side.
+                // ---------------------------
+                try
+                {
+                    TryCallForHelp(state, attacker, defender, defenders, world, conn);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[COMBAT] TryCallForHelp failed: {ex.Message}");
+                }
+
                 usedAttackers.Add(attacker.Entity);
                 performed++;
 
@@ -593,7 +608,7 @@ namespace MudServer
             }
         }
 
-  
+
 
         // Phase 1 immediate attack helper (updated to solo CS award fallback through new method)
         private static Message? PerformImmediateAttack(Player attacker, Npc defender, World world, SqliteConnection conn)
@@ -607,9 +622,10 @@ namespace MudServer
             var (dmg, isCrit) = Combat.CalculateDamage(attacker, defender);
             var msg = $"{attacker.Name} attacks {defender.DisplayName} for {Math.Round(dmg, 1)} damage. ({Math.Round((double)defender.Health, 0)}/{Math.Round((double)defender.HealthMax, 0)})";
 
-            foreach (var p in attacker.CurrentRoom.Players)
-                MessageHandler.SendSystem(p, msg);
-
+            // NOTE:
+            // Do NOT broadcast the attack line here. Historically this method both broadcasted the line
+            // (via MessageHandler.SendSystem) and returned a Message which higher layers also send,
+            // producing duplicate lines in the client log. Return the Message and let the caller send it once.
             try { if (conn != null) NpcPersistence.UpdateNpc(conn, defender); } catch { }
 
             // Apply hit-trigger effects on critical
@@ -662,8 +678,10 @@ namespace MudServer
                 var soloContributors = new List<Player> { attacker };
                 Combat.HandleNpcDeath(attacker, defender, world, conn, soloContributors);
             }
+
+            // Return a system message for the caller to send once (avoids duplicate room lines)
             return MessageHandler.System(msg);
-        }
+        } // end PerformImmediateAttack
 
         private static CombatParticipant BuildParticipant(Player p)
         {
@@ -748,7 +766,188 @@ namespace MudServer
             if (DebugCombat) Console.WriteLine($"[COMBAT] End State={state.Id} Reason={reason}");
         }
 
-        
+        // NEW helper: extracted call-for-help logic
+        private static void TryCallForHelp(
+            CombatState state,
+            CombatParticipant attacker,
+            CombatParticipant defender,
+            CombatTeam defendersTeam,
+            World world,
+            SqliteConnection conn)
+        {
+            if (state == null || defender == null || world == null) return;
+            if (defender.IsPlayer || defender.AsNpc == null) return;
+            var caller = defender.AsNpc;
+            var room = state.Room;
+            if (caller == null || room == null) return;
+
+            try
+            {
+                // extract token from Flags runtime list first, then FlagsJson fallback
+                var flags = caller.Flags ?? new List<string>();
+                string flagsJson = caller.FlagsJson ?? "";
+                string helpToken = null;
+                foreach (var f in flags)
+                {
+                    if (string.IsNullOrWhiteSpace(f)) continue;
+                    if (f.StartsWith("CallHelp:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        helpToken = f.Substring("CallHelp:".Length).Trim();
+                        break;
+                    }
+                }
+                if (helpToken == null && !string.IsNullOrWhiteSpace(flagsJson))
+                {
+                    var idx = flagsJson.IndexOf("CallHelp:", StringComparison.OrdinalIgnoreCase);
+                    if (idx >= 0)
+                    {
+                        var sub = flagsJson.Substring(idx + "CallHelp:".Length);
+                        int end = sub.IndexOfAny(new[] { '\"', ',', ']', '}' });
+                        helpToken = (end > 0 ? sub.Substring(0, end) : sub).Trim().Trim('"').Trim();
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(helpToken)) return;
+
+                var token = helpToken.Trim();
+
+                // candidate rooms: same room + one-hop exits
+                var candidateRoomIds = new HashSet<int> { room.RoomID };
+                try
+                {
+                    foreach (var ex in room.Exits ?? new List<Room.RoomExit>())
+                    {
+                        if (ex == null) continue;
+                        candidateRoomIds.Add(ex.ToRoomID);
+                    }
+                }
+                catch { }
+
+                var responders = new List<Npc>();
+                foreach (var rid in candidateRoomIds)
+                {
+                    var r = world.Rooms.FirstOrDefault(rr => rr.RoomID == rid);
+                    if (r == null) continue;
+                    foreach (var npc in r.Npcs.ToList())
+                    {
+                        if (npc == null) continue;
+                        if (npc == caller) continue;
+                        if (npc.Health <= 0) continue;
+
+                        bool match = false;
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(npc.TemplateID) && string.Equals(npc.TemplateID, token, StringComparison.OrdinalIgnoreCase))
+                                match = true;
+                            else if (npc.Template != null && !string.IsNullOrWhiteSpace(npc.Template.Name) && string.Equals(npc.Template.Name, token, StringComparison.OrdinalIgnoreCase))
+                                match = true;
+                            else if (!string.IsNullOrWhiteSpace(npc.Name) && npc.Name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                                match = true;
+                        }
+                        catch { }
+
+                        if (match)
+                        {
+                            // skip those already in combat room
+                            if (npc.CurrentRoom != null && npc.CurrentRoom.RoomID == room.RoomID) continue;
+                            responders.Add(npc);
+                        }
+                    }
+                }
+
+                if (responders.Count == 0) return;
+
+                try
+                {
+                    var yellText = $"{caller.DisplayName} yells: \"All {token}s come help me kill {(attacker.IsPlayer ? attacker.AsPlayer?.Name : state.Room.Players.FirstOrDefault(p => p != null)?.Name)}!\"";
+                    foreach (var p in room.Players) MessageHandler.SendSystem(p, yellText);
+                }
+                catch { }
+
+                // Determine target player for helpers (prefer the immediate attacker if it's a player)
+                Player? targetPlayer = attacker.IsPlayer ? attacker.AsPlayer : state.Room.Players.FirstOrDefault(p => p != null && p.Health > 0);
+
+                foreach (var responder in responders)
+                {
+                    try
+                    {
+                        var fromRoom = responder.CurrentRoom;
+                        if (fromRoom != null)
+                        {
+                            try { fromRoom.Npcs.Remove(responder); } catch { }
+                        }
+
+                        // runtime move
+                        responder.CurrentRoom = room;
+                        responder.CurrentRoomID = room.RoomID;
+                        room.Npcs.Add(responder);
+
+                        // Add to combat state defender team so they take part in following ticks
+                        try
+                        {
+                            if (!state.ContainsEntity(responder))
+                            {
+                                var p = BuildParticipant(responder);
+                                defendersTeam.Members.Add(p);
+                                if (DebugCombat) Console.WriteLine($"[COMBAT] Responder {responder.DisplayName} added to Team{defendersTeam.Id} in State={state.Id}");
+                            }
+                        }
+                        catch { /* best-effort */ }
+
+                        // Broadcast arrival to players and push a Room update so clients refresh NPC list
+                        try
+                        {
+                            foreach (var p in room.Players)
+                                MessageHandler.SendSystem(p, $"{responder.DisplayName} rushes in to assist!");
+
+                            // Send authoritative room payload so clients show the new NPC immediately
+                            foreach (var p in room.Players)
+                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                        }
+                        catch { }
+
+                        // Immediate single attack targeting the player (if any)
+                        if (targetPlayer != null)
+                        {
+                            try
+                            {
+                                Combat.InitializeSizeDefaults(responder);
+                                Combat.UpdateEffectiveStats(responder);
+
+                                var (rdmg, rcrit) = Combat.CalculateDamage(responder, targetPlayer);
+
+                                // use Messaging.Attack (attackerPlayer=null)
+                                Combat.Messaging.Attack(room, null, responder.DisplayName, targetPlayer.Name, rdmg, targetPlayer.Health, targetPlayer.MaxHealth, targetPlayer);
+
+                                if (rcrit)
+                                {
+                                    MessageHandler.SendSystem(targetPlayer, $"{responder.DisplayName} lands a critical strike on you!");
+                                }
+
+                                // Ensure target player's authoritative update is sent
+                                try { if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, targetPlayer); } catch { }
+                                try { MessageHandler.EnqueuePlayerUpdate(targetPlayer); } catch { }
+                            }
+                            catch (Exception exAttack)
+                            {
+                                Console.WriteLine($"[COMBAT] Responder attack failed: {exAttack.Message}");
+                            }
+                        }
+                    }
+                    catch (Exception exMove)
+                    {
+                        Console.WriteLine($"[COMBAT] Failed to move responder NPC into room: {exMove.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[COMBAT] TryCallForHelp error: {ex.Message}");
+            }
+        }
+
+
+
         private static void BroadcastSystem(Room room, string text)
         {
             foreach (var p in room.Players)

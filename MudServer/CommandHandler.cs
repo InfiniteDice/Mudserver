@@ -75,14 +75,24 @@ namespace MudServer
                 }
             }
 
-            // EAT command (new)
+            // EAT command - supports "eat <item>" and "eat <item> from <container>"
             if (command.StartsWith("eat", StringComparison.OrdinalIgnoreCase))
             {
                 var partsEat = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
                 if (partsEat.Length < 2)
-                    return MessageHandler.System("Usage: eat <food item>");
+                    return MessageHandler.System("Usage: eat <food item> or eat <item> from <container>");
                 string foodName = partsEat[1].Trim();
-                return EatItem(player, foodName);
+                return EatItem(player, foodName, false);
+            }
+
+            // DRINK command - supports "drink <liquid>" and "drink <liquid> from <container>"
+            if (command.StartsWith("drink", StringComparison.OrdinalIgnoreCase))
+            {
+                var partsDrink = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (partsDrink.Length < 2)
+                    return MessageHandler.System("Usage: drink <liquid> or drink <liquid> from <container>");
+                string drinkName = partsDrink[1].Trim();
+                return EatItem(player, drinkName, true);
             }
 
             // Inspect container (new): inspect <containername>
@@ -111,7 +121,7 @@ namespace MudServer
                     {
                         using var cmd = _dbConnection.CreateCommand();
                         cmd.CommandText = @"SELECT SUM(COALESCE(Weight,0.0) * COALESCE(Quantity,1)) FROM Item
-                                    WHERE OwnerType = 'Item' AND OwnerID = @cid;";
+                            WHERE OwnerType = 'Item' AND OwnerID = @cid;";
                         cmd.Parameters.AddWithValue("@cid", container.ItemID);
                         var obj = cmd.ExecuteScalar();
                         if (!(obj == null || obj is DBNull))
@@ -152,6 +162,23 @@ namespace MudServer
                 }
             }
 
+            // --- admin: debugrooms <areaid?> ---
+            if (command.StartsWith("debugrooms", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                var arg = parts.Length > 1 ? parts[1].Trim() : "";
+                try
+                {
+                    return _adminService.DebugRooms(player, arg);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][DEBUGROOMS] {ex}");
+                    return MessageHandler.System("Failed to run debugrooms due to a server error.");
+                }
+            }
+
             // --- COOK command: cook <container> (delegates logic to Cooking service) ---
             if (command.StartsWith("cook ", StringComparison.OrdinalIgnoreCase))
             {
@@ -168,6 +195,36 @@ namespace MudServer
                 {
                     Console.WriteLine($"[CMD][COOK] StartCooking failed: {ex}");
                     return MessageHandler.System("Failed to start cooking due to a server error.");
+                }
+            }
+
+            // NEW ADDITION: support "fill <container> with water" as a shortcut that sources water from room flags.
+            // This is additive and does not replace existing 'fill ... from ... to ...' behavior.
+            if (command.StartsWith("fill ", StringComparison.OrdinalIgnoreCase))
+            {
+                var payloadShort = command.Substring(5).Trim(); // after "fill "
+                int idxWith = payloadShort.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                if (idxWith > 0)
+                {
+                    var containerName = payloadShort.Substring(0, idxWith).Trim();
+                    var src = payloadShort.Substring(idxWith + " with ".Length).Trim();
+
+                    if (!string.IsNullOrWhiteSpace(containerName) && !string.IsNullOrWhiteSpace(src))
+                    {
+                        // only handle the explicit "water" shortcut here; leave all other "fill" forms untouched
+                        if (string.Equals(src, "water", StringComparison.OrdinalIgnoreCase) || string.Equals(src, "water", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                return InventoryManager.FillContainerFromRoomWithWater(_world, _dbConnection, player, containerName);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[CMD][FILL-WATER] Failed: {ex}");
+                                return MessageHandler.System("Failed to fill container due to a server error.");
+                            }
+                        }
+                    }
                 }
             }
 
@@ -248,6 +305,13 @@ namespace MudServer
                 var rest = command.Substring(8).Trim();
                 if (string.IsNullOrWhiteSpace(rest))
                     return MessageHandler.System("Usage: additem <template> [quantity]");
+
+                // If admin used the "to" form (e.g. "additem water to cup"), pass the whole rest to AdminService
+                if (rest.IndexOf(" to ", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    // AdminService will parse "item to target" form.
+                    return _adminService.AddItem(player, rest, 1);
+                }
 
                 var tokens = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 string template = tokens[0];
@@ -370,7 +434,7 @@ namespace MudServer
                                 {
                                     using var cmd = _dbConnection.CreateCommand();
                                     cmd.CommandText = @"SELECT SUM(COALESCE(Weight,0.0) * COALESCE(Quantity,1)) FROM Item
-                        WHERE OwnerType = 'Item' AND OwnerID = @cid;";
+                WHERE OwnerType = 'Item' AND OwnerID = @cid;";
                                     cmd.Parameters.AddWithValue("@cid", i.ItemID);
                                     var obj = cmd.ExecuteScalar();
                                     if (!(obj == null || obj is DBNull))
@@ -421,19 +485,19 @@ namespace MudServer
                         var debuffs = player.Debuffs ?? new List<string>();
 
                         var lines = new List<string>
-        {
-            $"Stats for {player.Name}:",
-            $"Level: {player.Level}",
-            $"Health: {player.Health}/{player.MaxHealth}",
-            $"Size (SizeEnum): {player.SizeEnum}",
-            $"Effective Mass: {player.EffMass:F2}",
-            $"Effective Combat Skill: {player.EffCombatSkill:F2}",
-            $"Effective Armor Class: {player.EffArmorClass:F2}",
-            $"Effective Damage Dice: {player.EffDmgDice:F2}",
-            $"Flags: {(flags.Count == 0 ? "(none)" : string.Join(", ", flags))}",
-            $"Buffs: {(buffs.Count == 0 ? "(none)" : string.Join(", ", buffs))}",
-            $"Debuffs: {(debuffs.Count == 0 ? "(none)" : string.Join(", ", debuffs))}"
-        };
+    {
+        $"Stats for {player.Name}:",
+        $"Level: {player.Level}",
+        $"Health: {player.Health}/{player.MaxHealth}",
+        $"Size (SizeEnum): {player.SizeEnum}",
+        $"Effective Mass: {player.EffMass:F2}",
+        $"Effective Combat Skill: {player.EffCombatSkill:F2}",
+        $"Effective Armor Class: {player.EffArmorClass:F2}",
+        $"Effective Damage Dice: {player.EffDmgDice:F2}",
+        $"Flags: {(flags.Count == 0 ? "(none)" : string.Join(", ", flags))}",
+        $"Buffs: {(buffs.Count == 0 ? "(none)" : string.Join(", ", buffs))}",
+        $"Debuffs: {(debuffs.Count == 0 ? "(none)" : string.Join(", ", debuffs))}"
+    };
 
                         return MessageHandler.System(string.Join("\n", lines));
                     }
@@ -505,6 +569,18 @@ namespace MudServer
                 case "debugitems":
                     {
                         return _adminService.DebugItems(player);
+                    }
+
+                case string s when s.StartsWith("kill", StringComparison.OrdinalIgnoreCase):
+                    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                    try
+                    {
+                        return _adminService.HandleKill(player, command);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CMD][KILL] {ex}");
+                        return MessageHandler.System("Failed to run kill due to a server error.");
                     }
 
                 default:
@@ -1012,126 +1088,360 @@ namespace MudServer
         } // end GetItem
 
         // New eat logic
-        private Message? EatItem(Player player, string requested)
+        private Message? EatItem(Player player, string requested, bool isDrink = false)
         {
+            // requested: "item" or "item from container"
             if (player == null) return MessageHandler.System("Invalid player.");
-            if (player.Inventory == null || player.Inventory.Count == 0)
-                return MessageHandler.System("You carry nothing edible.");
+            if (string.IsNullOrWhiteSpace(requested)) return MessageHandler.System("Usage: eat <food> OR drink <liquid> OR <item> from <container>");
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
 
-            // Try ItemParser first for deterministic resolution within player's inventory
-            var parse = ItemParser.ResolveForInventoryCommand(player, requested);
-            Item? item = null;
-
-            if (parse.Winner != null && string.Equals(parse.Winner.ItemCategory, "Food", StringComparison.OrdinalIgnoreCase))
+            // Helper tokenizer (same as used elsewhere)
+            IEnumerable<string> Tokenize(string? s)
             {
-                // Find the matching instance in the player's inventory (match by ItemID or template/name)
-                item = player.Inventory.FirstOrDefault(i =>
-                    i != null && (i.ItemID == parse.Winner.ItemID ||
-                                  (!string.IsNullOrEmpty(i.TemplateID) && !string.IsNullOrEmpty(parse.Winner.TemplateID) && i.TemplateID == parse.Winner.TemplateID) ||
-                                  (!string.IsNullOrEmpty(i.Name) && !string.IsNullOrEmpty(parse.Winner.Name) && string.Equals(i.Name, parse.Winner.Name, StringComparison.OrdinalIgnoreCase)))
-                );
+                if (string.IsNullOrWhiteSpace(s)) yield break;
+                int i = 0, n = s.Length;
+                while (i < n)
+                {
+                    while (i < n && !char.IsLetterOrDigit(s[i])) i++;
+                    int start = i;
+                    while (i < n && char.IsLetterOrDigit(s[i])) i++;
+                    if (i > start) yield return s.Substring(start, i - start).ToLowerInvariant();
+                }
             }
 
-            // Fallback: existing category-based search (keeps UX if parser didn't pick a winner)
-            if (item == null)
+            // Parse container hint: "X from Y"
+            string itemExpr = requested;
+            string? containerName = null;
+            int idxFrom = requested.IndexOf(" from ", StringComparison.OrdinalIgnoreCase);
+            if (idxFrom >= 0)
             {
-                var candidates = player.Inventory
-                    .Where(i => i.ItemCategory != null && i.ItemCategory.Equals("Food", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                if (candidates.Count == 0)
-                    return MessageHandler.System("You have no food items.");
-
-                // Try exact/template match first
-                item = candidates.FirstOrDefault(i =>
-                    (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)) ||
-                    (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase)));
-
-                // Fallback starts-with
-                if (item == null)
-                    item = candidates.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase));
-
-                if (item == null)
-                    return MessageHandler.System($"No food item matches '{requested}'.");
+                itemExpr = requested.Substring(0, idxFrom).Trim();
+                containerName = requested.Substring(idxFrom + " from ".Length).Trim();
             }
 
-            // Determine if item carries Heal flag
-            bool canHeal = (item.Flags != null && item.Flags.Any(f => f.Equals("Heal", StringComparison.OrdinalIgnoreCase)));
+            Item? toConsume = null;
 
-            int proposedHeal = 0;
-            int appliedHeal = 0;
+            // Keep references so we can report accurate "remaining" when consuming from a container
+            Item? sourceContainer = null;
+            Item? chosenFromContainer = null;
 
-            if (canHeal)
-            {
-                // Delegate numeric computation to Effects (pure logic)
-                proposedHeal = Effects.ComputeHealAmount(item, Effects.HealSource.Food);
-                appliedHeal = Effects.ComputeAppliedHeal(player, proposedHeal);
-
-                // Apply the computed (clamped) heal to the player
-                if (appliedHeal > 0)
-                    player.Health = Math.Min(player.MaxHealth, player.Health + appliedHeal);
-            }
-
-            // Consume one unit from the stack when applicable; preserve stack when Quantity > 1.
             try
             {
-                if (item.Quantity > 1)
+                // If container specified, attempt to take one unit from it into player's inventory then consume
+                if (!string.IsNullOrWhiteSpace(containerName))
                 {
-                    // Decrement quantity in-memory
-                    item.Quantity = Math.Max(0, item.Quantity - 1);
+                    var container = InventoryManager.FindContainer(player, containerName);
+                    if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
 
-                    // Persist new quantity
-                    try
+                    sourceContainer = container;
+
+                    // Ensure container accessible and unlocked
+                    var lockMsg = KeyLocks.EnsureAccessible(_dbConnection, player, container);
+                    if (lockMsg != null) return MessageHandler.System(lockMsg);
+
+                    // Load items inside container
+                    var contents = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", container.ItemID) ?? new List<Item>();
+                    if (contents.Count == 0) return MessageHandler.System($"{container.Name} is empty.");
+
+                    // find matches using tokenization and heuristics (prefer template match)
+                    List<Item> matches = new List<Item>();
+
+                    // exact template or name
+                    matches = contents.Where(it =>
+                        (!string.IsNullOrWhiteSpace(it.TemplateID) && string.Equals(it.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase)) ||
+                        (!string.IsNullOrWhiteSpace(it.Name) && string.Equals(it.Name, itemExpr, StringComparison.OrdinalIgnoreCase)))
+                        .ToList();
+
+                    // token-equals
+                    if (matches.Count == 0)
                     {
-                        MudPersistence.ItemPersistence.SaveItem(_dbConnection, item);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[EAT] Failed to save item quantity for ItemID={item.ItemID}: {ex.Message}");
+                        var reqToks = Tokenize(itemExpr).ToList();
+                        if (reqToks.Count > 0)
+                        {
+                            matches = contents.Where(it =>
+                            {
+                                var nameTokens = Tokenize(it?.Name).ToList();
+                                if (reqToks.Any(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
+                                if (reqToks.All(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
+                                return false;
+                            }).ToList();
+                        }
                     }
 
-                    // If quantity dropped to zero for any reason, remove & delete
-                    if (item.Quantity <= 0)
+                    // starts-with fallback
+                    if (matches.Count == 0)
                     {
-                        if (player.Inventory.Contains(item))
-                            player.Inventory.Remove(item);
-                        try { ItemPersistence.DeleteItem(_dbConnection, item.ItemID); } catch (Exception ex) { Console.WriteLine($"[EAT] Failed to delete item {item.ItemID}: {ex.Message}"); }
+                        matches = contents.Where(it => !string.IsNullOrWhiteSpace(it.Name) && it.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)).ToList();
                     }
+
+                    if (matches.Count == 0)
+                    {
+                        // token start fallback
+                        var reqToks2 = Tokenize(itemExpr).ToList();
+                        if (reqToks2.Count > 0)
+                        {
+                            matches = contents.Where(it =>
+                            {
+                                var nameTokens = Tokenize(it?.Name).ToList();
+                                return nameTokens.Any(nt => reqToks2.Any(rt => nt.StartsWith(rt, StringComparison.OrdinalIgnoreCase)));
+                            }).ToList();
+                        }
+                    }
+
+                    if (matches.Count == 0)
+                        return MessageHandler.System($"No '{itemExpr}' found inside '{container.Name}'.");
+
+                    // Prefer template id matches first
+                    var chosen = matches.OrderByDescending(m => string.Equals(m.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase) ? 1 : 0).First();
+                    chosenFromContainer = chosen;
+
+                    // If chosen is liquid and user typed 'eat' but not 'drink', we'll allow and show a "drink" text.
+                    bool chosenIsLiquid = (chosen.Flags != null && chosen.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                          || (!string.IsNullOrEmpty(chosen.FlagsJson) && chosen.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    // Transfer one unit from container into player's inventory
+                    var takeMsg = InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, chosen, 1);
+                    if (takeMsg == null) return MessageHandler.System("Failed to take item from container.");
+
+                    var txt = takeMsg.Text ?? "";
+                    if (txt.IndexOf("not", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        (txt.IndexOf("inside", StringComparison.OrdinalIgnoreCase) >= 0 || txt.IndexOf("accessible", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        return takeMsg;
+                    }
+
+                    // Locate the transferred item in player's inventory. Prefer template match + flags.
+                    Item? transferred = null;
+                    if (!string.IsNullOrWhiteSpace(chosen.TemplateID))
+                    {
+                        transferred = player.Inventory?.FirstOrDefault(i =>
+                            !string.IsNullOrWhiteSpace(i.TemplateID) &&
+                            string.Equals(i.TemplateID, chosen.TemplateID, StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(i.FlagsJson ?? "[]", chosen.FlagsJson ?? "[]", StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    // fallback by name
+                    if (transferred == null)
+                    {
+                        transferred = player.Inventory?.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, chosen.Name, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    // Final fallback: any item with same template or name tokens
+                    if (transferred == null && !string.IsNullOrWhiteSpace(chosen.Name))
+                    {
+                        var toks = Tokenize(chosen.Name).ToList();
+                        if (toks.Count > 0 && player.Inventory != null)
+                        {
+                            transferred = player.Inventory.FirstOrDefault(it =>
+                            {
+                                var its = Tokenize(it.Name).ToList();
+                                return toks.All(t => its.Any(x => x.StartsWith(t)));
+                            });
+                        }
+                    }
+
+                    if (transferred == null)
+                    {
+                        // Strange: item transfer succeeded but we couldn't find instance - inform user
+                        return MessageHandler.System($"You took {chosen.Name}, but cannot locate it to consume. Try again.");
+                    }
+
+                    toConsume = transferred;
+                    // If it was liquid and user executed 'drink' we respect wording; if user typed 'eat' and it is liquid, show 'drink' text.
+                    isDrink = isDrink || chosenIsLiquid;
                 }
                 else
                 {
-                    // Single-quantity item: remove and delete
-                    if (player.Inventory.Contains(item))
-                        player.Inventory.Remove(item);
+                    // No container - consume from player's inventory (existing behavior)
+                    var parse = ItemParser.ResolveForInventoryCommand(player, itemExpr);
+                    Item? item = null;
 
+                    if (parse.Winner != null)
+                    {
+                        item = player.Inventory.FirstOrDefault(i =>
+                            i != null && (i.ItemID == parse.Winner.ItemID ||
+                                          (!string.IsNullOrEmpty(i.TemplateID) && !string.IsNullOrEmpty(parse.Winner.TemplateID) && i.TemplateID == parse.Winner.TemplateID) ||
+                                          (!string.IsNullOrEmpty(i.Name) && !string.IsNullOrEmpty(parse.Winner.Name) && string.Equals(i.Name, parse.Winner.Name, StringComparison.OrdinalIgnoreCase)))
+                        );
+                    }
+
+                    if (item == null)
+                    {
+                        var candidates = player.Inventory
+                            .Where(i => i.ItemCategory != null && i.ItemCategory.Equals("Food", StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+
+                        // If requested explicitly matches a carried item irrespective of category, allow it (preserve UX)
+                        if (candidates.Count == 0)
+                        {
+                            // fallback attempts: exact name, starts with
+                            item = player.Inventory.FirstOrDefault(i =>
+                                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)));
+
+                            if (item == null)
+                                item = player.Inventory.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase));
+
+                            if (item == null)
+                                return MessageHandler.System($"No food item matches '{itemExpr}'.");
+                        }
+                        else
+                        {
+                            // try exact/template match first among food items
+                            item = candidates.FirstOrDefault(i =>
+                                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)));
+
+                            if (item == null)
+                                item = candidates.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase));
+
+                            if (item == null)
+                                return MessageHandler.System($"No food item matches '{itemExpr}'.");
+                        }
+                    }
+
+                    toConsume = item;
+
+                    // If the item is liquid and the player used 'eat' but not 'drink', consider this a drink operation
+                    bool instIsLiquid = (toConsume.Flags != null && toConsume.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                        || (!string.IsNullOrEmpty(toConsume.FlagsJson) && toConsume.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (instIsLiquid) isDrink = true;
+                }
+
+                // Now toConsume is a player-carried item instance to consume
+                if (toConsume == null) return MessageHandler.System("Nothing to eat or drink.");
+
+                // Determine if item provides healing (Heal flag)
+                bool canHeal = (toConsume.Flags != null && toConsume.Flags.Any(f => f.Equals("Heal", StringComparison.OrdinalIgnoreCase)))
+                               || (!string.IsNullOrEmpty(toConsume.FlagsJson) && toConsume.FlagsJson.IndexOf("\"Heal\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                int proposedHeal = 0;
+                int appliedHeal = 0;
+                if (canHeal)
+                {
                     try
                     {
-                        ItemPersistence.DeleteItem(_dbConnection, item.ItemID);
+                        proposedHeal = Effects.ComputeHealAmount(toConsume, Effects.HealSource.Food);
+                        appliedHeal = Effects.ComputeAppliedHeal(player, proposedHeal);
+                    }
+                    catch { /* best-effort */ }
+
+                    // DEBUG LOG: show expected heal calculation and item weight/flags
+                    try
+                    {
+                        Console.WriteLine($"[EAT][DEBUG] Player='{player?.Name}' Consuming ItemID={toConsume.ItemID} Template='{toConsume.TemplateID}' Name='{toConsume.Name}' Weight={toConsume.Weight:F3} FlagsJson='{toConsume.FlagsJson ?? "[]"}' ProposedHeal={proposedHeal} AppliedHeal={appliedHeal} PlayerHPBefore={player.Health}/{player.MaxHealth}");
+                    }
+                    catch { /* best-effort */ }
+
+                    if (appliedHeal > 0)
+                    {
+                        player.Health = Math.Min(player.MaxHealth, player.Health + appliedHeal);
+                    }
+                }
+
+                // Consume one unit from the item (respect stacking)
+                try
+                {
+                    if (toConsume.Quantity > 1)
+                    {
+                        toConsume.Quantity = Math.Max(0, toConsume.Quantity - 1);
+                        try { ItemPersistence.SaveItem(_dbConnection, toConsume); } catch (Exception ex) { Console.WriteLine($"[EAT] Failed to save item quantity for ItemID={toConsume.ItemID}: {ex.Message}"); }
+
+                        if (toConsume.Quantity <= 0)
+                        {
+                            if (player.Inventory.Contains(toConsume)) player.Inventory.Remove(toConsume);
+                            try { ItemPersistence.DeleteItem(_dbConnection, toConsume.ItemID); } catch (Exception ex) { Console.WriteLine($"[EAT] Failed to delete item {toConsume.ItemID}: {ex.Message}"); }
+                        }
+                    }
+                    else
+                    {
+                        if (player.Inventory.Contains(toConsume)) player.Inventory.Remove(toConsume);
+                        try { ItemPersistence.DeleteItem(_dbConnection, toConsume.ItemID); } catch (Exception ex) { Console.WriteLine($"[EAT] Failed to delete item {toConsume.ItemID}: {ex.Message}"); }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[EAT] Consumption error for ItemID={toConsume?.ItemID}: {ex.Message}");
+                }
+
+                // Persist player health
+                PersistPlayerHealth(player);
+
+                // If consumption was from a container, compute remaining in the container (DB authoritative)
+                int containerRemaining = -1;
+                if (sourceContainer != null && chosenFromContainer != null)
+                {
+                    try
+                    {
+                        using var cmd = _dbConnection.CreateCommand();
+                        if (!string.IsNullOrWhiteSpace(chosenFromContainer.TemplateID))
+                        {
+                            cmd.CommandText = @"SELECT SUM(COALESCE(Quantity,1)) FROM Item
+                                        WHERE OwnerType = 'Item' AND OwnerID = @cid AND TemplateID = @template AND Flags = @flags;";
+                            cmd.Parameters.AddWithValue("@cid", sourceContainer.ItemID);
+                            cmd.Parameters.AddWithValue("@template", chosenFromContainer.TemplateID);
+                            cmd.Parameters.AddWithValue("@flags", chosenFromContainer.FlagsJson ?? "[]");
+                        }
+                        else
+                        {
+                            cmd.CommandText = @"SELECT SUM(COALESCE(Quantity,1)) FROM Item
+                                        WHERE OwnerType = 'Item' AND OwnerID = @cid AND Name = @name;";
+                            cmd.Parameters.AddWithValue("@cid", sourceContainer.ItemID);
+                            cmd.Parameters.AddWithValue("@name", chosenFromContainer.Name ?? "");
+                        }
+
+                        var obj = cmd.ExecuteScalar();
+                        if (obj == null || obj is DBNull) containerRemaining = 0;
+                        else
+                        {
+                            if (obj is long l) containerRemaining = Convert.ToInt32(l);
+                            else if (obj is int iv) containerRemaining = iv;
+                            else containerRemaining = Convert.ToInt32(obj);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[EAT] Failed to delete item {item.ItemID}: {ex.Message}");
+                        Console.WriteLine($"[EAT][DEBUG] Failed to compute container remaining for ItemTemplate='{chosenFromContainer.TemplateID}' in ContainerID={sourceContainer.ItemID}: {ex.Message}");
+                        containerRemaining = -1;
                     }
                 }
+
+                // Build response text
+                string verb = isDrink ? "drink" : "eat";
+                string prettyName = toConsume.Name ?? toConsume.TemplateID ?? "something";
+                string msg = $"You {verb} {prettyName}.";
+                if (canHeal && appliedHeal > 0) msg += $" You feel better (+{appliedHeal} HP).";
+
+                // Show remaining: prefer container remaining when consumption originated from a container.
+                if (sourceContainer != null)
+                {
+                    if (containerRemaining > 0) msg += $" Remaining in {sourceContainer.Name}: {containerRemaining}.";
+                    // else container empty -> no remaining message
+                }
+                else
+                {
+                    if (toConsume.Quantity > 0) msg += $" Remaining: {toConsume.Quantity}.";
+                }
+
+                // Additional debug: log applied heal and remaining
+                if (canHeal)
+                {
+                    try
+                    {
+                        Console.WriteLine($"[EAT][DEBUG] AppliedHeal={appliedHeal} PlayerHPAfter={player.Health}/{player.MaxHealth} ContainerRemaining={containerRemaining} ToConsumeQty={toConsume.Quantity}");
+                    }
+                    catch { }
+                }
+
+                return MessageHandler.System(msg);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[EAT] Consumption error for ItemID={item?.ItemID}: {ex.Message}");
+                Console.WriteLine($"[EAT] Unexpected error: {ex}");
+                return MessageHandler.System("Failed to eat/drink due to a server error.");
             }
-
-            string msg = $"You eat {item.Name}.";
-            if (canHeal && appliedHeal > 0)
-                msg += $" You feel better (+{appliedHeal} HP).";
-
-            // If there are remaining stacked units, show count to player
-            if (item.Quantity > 0)
-                msg += $" Remaining: {item.Quantity}.";
-
-            // Persist player health immediately (centralized helper)
-            PersistPlayerHealth(player);
-
-            return MessageHandler.System(msg);
-        }
+        } // end EatItem
 
         // Persist player's current Health to the database.
         // Centralized so future health updates (spells, regen, effects) reuse the same logic and logging.
@@ -1139,6 +1449,63 @@ namespace MudServer
         {
             if (player == null) return;
 
+            // Primary save path: delegate to PlayerPersistence which already routes writes
+            // through the single-writer DbWriteQueue when available.
+            try
+            {
+                PlayerPersistence.SavePlayer(_dbConnection, player);
+                // Success — early return to avoid additional fallback attempts.
+                try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
+                try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Log and attempt queued/fallback persists; do not throw.
+                Console.WriteLine($"[PLAYER] SavePlayer via PlayerPersistence failed: {ex.Message}");
+            }
+
+            // Secondary: attempt to enqueue a small writer job to persist the minimal health state.
+            // This serializes with other writer activity and avoids ad-hoc direct writes from
+            // the networking/command layers.
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    using var cmd = wConn.CreateCommand();
+                    cmd.Transaction = wTx;
+                    if (player.DbPlayerID != 0)
+                    {
+                        cmd.CommandText = "UPDATE Player SET Health = @h WHERE PlayerID = @id";
+                        cmd.Parameters.AddWithValue("@h", player.Health);
+                        cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
+                    }
+                    else
+                    {
+                        // Fallback to name-based update when numeric id is not available.
+                        cmd.CommandText = "UPDATE Player SET Health = @h WHERE Name = @name";
+                        cmd.Parameters.AddWithValue("@h", player.Health);
+                        cmd.Parameters.AddWithValue("@name", player.Name ?? "");
+                    }
+                    cmd.ExecuteNonQuery();
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(5));
+
+                // Refresh extended combat fields and notify client (best-effort).
+                try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
+                try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall through to direct legacy fallback below.
+            }
+            catch (Exception exQueue)
+            {
+                Console.WriteLine($"[PLAYER] Queued health persist failed: {exQueue.Message}");
+            }
+
+            // Final conservative fallback: direct write on provided connection (preserve prior behavior).
             try
             {
                 using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
@@ -1149,22 +1516,12 @@ namespace MudServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PLAYER] Failed to persist health for {player?.Name} (ID {player?.DbPlayerID}): {ex.Message}");
+                Console.WriteLine($"[PLAYER][FALLBACK] Direct health persist failed: {ex.Message}");
             }
 
-            // Load latest persisted combat/experience fields (do this so XP saved in DB by other flows is reflected)
-            try
-            {
-                PlayerPersistence.LoadExtendedCombat(_dbConnection, player);
-            }
-            catch { }
-
-            // Notify client with authoritative values (health + xp + carried items)
-            try
-            {
-                MessageHandler.EnqueuePlayerUpdate(player);
-            }
-            catch { }
+            // Refresh extended combat fields and notify client (best-effort).
+            try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
+            try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
         }
 
         // Add this helper method inside the CommandHandler class (near other private helpers)

@@ -44,6 +44,48 @@ namespace MudPersistence
             if (conn == null) throw new ArgumentNullException(nameof(conn));
             if (item == null) throw new ArgumentNullException(nameof(item));
 
+            // If a transaction was not supplied, and the DbWriteQueue is running, route the write
+            // through the single-writer queue to avoid concurrent-writer races. If the queue isn't
+            // started, fall back to direct save on the provided connection.
+            try
+            {
+                // Attempt to enqueue only when caller didn't supply a transaction (caller intends a standalone write).
+                if (tx == null)
+                {
+                    try
+                    {
+                        // Use a conservative timeout for interactive flows; callers that require longer can call SaveItemInternal directly.
+                        MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                        {
+                            // call internal implementation that accepts the external transaction
+                            SaveItemInternal(wConn, item, wTx);
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                        return;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // DbWriteQueue not started — fall through to direct save using provided connection.
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort: on any enqueue-related error, continue with direct save to preserve prior behavior
+            }
+
+            // If we reach here, perform the save directly on provided connection/tx context
+            SaveItemInternal(conn, item, tx);
+        }
+
+        // Internal worker implementation of SaveItem that accepts an external transaction.
+        // This contains the original SaveItem logic but is callable from the writer queue without
+        // starting nested transactions.
+        private static void SaveItemInternal(SqliteConnection conn, Item item, SqliteTransaction? tx = null)
+        {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+            if (item == null) throw new ArgumentNullException(nameof(item));
+
             if (string.Equals(item.OwnerType, "ROOM", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "Room";
             if (string.Equals(item.OwnerType, "PLAYER", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "Player";
             if (string.Equals(item.OwnerType, "NPC", StringComparison.OrdinalIgnoreCase)) item.OwnerType = "NPC";
@@ -79,14 +121,15 @@ namespace MudPersistence
                 {
                     EnsureOpen(conn);
 
+                    // When a transaction is supplied, propagate it into schema checks so PRAGMA/SELECT uses the same transaction.
                     if (!hasBaseAcBonus.HasValue)
-                        hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus");
+                        hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus", tx);
 
                     if (!hasQuantity.HasValue)
-                        hasQuantity = TryHasColumn(conn, "Quantity");
+                        hasQuantity = TryHasColumn(conn, "Quantity", tx);
 
                     // Do a quick existence check for Material column (do not cache to avoid schema drift on long-running servers)
-                    bool hasMaterial = TryHasColumn(conn, "Material");
+                    bool hasMaterial = TryHasColumn(conn, "Material", tx);
 
                     if (setVerboseServerLogs)
                         Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ConnState={conn.State}, ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}', DmgDiceMult={item.DmgDiceMult}, Quantity={item.Quantity}");
@@ -115,11 +158,11 @@ namespace MudPersistence
                             // Try to find an existing stack with the same TemplateID, owner and identical flags JSON.
                             using var findCmd = new SqliteCommand(
                                 @"SELECT ItemID, Quantity FROM Item
-              WHERE TemplateID = @template
-                AND OwnerType = @otype
-                AND OwnerID = @oid
-                AND RoomID = @rid
-                AND Flags = @flags"
+          WHERE TemplateID = @template
+            AND OwnerType = @otype
+            AND OwnerID = @oid
+            AND RoomID = @rid
+            AND Flags = @flags"
                                 + (hasMaterial ? " AND Material = @material" : string.Empty)
                                 + @" ORDER BY ItemID LIMIT 1;", conn);
 
@@ -168,12 +211,12 @@ namespace MudPersistence
                             + (hasQuantity == true ? ", Quantity" : string.Empty)
                             + ", DmgDiceMult, OwnerAreaID"
                             + (hasBaseAcBonus == true ? ", BaseACBonus" : string.Empty) + @")
-          VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags"
+      VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags"
                             + (hasMaterial ? ", @material" : string.Empty)
                             + (hasQuantity == true ? ", @quantity" : string.Empty)
                             + ", @dmgmult, @ownerarea"
                             + (hasBaseAcBonus == true ? ", @baseac" : string.Empty) + @");
-          SELECT last_insert_rowid();", conn);
+      SELECT last_insert_rowid();", conn);
 
                         if (tx != null) cmd.Transaction = tx;
 
@@ -285,15 +328,45 @@ namespace MudPersistence
                 Console.WriteLine($"[ItemPersistence][ERROR] General error saving item: {ex}");
                 throw;
             }
-        }
+        } // end SaveItemInternal
 
         public static void DeleteItem(SqliteConnection conn, int itemId)
+        {
+            if (itemId <= 0) return;
+
+            // If writer queue is available, perform delete through the single-writer to avoid concurrency issues.
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    DeleteItemInternal(wConn, itemId, wTx);
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(5));
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall back to direct delete on provided connection.
+            }
+            catch
+            {
+                // On error enqueueing, fall back to direct delete to preserve previous behavior.
+            }
+
+            // Direct delete path (legacy)
+            DeleteItemInternal(conn, itemId, null);
+        }
+
+        // Internal delete implementation that accepts an external transaction.
+        // Used by the queue worker and by direct callers.
+        private static void DeleteItemInternal(SqliteConnection conn, int itemId, SqliteTransaction? tx = null)
         {
             if (itemId <= 0) return;
             lock (DbLock)
             {
                 EnsureOpen(conn);
                 using var cmd = new SqliteCommand("DELETE FROM Item WHERE ItemID = @id", conn);
+                if (tx != null) cmd.Transaction = tx;
                 cmd.Parameters.AddWithValue("@id", itemId);
                 cmd.ExecuteNonQuery();
             }
@@ -305,7 +378,7 @@ namespace MudPersistence
             return hasBaseAcBonus == true;
         }
 
-        public static List<Item> LoadItemsByOwner(SqliteConnection conn, string ownerType, int ownerId)
+        public static List<Item> LoadItemsByOwner(SqliteConnection conn, string ownerType, int ownerId, SqliteTransaction? tx = null)
         {
             var list = new List<Item>();
             if (conn == null) return list;
@@ -314,22 +387,24 @@ namespace MudPersistence
             {
                 EnsureOpen(conn);
                 var normalized = NormalizeOwnerType(ownerType);
-                bool includeBaseAc = EnsureHasBaseAc(conn);
+                bool includeBaseAc = EnsureHasBaseAc(conn, tx);
                 bool includeQuantity = false;
-                if (!hasQuantity.HasValue) hasQuantity = TryHasColumn(conn, "Quantity");
+                if (!hasQuantity.HasValue) hasQuantity = TryHasColumn(conn, "Quantity", tx);
                 includeQuantity = hasQuantity == true;
 
                 // detect Material column on the fly (do not cache globally here)
-                bool includeMaterial = TryHasColumn(conn, "Material");
+                bool includeMaterial = TryHasColumn(conn, "Material", tx);
 
                 using var cmd = new SqliteCommand(@"
             SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
                    Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
                    LongDesc, Creator, Condition, Flags"
-                           + (includeMaterial ? ", Material" : string.Empty)
-                           + (includeQuantity ? ", Quantity" : string.Empty)
-                           + ", DmgDiceMult"
-                           + (includeBaseAc ? ", BaseACBonus" : ""), conn);
+                               + (includeMaterial ? ", Material" : string.Empty)
+                               + (includeQuantity ? ", Quantity" : string.Empty)
+                               + ", DmgDiceMult"
+                               + (includeBaseAc ? ", BaseACBonus" : ""), conn);
+
+                if (tx != null) cmd.Transaction = tx;
 
                 cmd.CommandText += " FROM Item WHERE OwnerType = @otype AND OwnerID = @oid;";
                 cmd.Parameters.AddWithValue("@otype", normalized);
@@ -429,12 +504,19 @@ namespace MudPersistence
                 }
             }
             return list;
-        }
+        } // end LoadItemsByOwner
 
-        private static bool TryHasColumn(SqliteConnection conn, string column)
+        private static bool EnsureHasBaseAc(SqliteConnection conn, SqliteTransaction? tx = null)
+        {
+            if (!hasBaseAcBonus.HasValue) hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus", tx);
+            return hasBaseAcBonus == true;
+        } // end EnsureHasBaseAc
+
+        private static bool TryHasColumn(SqliteConnection conn, string column, SqliteTransaction? tx = null)
         {
             EnsureOpen(conn);
             using var c = conn.CreateCommand();
+            if (tx != null) c.Transaction = tx;
             c.CommandText = "PRAGMA table_info(Item);";
             using var r = c.ExecuteReader();
             while (r.Read())
@@ -444,6 +526,6 @@ namespace MudPersistence
                     return true;
             }
             return false;
-        }
+        } // end TryHasColumn
     }
 }

@@ -1,0 +1,67 @@
+{
+  "Id": "goblin_boss",
+  "Name": "Goblin Boss",
+  "Alignment": "Neutral",
+  "Description": "A slightly big goblin who seems very full of himself stands here.",
+  "IdleActions": [
+    "eyes you up and down",
+    "grumbles quietly",
+    "puts his hands on his hips",
+    "looks around for goblins to back him up"
+  ],
+  "WanderChance": 0.02,
+  "WanderAreas": [],
+  "AiBehaviors": [ "Patrol", "Guard" ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 50,
+  "Health": 50,
+  "Flags": ["CallHelp:Goblin"],
+  "Level": 3,
+  "Mass": 30.0,
+  "EffMass": 30.0,
+  "SizeEnum": 3,
+  "CombatSkill": 58.0,
+  "EffCombatSkill": 58.0,
+  "BaseDmgDice": 1.75,
+  "EffDmgDice": 1.75,
+  "BaseArmorClass": 2.0,
+  "EffArmorClass": 2.0,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.60,
+  "DropCountMin": 1,
+  "DropCountMax": 2,
+  "DropPool": [
+    {
+      "TemplateId": "coin_copper",
+      "Weight": 60,
+      "Chance": 0.80,
+      "Min": 3,
+      "Max": 12,
+      "Stackable": false,
+      "Notes": "Copper coins — high weight, high chance"
+    },
+    {
+      "TemplateId": "cup",
+      "Weight": 15,
+      "Chance": 0.60,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "Tin cup uncommon — lower chance even if selected"
+    },
+    {
+      "TemplateId": "goblin_boss_ear",
+      "Weight": 25,
+      "Chance": 0.25,
+      "Min": 1,
+      "Max": 2,
+      "Stackable": true,
+      "Notes": "A special component - ear of the boss!"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "VisualTrait":""
+}

@@ -1,0 +1,15 @@
+{
+  "Id": "bit_tin",
+  "Name": "Tin Bit",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "A bit of tin",
+  "LongDesc": "A bit of tin, this tin bit can be used for crafting, or 10 bits can make one bar.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Tin",
+  "Stackable": "true"
+}

@@ -44,9 +44,9 @@ namespace MudServer.MudCore.Actions
 
             // Allowed metals (editable list) - keep lower/upper flexible via OrdinalIgnoreCase
             var allowedMetals = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-{
-    "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","aluminium","cobalt","titanium"
-};
+    {
+        "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","aluminium","cobalt","titanium"
+    };
 
             // Accept singular or plural source/dest tokens (bit/bits, ore/ores, bar/bars)
             var m = Regex.Match(args.Trim(), @"^\s*(\w+)\s+(bits?|ores?|bars?)\s+to\s+(bars?|bits?)\s*$", RegexOptions.IgnoreCase);
@@ -237,106 +237,101 @@ namespace MudServer.MudCore.Actions
                         if (bars == 0 && bits == 0)
                             return MessageHandler.System($"Smelting {found.Name} yields nothing usable.");
 
-                        // Delete source item (persist)
+                        // Perform persistence atomically when writer queue available
                         try
                         {
-                            if (found.ItemID > 0) ItemPersistence.DeleteItem(conn, found.ItemID);
+                            MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                            {
+                                // Delete source item inside writer tx if it exists
+                                if (found.ItemID > 0)
+                                {
+                                    using var del = wConn.CreateCommand();
+                                    del.Transaction = wTx;
+                                    del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                    del.Parameters.AddWithValue("@id", found.ItemID);
+                                    del.ExecuteNonQuery();
+                                }
+
+                                // Create bar(s)
+                                if (bars > 0)
+                                {
+                                    var barTemplate = $"bar_{material.ToLowerInvariant()}";
+                                    var barItem = world.ItemFactory.CreateItem(barTemplate, "Player", player.DbPlayerID, room.RoomID, bars);
+                                    barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+                                    ItemPersistence.SaveItem(wConn, barItem, wTx);
+                                    // reflect ItemID/Quantity back to in-memory later
+                                }
+
+                                // Create bit(s)
+                                if (bits > 0)
+                                {
+                                    var bitTemplate = $"bit_{material.ToLowerInvariant()}";
+                                    var bitItem = world.ItemFactory.CreateItem(bitTemplate, "Player", player.DbPlayerID, room.RoomID, bits);
+                                    bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+                                    ItemPersistence.SaveItem(wConn, bitItem, wTx);
+                                }
+
+                                return (object?)null;
+                            }, timeout: TimeSpan.FromSeconds(10));
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // Writer not running — fall back to direct DB ops (legacy behavior)
+                            try
+                            {
+                                if (found.ItemID > 0) ItemPersistence.DeleteItem(conn, found.ItemID);
+
+                                if (bars > 0)
+                                {
+                                    var barTemplate = $"bar_{material.ToLowerInvariant()}";
+                                    var barItem = world.ItemFactory.CreateItem(barTemplate, "Player", player.DbPlayerID, room.RoomID, bars);
+                                    barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+                                    ItemPersistence.SaveItem(conn, barItem);
+                                }
+
+                                if (bits > 0)
+                                {
+                                    var bitTemplate = $"bit_{material.ToLowerInvariant()}";
+                                    var bitItem = world.ItemFactory.CreateItem(bitTemplate, "Player", player.DbPlayerID, room.RoomID, bits);
+                                    bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+                                    ItemPersistence.SaveItem(conn, bitItem);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[CRAFTING] Smelt fallback failed: {ex.Message}");
+                                return MessageHandler.System("Smelting failed due to an internal error.");
+                            }
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"[CRAFTING] Failed to delete source item {found.ItemID}: {ex.Message}");
+                            Console.WriteLine($"[CRAFTING] Smelt writer-path failed: {ex.Message}");
+                            return MessageHandler.System("Smelting failed due to an internal error.");
                         }
 
-                        // Remove from in-memory inventory
-                        try { player.Inventory.Remove(found); } catch { }
-
-                        // Create resulting items
-                        List<string> createdParts = new();
-
-                        var materialLower = material.ToLowerInvariant();
-
-                        if (bars > 0)
+                        // Remove source from in-memory inventory and add results by reloading player's items from DB (best-effort)
+                        try
                         {
-                            var barTemplate = $"bar_{materialLower}";
-                            try
-                            {
-                                var barItem = world.ItemFactory.CreateItem(barTemplate, "Player", player.DbPlayerID, room.RoomID, bars);
-                                barItem.OwnerType = "Player";
-                                barItem.OwnerID = player.DbPlayerID;
-                                barItem.RoomID = room.RoomID;
-                                try { ItemPersistence.SaveItem(conn, barItem); } catch { /* best-effort */ }
-
-                                // Merge into in-memory inventory (respect stackable)
-                                try
-                                {
-                                    var existingById = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == barItem.ItemID && barItem.ItemID > 0);
-                                    if (existingById != null) existingById.Quantity = barItem.Quantity;
-                                    else
-                                    {
-                                        var merged = player.Inventory.FirstOrDefault(i =>
-                                            i != null && !string.IsNullOrEmpty(i.TemplateID) && i.TemplateID == barItem.TemplateID
-                                            && string.Equals(i.FlagsJson ?? "[]", barItem.FlagsJson ?? "[]", StringComparison.Ordinal));
-                                        if (merged != null)
-                                        {
-                                            merged.Quantity = barItem.Quantity;
-                                            if (merged.ItemID == 0 && barItem.ItemID > 0) merged.ItemID = barItem.ItemID;
-                                        }
-                                        else
-                                        {
-                                            player.Inventory.Add(barItem);
-                                        }
-                                    }
-                                }
-                                catch { player.Inventory.Add(world.ItemFactory.CreateItem(barTemplate, "Player", player.DbPlayerID, room.RoomID, bars)); }
-
-                                createdParts.Add($"{bars} {material} bar(s)");
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"[CRAFTING] Failed to create bar item: {ex.Message}");
-                            }
+                            player.Inventory.RemoveAll(i => ReferenceEquals(i, found) || (found.ItemID != 0 && i.ItemID == found.ItemID));
                         }
+                        catch { }
 
-                        if (bits > 0)
+                        // Refresh by loading any new items for player from DB for those templates (best-effort)
+                        try
                         {
-                            var bitTemplate = $"bit_{materialLower}";
-                            try
+                            // Attempt to fetch any created bar/bit rows into memory by loading items by owner (simple approach)
+                            var created = ItemPersistence.LoadItemsByOwner(conn, "Player", player.DbPlayerID);
+                            if (created != null)
                             {
-                                var bitItem = world.ItemFactory.CreateItem(bitTemplate, "Player", player.DbPlayerID, room.RoomID, bits);
-                                bitItem.OwnerType = "Player";
-                                bitItem.OwnerID = player.DbPlayerID;
-                                bitItem.RoomID = room.RoomID;
-                                try { ItemPersistence.SaveItem(conn, bitItem); } catch { /* best-effort */ }
-
-                                try
-                                {
-                                    var existingById = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == bitItem.ItemID && bitItem.ItemID > 0);
-                                    if (existingById != null) existingById.Quantity = bitItem.Quantity;
-                                    else
-                                    {
-                                        var merged = player.Inventory.FirstOrDefault(i =>
-                                            i != null && !string.IsNullOrEmpty(i.TemplateID) && i.TemplateID == bitItem.TemplateID
-                                            && string.Equals(i.FlagsJson ?? "[]", bitItem.FlagsJson ?? "[]", StringComparison.Ordinal));
-                                        if (merged != null)
-                                        {
-                                            merged.Quantity = bitItem.Quantity;
-                                            if (merged.ItemID == 0 && bitItem.ItemID > 0) merged.ItemID = bitItem.ItemID;
-                                        }
-                                        else
-                                        {
-                                            player.Inventory.Add(bitItem);
-                                        }
-                                    }
-                                }
-                                catch { player.Inventory.Add(world.ItemFactory.CreateItem(bitTemplate, "Player", player.DbPlayerID, room.RoomID, bits)); }
-
-                                createdParts.Add($"{bits} {material} bit(s)");
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"[CRAFTING] Failed to create bit item: {ex.Message}");
+                                // Merge: keep existing non-materials and replace/append created ones
+                                player.Inventory = created;
                             }
                         }
+                        catch { /* best-effort */ }
+
+                        var createdParts = new List<string>();
+                        if (bars > 0) createdParts.Add($"{bars} {material} bar(s)");
+                        if (bits > 0) createdParts.Add($"{bits} {material} bit(s)");
 
                         try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
 
@@ -398,57 +393,90 @@ namespace MudServer.MudCore.Actions
                     int bitsToConsume = barsToMake * 10;
                     int remainingToConsume = bitsToConsume;
 
-                    foreach (var it in bitItems.ToList())
-                    {
-                        if (remainingToConsume <= 0) break;
-                        int take = Math.Min(remainingToConsume, Math.Max(1, it.Quantity));
-                        it.Quantity -= take;
-                        remainingToConsume -= take;
-
-                        if (it.ItemID > 0)
-                        {
-                            if (it.Quantity > 0)
-                                ItemPersistence.SaveItem(conn, it);
-                            else
-                                ItemPersistence.DeleteItem(conn, it.ItemID);
-                        }
-
-                        if (it.Quantity <= 0)
-                            player.Inventory.Remove(it);
-                    }
-
-                    var barItem = world.ItemFactory.CreateItem(dstTemplate, "Player", player.DbPlayerID, room.RoomID, barsToMake);
-                    barItem.OwnerType = "Player";
-                    barItem.OwnerID = player.DbPlayerID;
-                    barItem.RoomID = room.RoomID;
-                    try { ItemPersistence.SaveItem(conn, barItem); } catch { }
-
+                    // Do persistence atomically when possible
                     try
                     {
-                        var existingById = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == barItem.ItemID && barItem.ItemID > 0);
-                        if (existingById != null)
+                        MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
                         {
-                            existingById.Quantity = barItem.Quantity;
-                            existingById.Name = string.IsNullOrWhiteSpace(existingById.Name) ? barItem.Name : existingById.Name;
-                            existingById.FlagsJson = barItem.FlagsJson ?? existingById.FlagsJson;
-                        }
-                        else
-                        {
-                            var merged = player.Inventory.FirstOrDefault(i =>
-                                i != null && !string.IsNullOrEmpty(i.TemplateID) && i.TemplateID == barItem.TemplateID
-                                && string.Equals(i.FlagsJson ?? "[]", barItem.FlagsJson ?? "[]", StringComparison.Ordinal));
-                            if (merged != null)
+                            // consume bits
+                            foreach (var it in bitItems.ToList())
                             {
-                                merged.Quantity = barItem.Quantity;
-                                if (merged.ItemID == 0 && barItem.ItemID > 0) merged.ItemID = barItem.ItemID;
+                                if (remainingToConsume <= 0) break;
+                                int take = Math.Min(remainingToConsume, Math.Max(1, it.Quantity));
+                                int newQty = it.Quantity - take;
+                                remainingToConsume -= take;
+
+                                if (it.ItemID > 0)
+                                {
+                                    if (newQty > 0)
+                                    {
+                                        it.Quantity = newQty;
+                                        ItemPersistence.SaveItem(wConn, it, wTx);
+                                    }
+                                    else
+                                    {
+                                        using var del = wConn.CreateCommand();
+                                        del.Transaction = wTx;
+                                        del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                        del.Parameters.AddWithValue("@id", it.ItemID);
+                                        del.ExecuteNonQuery();
+                                    }
+                                }
                             }
-                            else
-                            {
-                                player.Inventory.Add(barItem);
-                            }
-                        }
+
+                            // create bars
+                            var barItem = world.ItemFactory.CreateItem(dstTemplate, "Player", player.DbPlayerID, room.RoomID, barsToMake);
+                            barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+                            ItemPersistence.SaveItem(wConn, barItem, wTx);
+
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(10));
                     }
-                    catch { player.Inventory.Add(barItem); }
+                    catch (InvalidOperationException)
+                    {
+                        // fallback
+                        foreach (var it in bitItems.ToList())
+                        {
+                            if (remainingToConsume <= 0) break;
+                            int take = Math.Min(remainingToConsume, Math.Max(1, it.Quantity));
+                            int newQty = it.Quantity - take;
+                            remainingToConsume -= take;
+
+                            if (it.ItemID > 0)
+                            {
+                                if (newQty > 0)
+                                {
+                                    it.Quantity = newQty;
+                                    ItemPersistence.SaveItem(conn, it);
+                                }
+                                else
+                                {
+                                    ItemPersistence.DeleteItem(conn, it.ItemID);
+                                }
+                            }
+
+                            if (it.Quantity <= 0) player.Inventory.Remove(it);
+                        }
+
+                        var barItem = world.ItemFactory.CreateItem(dstTemplate, "Player", player.DbPlayerID, room.RoomID, barsToMake);
+                        barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+                        ItemPersistence.SaveItem(conn, barItem);
+                    }
+
+                    // Update in-memory inventory
+                    try
+                    {
+                        // remove consumed stacks
+                        foreach (var it in bitItems.ToList())
+                        {
+                            if (it.Quantity <= 0) player.Inventory.Remove(it);
+                        }
+
+                        // ensure bar present in inventory by reloading player items (best-effort)
+                        var created = ItemPersistence.LoadItemsByOwner(conn, "Player", player.DbPlayerID);
+                        if (created != null) player.Inventory = created;
+                    }
+                    catch { }
 
                     try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
 
@@ -463,93 +491,80 @@ namespace MudServer.MudCore.Actions
                     if (oreItems.Count == 0)
                         return MessageHandler.System($"You are not carrying any {metal} ores.");
 
-                    if (dst == "bars")
+                    if (dst == "bars" || dst == "bits")
                     {
                         int oreCount = oreItems.Count;
-                        foreach (var ore in oreItems.ToList())
-                        {
-                            if (ore.ItemID > 0) ItemPersistence.DeleteItem(conn, ore.ItemID);
-                            player.Inventory.Remove(ore);
-                        }
-
-                        var barItem = world.ItemFactory.CreateItem(dstTemplate, "Player", player.DbPlayerID, room.RoomID, oreCount);
-                        barItem.OwnerType = "Player";
-                        barItem.OwnerID = player.DbPlayerID;
-                        barItem.RoomID = room.RoomID;
-                        try { ItemPersistence.SaveItem(conn, barItem); } catch { }
-
-                        try
-                        {
-                            var existingById = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == barItem.ItemID && barItem.ItemID > 0);
-                            if (existingById != null)
-                            {
-                                existingById.Quantity = barItem.Quantity;
-                            }
-                            else
-                            {
-                                var merged = player.Inventory.FirstOrDefault(i =>
-                                    i != null && !string.IsNullOrEmpty(i.TemplateID) && i.TemplateID == barItem.TemplateID
-                                    && string.Equals(i.FlagsJson ?? "[]", barItem.FlagsJson ?? "[]", StringComparison.Ordinal));
-                                if (merged != null)
-                                {
-                                    merged.Quantity = barItem.Quantity;
-                                    if (merged.ItemID == 0 && barItem.ItemID > 0) merged.ItemID = barItem.ItemID;
-                                }
-                                else
-                                {
-                                    player.Inventory.Add(barItem);
-                                }
-                            }
-                        }
-                        catch { player.Inventory.Add(barItem); }
-
-                        try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
-
-                        return MessageHandler.System($"You smelted {oreCount} {metal} ore(s) into {oreCount} {metal} bar(s).");
-                    }
-                    else if (dst == "bits")
-                    {
-                        int oreCount = oreItems.Count;
-                        foreach (var ore in oreItems.ToList())
-                        {
-                            if (ore.ItemID > 0) ItemPersistence.DeleteItem(conn, ore.ItemID);
-                            player.Inventory.Remove(ore);
-                        }
-
                         int bitsQty = oreCount * 10;
-                        var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQty);
-                        bitItem.OwnerType = "Player";
-                        bitItem.OwnerID = player.DbPlayerID;
-                        bitItem.RoomID = room.RoomID;
-                        try { ItemPersistence.SaveItem(conn, bitItem); } catch { }
+                        int barsQty = oreCount;
 
                         try
                         {
-                            var existingById = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == bitItem.ItemID && bitItem.ItemID > 0);
-                            if (existingById != null)
+                            MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
                             {
-                                existingById.Quantity = bitItem.Quantity;
-                            }
-                            else
-                            {
-                                var merged = player.Inventory.FirstOrDefault(i =>
-                                    i != null && !string.IsNullOrEmpty(i.TemplateID) && i.TemplateID == bitItem.TemplateID
-                                    && string.Equals(i.FlagsJson ?? "[]", bitItem.FlagsJson ?? "[]", StringComparison.Ordinal));
-                                if (merged != null)
+                                // delete ore rows
+                                foreach (var ore in oreItems.ToList())
                                 {
-                                    merged.Quantity = bitItem.Quantity;
-                                    if (merged.ItemID == 0 && bitItem.ItemID > 0) merged.ItemID = bitItem.ItemID;
+                                    if (ore.ItemID > 0)
+                                    {
+                                        using var del = wConn.CreateCommand();
+                                        del.Transaction = wTx;
+                                        del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                        del.Parameters.AddWithValue("@id", ore.ItemID);
+                                        del.ExecuteNonQuery();
+                                    }
+                                }
+
+                                // create result
+                                if (dst == "bars")
+                                {
+                                    var barItem = world.ItemFactory.CreateItem($"bar_{metal}", "Player", player.DbPlayerID, room.RoomID, barsQty);
+                                    barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+                                    ItemPersistence.SaveItem(wConn, barItem, wTx);
                                 }
                                 else
                                 {
-                                    player.Inventory.Add(bitItem);
+                                    var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQty);
+                                    bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+                                    ItemPersistence.SaveItem(wConn, bitItem, wTx);
                                 }
+
+                                return (object?)null;
+                            }, timeout: TimeSpan.FromSeconds(10));
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // fallback
+                            foreach (var ore in oreItems.ToList())
+                            {
+                                if (ore.ItemID > 0) ItemPersistence.DeleteItem(conn, ore.ItemID);
+                                player.Inventory.Remove(ore);
+                            }
+
+                            if (dst == "bars")
+                            {
+                                var barItem = world.ItemFactory.CreateItem($"bar_{metal}", "Player", player.DbPlayerID, room.RoomID, barsQty);
+                                barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+                                ItemPersistence.SaveItem(conn, barItem);
+                            }
+                            else
+                            {
+                                var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQty);
+                                bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+                                ItemPersistence.SaveItem(conn, bitItem);
                             }
                         }
-                        catch { player.Inventory.Add(bitItem); }
+
+                        // Refresh in-memory inventory
+                        try
+                        {
+                            var created = ItemPersistence.LoadItemsByOwner(conn, "Player", player.DbPlayerID);
+                            if (created != null) player.Inventory = created;
+                        }
+                        catch { }
 
                         try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
 
+                        if (dst == "bars") return MessageHandler.System($"You smelted {oreCount} {metal} ore(s) into {oreCount} {metal} bar(s).");
                         return MessageHandler.System($"You smelted {oreCount} {metal} ore(s) into {bitsQty} {metal} bits.");
                     }
                 }
@@ -563,49 +578,58 @@ namespace MudServer.MudCore.Actions
 
                     // Sum quantities (bars are stackable)
                     int totalBars = barItems.Sum(i => Math.Max(1, i.Quantity));
-
-                    // Remove bar rows (delete or decrement)
-                    foreach (var b in barItems.ToList())
-                    {
-                        if (b.ItemID > 0) ItemPersistence.DeleteItem(conn, b.ItemID);
-                        player.Inventory.Remove(b);
-                    }
-
-                    int bitsQty = totalBars * 10;
-                    var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQty);
-                    bitItem.OwnerType = "Player";
-                    bitItem.OwnerID = player.DbPlayerID;
-                    bitItem.RoomID = room.RoomID;
-                    try { ItemPersistence.SaveItem(conn, bitItem); } catch { }
+                    int bitsQtyResult = totalBars * 10;
 
                     try
                     {
-                        var existingById = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == bitItem.ItemID && bitItem.ItemID > 0);
-                        if (existingById != null)
+                        MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
                         {
-                            existingById.Quantity = bitItem.Quantity;
-                        }
-                        else
-                        {
-                            var merged = player.Inventory.FirstOrDefault(i =>
-                                i != null && !string.IsNullOrEmpty(i.TemplateID) && i.TemplateID == bitItem.TemplateID
-                                && string.Equals(i.FlagsJson ?? "[]", bitItem.FlagsJson ?? "[]", StringComparison.Ordinal));
-                            if (merged != null)
+                            // remove bar rows
+                            foreach (var b in barItems.ToList())
                             {
-                                merged.Quantity = bitItem.Quantity;
-                                if (merged.ItemID == 0 && bitItem.ItemID > 0) merged.ItemID = bitItem.ItemID;
+                                if (b.ItemID > 0)
+                                {
+                                    using var del = wConn.CreateCommand();
+                                    del.Transaction = wTx;
+                                    del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                    del.Parameters.AddWithValue("@id", b.ItemID);
+                                    del.ExecuteNonQuery();
+                                }
                             }
-                            else
-                            {
-                                player.Inventory.Add(bitItem);
-                            }
-                        }
+
+                            // create bits
+                            var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQtyResult);
+                            bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+                            ItemPersistence.SaveItem(wConn, bitItem, wTx);
+
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(10));
                     }
-                    catch { player.Inventory.Add(bitItem); }
+                    catch (InvalidOperationException)
+                    {
+                        // fallback
+                        foreach (var b in barItems.ToList())
+                        {
+                            if (b.ItemID > 0) ItemPersistence.DeleteItem(conn, b.ItemID);
+                            player.Inventory.Remove(b);
+                        }
+
+                        var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQtyResult);
+                        bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+                        ItemPersistence.SaveItem(conn, bitItem);
+                    }
+
+                    // Refresh in-memory
+                    try
+                    {
+                        var created = ItemPersistence.LoadItemsByOwner(conn, "Player", player.DbPlayerID);
+                        if (created != null) player.Inventory = created;
+                    }
+                    catch { }
 
                     try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
 
-                    return MessageHandler.System($"You broke down {totalBars} {metal} bar(s) into {bitsQty} {metal} bits.");
+                    return MessageHandler.System($"You broke down {totalBars} {metal} bar(s) into {bitsQtyResult} {metal} bits.");
                 }
 
                 return MessageHandler.System("Unsupported smelt operation or invalid parameters.");

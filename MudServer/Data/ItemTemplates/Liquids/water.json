@@ -1,0 +1,14 @@
+{
+  "Id": "water",
+  "Name": "water",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 0,
+  "ShortDesc": "It's water",
+  "LongDesc": "This is a cup of water, use this in recipes.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" ],
+  "Material": "Organic",
+  "Stackable": "false"
+}

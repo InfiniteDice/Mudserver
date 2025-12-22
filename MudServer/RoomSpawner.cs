@@ -68,7 +68,7 @@ namespace MudServer
 
                     if (room.SpawnDelayMinutes > 0 && elapsedMinutes < room.SpawnDelayMinutes)
                     {
-                        if(useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delaying: elapsed={elapsedMinutes:F1} < delay={room.SpawnDelayMinutes}.");
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delaying: elapsed={elapsedMinutes:F1} < delay={room.SpawnDelayMinutes}.");
                         continue;
                     }
 
@@ -129,6 +129,17 @@ namespace MudServer
 
                         // Ensure hydrated defaults (redundant but safe)
                         npc.ApplyTemplateDefaults();
+
+                        // CRITICAL FIX: explicitly ensure new spawn has description from template when missing.
+                        // Some pathways left Description blank; copy it from template to guarantee new spawns have it.
+                        try
+                        {
+                            if (string.IsNullOrWhiteSpace(npc.Description) && npc.Template != null && !string.IsNullOrWhiteSpace(npc.Template.Description))
+                            {
+                                npc.Description = npc.Template.Description;
+                            }
+                        }
+                        catch { /* best-effort */ }
 
                         // Persist core fields including description/humanoid/CS
                         npc.CurrentAreaID = room.AreaID;
@@ -375,6 +386,6 @@ namespace MudServer
                     Console.WriteLine($"[Spawner][ERROR] Processing room {room?.RoomID}: {ex}");
                 }
             }
-        }
+        } // end ProcessSpawns
     }
 }

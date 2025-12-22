@@ -1,0 +1,14 @@
+{
+  "Id": "cup",
+  "Name": "Cup",
+  "ItemCategory": "Container",
+  "Weight": 0.1,
+  "Value": 3,
+  "ShortDesc": "A simple tin cup",
+  "LongDesc": "A small tin cup, this can be used to measure or drink liquids.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity1","Accept:Food", "HoldsLiquid" ],
+  "Material": "Tin",
+  "BaseACBonus": 0.0
+}

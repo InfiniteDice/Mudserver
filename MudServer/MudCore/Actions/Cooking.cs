@@ -157,42 +157,87 @@ namespace MudServer.MudCore.Actions
             if (conn == null) return MessageHandler.System("Server DB unavailable.");
             EnsureLoaded();
 
-            var container = InventoryManager.FindContainer(player, containerName);
+            // Strict parser options for explicit container resolution:
+            // - include descriptor/material tokens so "polished pot" or "iron pot" match correctly
+            // - disallow starts-with to require stronger matches for two-object commands
+            // - prefer room on ties by disabling PreferInventoryOnTie/PreferEquippedOnTie
+            var strictOpts = new ItemParserOptions
+            {
+                IncludeDescriptorTokens = true,
+                IncludeMaterialTokens = true,
+                AllowStartsWith = false,
+                PreferInventoryOnTie = false,
+                PreferEquippedOnTie = false
+            };
+
+            // First, try parser across Any scope (room + inventory + equipped) using strict options.
+            Item? container = null;
+            ItemResolutionResult? pres = null;
+            try
+            {
+                pres = ItemParser.ResolveForAny(player, containerName, strictOpts);
+                if (pres?.Winner != null) container = pres.Winner;
+            }
+            catch { /* best-effort */ }
+
+            // If parser gave us a carried instance, attempt to resolve unambiguously against the room inventory
+            // using the same strict options — prefer a room-held exact match when available.
+            try
+            {
+                if (container != null && player.Inventory != null && player.Inventory.Contains(container))
+                {
+                    var room = player.CurrentRoom;
+                    if (room != null && room.Inventory != null && room.Inventory.Count > 0)
+                    {
+                        var roomPres = ItemParser.ResolveCandidates(room.Inventory, player, containerName, strictOpts);
+                        if (roomPres?.Winner != null)
+                        {
+                            Console.WriteLine($"[COOK][DEBUG] Parser returned carried instance; switching to room winner ItemID={roomPres.Winner.ItemID}");
+                            container = roomPres.Winner;
+                            pres = roomPres;
+                        }
+                    }
+                }
+            }
+            catch { /* best-effort */ }
+
+            // Legacy fallback: attempt to find a container by name in player's inventory / room if parser failed.
+            if (container == null) container = InventoryManager.FindContainer(player, containerName);
             if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
             if (!string.Equals(container.ItemCategory, "Container", StringComparison.OrdinalIgnoreCase))
                 return MessageHandler.System($"{container.Name} is not a container.");
 
+            var roomRef = player.CurrentRoom;
+            if (roomRef == null) return MessageHandler.System("You are not in a valid room.");
+
+            // Enforce: container must be in the room to cook. If the container instance is in player's inventory, fail.
+            if (player.Inventory != null && player.Inventory.Contains(container))
+            {
+                return MessageHandler.System($"You must place {container.Name} in the room before you can cook with it.");
+            }
+
+            // Ensure that the resolved container is actually present in this room (defensive)
+            if (roomRef.Inventory == null || !roomRef.Inventory.Any(i => i != null && i.ItemID == container.ItemID))
+                return MessageHandler.System($"{container.Name} must be placed in this room to start cooking.");
+
+            // Lock check
             var lockMsg = KeyLocks.EnsureAccessible(conn, player, container);
             if (lockMsg != null) return MessageHandler.System(lockMsg);
 
-            var room = player.CurrentRoom;
-            if (room == null) return MessageHandler.System("You are not in a valid room.");
-
-            // Container MUST be placed in the room to cook (can't hold the pot while heating)
-            if (player.Inventory != null && player.Inventory.Contains(container))
-                return MessageHandler.System($"You must place {container.Name} in the room before you can cook with it.");
-
-            if (room.Inventory == null || !room.Inventory.Any(i => i != null && i.ItemID == container.ItemID))
-                return MessageHandler.System($"{container.Name} must be placed in this room to start cooking.");
-
-            // Helper: is the player holding an item that matches template or name?
-            static bool IsPlayerHolding(Player p, string templateOrName)
+            // Diagnostic logging (contents / flags)
+            try
             {
-                if (p?.Inventory == null) return false;
-                var tok = templateOrName ?? "";
-                return p.Inventory.Any(i =>
-                    i != null &&
-                    ((!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, tok, StringComparison.OrdinalIgnoreCase))
-                     || (!string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, tok, StringComparison.OrdinalIgnoreCase)))
-                    &&
-                    (
-                        (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase)))
-                        || (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0)
-                    )
-                );
+                Console.WriteLine($"[COOK][DEBUG] Start cooking request: player={player?.Name} containerName='{containerName}' ResolvedItemID={container.ItemID} TemplateID='{container.TemplateID}' Name='{container.Name}' RoomID={roomRef.RoomID}");
+                var roomFlags = roomRef.Flags ?? new List<string>();
+                Console.WriteLine($"[COOK][DEBUG] Room flags: {(roomFlags.Count == 0 ? "(none)" : string.Join(", ", roomFlags))}");
+                var invContents = ItemPersistence.LoadItemsByOwner(conn, "Item", container.ItemID) ?? new List<Item>();
+                Console.WriteLine($"[COOK][DEBUG] Container contents count (DB): {invContents.Count}");
+                foreach (var c in invContents)
+                    Console.WriteLine($"[COOK][DEBUG]   Content: ItemID={c.ItemID} TemplateID='{c.TemplateID}' Name='{c.Name}' Qty={c.Quantity} FlagsJson='{c.FlagsJson}'");
             }
+            catch { /* best-effort */ }
 
-            // Find candidate recipes that can use this container (by TemplateID or display name)
+            // Find candidate recipes for this container (by TemplateID or Name)
             var candidateRecipes = _recipes.Where(r =>
                 (r.Container == null || r.Container.Count == 0) ||
                 r.Container.Any(cn =>
@@ -204,65 +249,63 @@ namespace MudServer.MudCore.Actions
             if (candidateRecipes.Count == 0)
                 return MessageHandler.System("No recipes can be prepared in that container.");
 
-            // If all candidate recipes require a room flag and none of those flags exist in the room, fail with user-facing message
+            // Ensure room has required flags if all recipes require flags
             bool anyRecipeWithoutRoomFlag = candidateRecipes.Any(r => r.RoomFlags == null || r.RoomFlags.Count == 0);
             if (!anyRecipeWithoutRoomFlag)
             {
-                // For each candidate, check if room has intersection; if none have intersection, show first required sample
                 bool anyMatchesRoom = candidateRecipes.Any(r => r.RoomFlags != null && r.RoomFlags.Count > 0 &&
-                    room.Flags != null && room.Flags.Any(f => r.RoomFlags.Any(rf => string.Equals(rf, f, StringComparison.OrdinalIgnoreCase))));
+                    roomRef.Flags != null && roomRef.Flags.Any(f => r.RoomFlags.Any(rf => string.Equals(rf, f, StringComparison.OrdinalIgnoreCase))));
                 if (!anyMatchesRoom)
                 {
-                    // Pick first recipe's first roomFlag as hint
                     var need = candidateRecipes.First().RoomFlags.FirstOrDefault() ?? "required equipment";
                     return MessageHandler.System($"You need a {need} here to cook!");
                 }
             }
 
-            // Now evaluate each candidate in detail - prioritize clear user feedback:
+            // Evaluate candidate recipes for ingredient/tool/room requirements
             bool ingredientShortageFound = false;
-            var matched = (Recipe?)null;
+            Recipe? matched = null;
             var chosenIngredientItems = new Dictionary<string, List<Item>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var recipe in candidateRecipes)
             {
-                // Room flag check (recipe may accept multiple flags as alternatives)
+                // Room flag check
                 if (recipe.RoomFlags != null && recipe.RoomFlags.Count > 0)
                 {
-                    if (room.Flags == null || !room.Flags.Any(f => recipe.RoomFlags.Any(rf => string.Equals(rf, f, StringComparison.OrdinalIgnoreCase))))
-                    {
-                        // this recipe cannot run here — try next
+                    if (roomRef.Flags == null || !roomRef.Flags.Any(f => recipe.RoomFlags.Any(rf => string.Equals(rf, f, StringComparison.OrdinalIgnoreCase))))
                         continue;
-                    }
                 }
 
-                // Tools required: MUST be held by player at start
+                // Tools required: must be held by player
                 if (recipe.ToolsRequired != null && recipe.ToolsRequired.Count > 0)
                 {
                     bool allHeld = true;
                     string missingTool = "";
                     foreach (var toolReq in recipe.ToolsRequired)
                     {
-                        if (!IsPlayerHolding(player, toolReq))
+                        if (!player.Inventory?.Any(i =>
+                            i != null &&
+                            (
+                                (!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, toolReq, StringComparison.OrdinalIgnoreCase))
+                                || (!string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, toolReq, StringComparison.OrdinalIgnoreCase))
+                            )
+                            && ((i.Flags != null && i.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase)))
+                                || (!string.IsNullOrEmpty(i.FlagsJson) && i.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0))
+                        ) ?? false)
                         {
                             allHeld = false;
                             missingTool = toolReq;
                             break;
                         }
                     }
-
-                    if (!allHeld)
-                    {
-                        return MessageHandler.System($"You need to hold a {missingTool} in order to cook that.");
-                    }
+                    if (!allHeld) return MessageHandler.System($"You need to hold a {missingTool} in order to cook that.");
                 }
 
-                // Load container contents (OwnerType = 'Item')
+                // Load container contents and attempt ingredient mapping
                 var contents = ItemPersistence.LoadItemsByOwner(conn, "Item", container.ItemID) ?? new List<Item>();
-
-                // Attempt ingredient mapping (same algorithm as before)
                 var tempMap = new Dictionary<string, List<Item>>(StringComparer.OrdinalIgnoreCase);
                 bool ingredientsOk = true;
+
                 var remaining = contents.Select(it => new Item
                 {
                     ItemID = it.ItemID,
@@ -341,11 +384,9 @@ namespace MudServer.MudCore.Actions
                 if (!ingredientsOk)
                 {
                     ingredientShortageFound = true;
-                    // try next candidate recipe (if any)
                     continue;
                 }
 
-                // This recipe matches fully -> select it
                 matched = recipe;
                 chosenIngredientItems = tempMap;
                 Console.WriteLine($"[COOK] Recipe '{recipe.Id}' matched for container ItemID={container.ItemID}");
@@ -359,14 +400,13 @@ namespace MudServer.MudCore.Actions
                 return MessageHandler.System("No known recipe matches the contents of that container.");
             }
 
-            // consume ingredients now (transactional) using the single-writer queue when available
+            // Consume ingredients transactionally (writer queue or local tx) - unchanged from previous logic
             try
             {
                 try
                 {
                     MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
                     {
-                        // perform same consumption logic inside writer transaction
                         foreach (var kv in chosenIngredientItems)
                         {
                             foreach (var alloc in kv.Value)
@@ -403,10 +443,9 @@ namespace MudServer.MudCore.Actions
                             }
                         }
 
-                        // Also persist cooking flag on the container in the same transaction
+                        // persist cooking flag on container
                         try
                         {
-                            // compute flags json
                             using var sel = wConn.CreateCommand();
                             sel.Transaction = wTx;
                             sel.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
@@ -438,7 +477,7 @@ namespace MudServer.MudCore.Actions
                 }
                 catch (InvalidOperationException)
                 {
-                    // Queue not started — fall back to local transaction (legacy behavior)
+                    // fallback local tx (unchanged)
                     EnsureOpen(conn);
                     using var tx = conn.BeginTransaction();
                     try
@@ -479,7 +518,7 @@ namespace MudServer.MudCore.Actions
                             }
                         }
 
-                        // update container flags locally
+                        // update cooking flag locally
                         using var sel = conn.CreateCommand();
                         sel.Transaction = tx;
                         sel.CommandText = "SELECT Flags FROM Item WHERE ItemID = @id";
@@ -515,13 +554,12 @@ namespace MudServer.MudCore.Actions
                 return MessageHandler.System("Failed to consume ingredients due to a server error.");
             }
 
-            // Update in-memory container flags and broadcast immediately (best-effort)
+            // Update in-memory flags and broadcast (unchanged)
             try
             {
-                var roomItem = room.Inventory.FirstOrDefault(i => i.ItemID == container.ItemID);
+                var roomItem = roomRef.Inventory.FirstOrDefault(i => i.ItemID == container.ItemID);
                 if (roomItem != null)
                 {
-                    // Reload flags from DB to keep authoritative; best-effort: ignore failures
                     try
                     {
                         using var q = conn.CreateCommand();
@@ -536,7 +574,6 @@ namespace MudServer.MudCore.Actions
                     }
                     catch
                     {
-                        // best-effort: set cooking flag locally if DB read failed
                         var fl = container.Flags ?? new List<string>();
                         fl.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Cooking", StringComparison.OrdinalIgnoreCase));
                         fl.Add($"Cooking:{matched.Id}");
@@ -546,14 +583,14 @@ namespace MudServer.MudCore.Actions
                     }
                 }
 
-                foreach (var p in room.Players)
+                foreach (var p in roomRef.Players)
                 {
-                    p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                    p.PendingMessageQueue.Add(MessageHandler.Room(roomRef, roomRef.Npcs.Select(n => n.DisplayName).ToList(), roomRef.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
                 }
             }
             catch { /* best-effort */ }
 
-            // enqueue job
+            // Enqueue cook job (unchanged)
             var job = new CookJob
             {
                 RecipeId = matched.Id,
@@ -562,19 +599,14 @@ namespace MudServer.MudCore.Actions
                 World = world
             };
 
-            lock (_activeJobs)
-            {
-                _activeJobs.Add(job);
-            }
+            lock (_activeJobs) { _activeJobs.Add(job); }
 
-            // Notify other players (avoid sending two messages to the initiator)
-            foreach (var p in room.Players)
+            foreach (var p in roomRef.Players)
             {
                 if (p == player) continue;
                 MessageHandler.SendSystem(p, $"You begin to cook {matched.Result.Template}. The cooking will finish in {matched.TimeSeconds} seconds.");
             }
 
-            // Return single authoritative message to the player who issued the command
             return MessageHandler.System($"You begin to cook {matched.Result.Template}. It will be ready in {matched.TimeSeconds} seconds.");
         } // end TryStartCooking
 

@@ -111,10 +111,13 @@ namespace MudServer
             if (string.Equals(key.OwnerType, "Item", StringComparison.OrdinalIgnoreCase) && key.OwnerID == container.ItemID)
                 return MessageHandler.System("You cannot lock a container with a key that is inside it.");
 
+            SqliteTransaction? tx = null;
             try
             {
+                if (conn == null) return MessageHandler.System("Server DB unavailable.");
                 if (conn.State != System.Data.ConnectionState.Open) conn.Open();
-                using var tx = conn.BeginTransaction();
+
+                tx = conn.BeginTransaction();
 
                 // update container flags -> add LockedByKey:<keyId>
                 var cflags = container.Flags ?? new List<string>();
@@ -132,7 +135,7 @@ namespace MudServer
 
                 key.Name = newName;
 
-                // Persist both atomically
+                // Persist both atomically using the provided transaction
                 ItemPersistence.SaveItem(conn, container, tx);
                 ItemPersistence.SaveItem(conn, key, tx);
 
@@ -143,11 +146,16 @@ namespace MudServer
             }
             catch (Exception ex)
             {
+                try { tx?.Rollback(); } catch { /* best-effort */ }
                 Console.WriteLine($"[LOCK] Exception locking container {container?.ItemID} with key {key?.ItemID}: {ex}");
-                try { conn?.Close(); } catch { }
                 return MessageHandler.System("Failed to lock the container due to a server error.");
             }
-        }
+            finally
+            {
+                try { tx?.Dispose(); } catch { /* best-effort */ }
+                // DO NOT close the connection here — connection lifecycle is managed by caller or writer queue.
+            }
+        } // end LockContainer
 
         // Unlock the container using the provided key instance
         public static Message UnlockContainer(SqliteConnection conn, Player player, Item container, Item key)
@@ -163,10 +171,13 @@ namespace MudServer
             if (lockedId.Value != key.ItemID)
                 return MessageHandler.System("That key does not match the lock.");
 
+            SqliteTransaction? tx = null;
             try
             {
+                if (conn == null) return MessageHandler.System("Server DB unavailable.");
                 if (conn.State != System.Data.ConnectionState.Open) conn.Open();
-                using var tx = conn.BeginTransaction();
+
+                tx = conn.BeginTransaction();
 
                 // remove LockedByKey flag(s)
                 var cflags = container.Flags ?? new List<string>();
@@ -191,10 +202,15 @@ namespace MudServer
             }
             catch (Exception ex)
             {
+                try { tx?.Rollback(); } catch { /* best-effort */ }
                 Console.WriteLine($"[UNLOCK] Exception unlocking container {container?.ItemID} with key {key?.ItemID}: {ex}");
-                try { conn?.Close(); } catch { }
                 return MessageHandler.System("Failed to unlock the container due to a server error.");
             }
-        }
+            finally
+            {
+                try { tx?.Dispose(); } catch { /* best-effort */ }
+                // DO NOT close the connection here — connection lifecycle is managed by caller or writer queue.
+            }
+        } // end UnlockContainer
     }
 }

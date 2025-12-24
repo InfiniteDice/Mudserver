@@ -16,7 +16,7 @@
   "CurrentAiTask": null,
   "HealthMax": 5,
   "Health": 5,
-  "Flags": [],
+  "Flags": [ "Herbivore" ],
   "Level": 1,
   "Mass": 1.0,
   "EffMass": 1.0,
@@ -25,8 +25,8 @@
   "EffCombatSkill": 55.0,
   "BaseDmgDice": 1.15,
   "EffDmgDice": 1.15,
-  "BaseArmorClass": 0.0,
-  "EffArmorClass": 0.0,
+  "BaseArmorClass": 8.0,
+  "EffArmorClass": 8.0,
   "IsHumanoid": false,
   "EquipmentTemplateIds": [],
   "DropChance": 0.50,
@@ -54,5 +54,6 @@
   ],
   "Debuffs": [],
   "Buffs": [],
-  "VisualTrait":""
+  "Hunger": 1,
+  "VisualTrait": ""
 }

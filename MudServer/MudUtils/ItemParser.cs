@@ -22,6 +22,11 @@ namespace MudServer.MudUtils
         public bool IncludeVisualTraits { get; set; } = true; // derives from Flags/FlagsJson
         public bool PreferInventoryOnTie { get; set; } = true;
         public bool PreferEquippedOnTie { get; set; } = true;
+
+        // New opt-ins for descriptor/material tokenization and progressive resolution.
+        // Callers that don't want descriptor/material matching can set these to false.
+        public bool IncludeDescriptorTokens { get; set; } = true;
+        public bool IncludeMaterialTokens { get; set; } = true;
     }
 
     public sealed class ItemResolutionResult
@@ -34,54 +39,12 @@ namespace MudServer.MudUtils
 
     public static class ItemParser
     {
+        // Backwards-compatible Resolve: enumerate candidates for scope and delegate to ResolveCandidates.
         public static ItemResolutionResult Resolve(Player player, string input, ItemSearchScope scope, ItemParserOptions? options = null)
         {
             var opts = options ?? new ItemParserOptions();
-            var res = new ItemResolutionResult();
-
-            var words = Tokenize(input).ToList();
-            if (words.Count == 0) { res.Reason = "No input words."; return res; }
-
             var candidates = EnumerateCandidates(player, scope).ToList();
-            if (candidates.Count == 0) { res.Reason = "No candidate items available in the selected scope."; return res; }
-
-            var scored = new List<(Item item, int score, int exactMatches, bool inInventory, bool isEquipped)>();
-
-            foreach (var it in candidates)
-            {
-                var tokens = BuildItemTokens(it, opts);
-                if (tokens.Count == 0) continue;
-
-                int score = 0, exact = 0;
-                foreach (var w in words)
-                {
-                    if (tokens.Contains(w)) { score++; exact++; continue; }
-                    if (opts.AllowStartsWith && tokens.Any(t => t.StartsWith(w, StringComparison.OrdinalIgnoreCase))) score++;
-                }
-
-                if (score >= opts.MinimumScore)
-                {
-                    bool inInv = IsInInventory(player, it);
-                    bool eq = IsEquipped(player, it);
-                    scored.Add((it, score, exact, inInv, eq));
-                }
-            }
-
-            if (scored.Count == 0) { res.Reason = $"No items matched '{input}'."; return res; }
-
-            var ordered = scored
-                .OrderByDescending(s => s.score)
-                .ThenByDescending(s => s.exactMatches)
-                .ThenByDescending(s => opts.PreferEquippedOnTie ? (s.isEquipped ? 1 : 0) : 0)
-                .ThenByDescending(s => opts.PreferInventoryOnTie ? (s.inInventory ? 1 : 0) : 0)
-                .ThenBy(s => SafeName(s.item))
-                .ToList();
-
-            res.Winner = ordered[0].item;
-            res.Score = ordered[0].score;
-            foreach (var s in ordered.Skip(1)) res.Candidates.Add(s.item);
-            res.Reason = $"Resolved with score={res.Score}, candidates={ordered.Count}.";
-            return res;
+            return ResolveCandidates(candidates, player, input, opts);
         }
 
         public static ItemResolutionResult ResolveForGet(Player player, string input, ItemParserOptions? options = null)
@@ -95,6 +58,199 @@ namespace MudServer.MudUtils
 
         public static ItemResolutionResult ResolveForAny(Player player, string input, ItemParserOptions? options = null)
             => Resolve(player, input, ItemSearchScope.Any, options);
+
+        // Public overload that accepts an explicit candidate set (useful for container contents)
+
+        public static ItemResolutionResult ResolveCandidates(IEnumerable<Item> candidatesEnumerable, Player? player, string input, ItemParserOptions? options = null)
+        {
+            var opts = options ?? new ItemParserOptions();
+            var res = new ItemResolutionResult();
+
+            // Normalize input tokens (lowercased words)
+            var inputTokens = Tokenize(input).ToList();
+            if (inputTokens.Count == 0) { res.Reason = "No input words."; return res; }
+
+            var candidates = (candidatesEnumerable ?? Enumerable.Empty<Item>()).Where(i => i != null).ToList();
+            if (candidates.Count == 0) { res.Reason = "No candidate items available in provided candidate set."; return res; }
+
+            // Quick exact checks (highest priority)
+            foreach (var it in candidates)
+            {
+                if (!string.IsNullOrWhiteSpace(it.TemplateID) && string.Equals(it.TemplateID, input, StringComparison.OrdinalIgnoreCase))
+                {
+                    res.Winner = it;
+                    res.Score = int.MaxValue / 4;
+                    res.Reason = "Exact TemplateID match";
+                    res.Candidates.AddRange(candidates.Where(c => c != it));
+                    return res;
+                }
+                if (!string.IsNullOrWhiteSpace(it.Name) && string.Equals(it.Name, input, StringComparison.OrdinalIgnoreCase))
+                {
+                    res.Winner = it;
+                    res.Score = int.MaxValue / 8;
+                    res.Reason = "Exact Name match";
+                    res.Candidates.AddRange(candidates.Where(c => c != it));
+                    return res;
+                }
+            }
+
+            // Build canonical token sets for each candidate: name + (optional) descriptor + (optional) material + templateid
+            Dictionary<Item, HashSet<string>> candidateTokenSets = new Dictionary<Item, HashSet<string>>(candidates.Count);
+            Dictionary<Item, HashSet<string>> candidateDescriptorSets = new Dictionary<Item, HashSet<string>>(candidates.Count);
+            Dictionary<Item, HashSet<string>> candidateMaterialSets = new Dictionary<Item, HashSet<string>>(candidates.Count);
+
+            foreach (var it in candidates)
+            {
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var t in Tokenize(it?.Name)) set.Add(t);
+                if (opts.IncludeDescriptorTokens && !string.IsNullOrWhiteSpace(it?.Descriptor))
+                {
+                    var dset = new HashSet<string>(Tokenize(it.Descriptor), StringComparer.OrdinalIgnoreCase);
+                    candidateDescriptorSets[it] = dset;
+                    foreach (var t in dset) set.Add(t);
+                }
+                else
+                {
+                    candidateDescriptorSets[it] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                if (opts.IncludeMaterialTokens && !string.IsNullOrWhiteSpace(it?.Material))
+                {
+                    var mset = new HashSet<string>(Tokenize(it.Material), StringComparer.OrdinalIgnoreCase);
+                    candidateMaterialSets[it] = mset;
+                    foreach (var t in mset) set.Add(t);
+                }
+                else
+                {
+                    candidateMaterialSets[it] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                if (!string.IsNullOrWhiteSpace(it?.TemplateID))
+                {
+                    foreach (var t in Tokenize(it.TemplateID)) set.Add(t);
+                }
+
+                candidateTokenSets[it] = set;
+            }
+
+            // If user included descriptor/material tokens explicitly, prefer candidates that match those first.
+            bool inputMatchesDescriptorOrMaterial = candidates.Any(it =>
+                candidateDescriptorSets[it].Any(tok => inputTokens.Contains(tok))
+                || candidateMaterialSets[it].Any(tok => inputTokens.Contains(tok)));
+
+            List<Item> matches = new List<Item>();
+
+            // 1) If descriptor/material tokens are present in input and match candidates, restrict to those that match them
+            if (inputMatchesDescriptorOrMaterial)
+            {
+                foreach (var it in candidates)
+                {
+                    bool descMatch = candidateDescriptorSets[it].Any(tok => inputTokens.Contains(tok));
+                    bool matMatch = candidateMaterialSets[it].Any(tok => inputTokens.Contains(tok));
+                    if (descMatch || matMatch)
+                        matches.Add(it);
+                }
+            }
+            else
+            {
+                // 2) Token-subset match: all input tokens must be present in candidate token set
+                foreach (var kv in candidateTokenSets)
+                {
+                    bool allPresent = inputTokens.All(tok => kv.Value.Contains(tok));
+                    if (allPresent) matches.Add(kv.Key);
+                }
+
+                // 3) If no token-subset matches, try substring contains on joined normalized text (fallback)
+                if (matches.Count == 0)
+                {
+                    foreach (var kv in candidateTokenSets)
+                    {
+                        // build normalized string for contains
+                        var normalized = string.Join(" ", kv.Value);
+                        var inNorm = string.Join(" ", inputTokens);
+                        if (!string.IsNullOrWhiteSpace(normalized) &&
+                            normalized.IndexOf(inNorm, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            matches.Add(kv.Key);
+                        }
+                    }
+                }
+            }
+
+            if (matches.Count == 0)
+            {
+                res.Reason = $"No items matched '{input}'.";
+                return res;
+            }
+
+            // If exactly one match, return it
+            if (matches.Count == 1)
+            {
+                res.Winner = matches[0];
+                res.Score = 1000;
+                res.Reason = "Single deterministic match";
+                res.Candidates.AddRange(candidates.Where(c => c != res.Winner));
+                return res;
+            }
+
+            // Multiple matches: disambiguate deterministically:
+            // Prefer candidates that matched descriptor/material tokens explicitly (if input included them)
+            if (inputMatchesDescriptorOrMaterial)
+            {
+                var descMatMatches = matches.Where(it =>
+                    candidateDescriptorSets[it].Any(tok => inputTokens.Contains(tok))
+                    || candidateMaterialSets[it].Any(tok => inputTokens.Contains(tok))).ToList();
+                if (descMatMatches.Count == 1)
+                {
+                    res.Winner = descMatMatches[0];
+                    res.Reason = "Disambiguated by descriptor/material explicit match";
+                    return res;
+                }
+                if (descMatMatches.Count > 1)
+                    matches = descMatMatches;
+            }
+
+            // Prefer items located in the room (not in player's inventory / not equipped)
+            if (player != null)
+            {
+                var roomMatch = matches.FirstOrDefault(it => !IsInInventory(player, it) && !IsEquipped(player, it));
+                if (roomMatch != null)
+                {
+                    res.Winner = roomMatch;
+                    res.Reason = "Multiple matches — preferred room item";
+                    return res;
+                }
+
+                var equippedMatch = matches.FirstOrDefault(it => IsEquipped(player, it));
+                if (equippedMatch != null)
+                {
+                    res.Winner = equippedMatch;
+                    res.Reason = "Multiple matches — preferred equipped item";
+                    return res;
+                }
+
+                var invMatch = matches.FirstOrDefault(it => IsInInventory(player, it));
+                if (invMatch != null)
+                {
+                    // Ambiguous among multiple inventory matches — do NOT auto-pick; return ambiguous.
+                    if (matches.Count > 1)
+                    {
+                        res.Reason = $"Ambiguous: {matches.Count} candidates match '{input}' (use more specific descriptor).";
+                        return res;
+                    }
+
+                    res.Winner = invMatch;
+                    res.Reason = "Multiple matches — chose inventory item";
+                    return res;
+                }
+            }
+
+            // Last resort: deterministic stable ordering by SafeName, but only if unambiguous acceptable
+            var fallback = matches.OrderBy(it => SafeName(it)).First();
+            res.Winner = fallback;
+            res.Reason = "Multiple matches — fallback chosen by name";
+            return res;
+        } // end ResolveCandidates
 
         private static IEnumerable<Item> EnumerateCandidates(Player player, ItemSearchScope scope)
         {
@@ -144,6 +300,8 @@ namespace MudServer.MudUtils
             return EnumerateEquipped(player).Any(eq => ReferenceEquals(eq, it) || eq.ItemID == it.ItemID);
         }
 
+        // BuildItemTokens preserved for existing callers (returns set of distinct tokens).
+        // It now includes Descriptor and Material tokens when appropriate and controlled by options.
         private static HashSet<string> BuildItemTokens(Item it, ItemParserOptions opts)
         {
             var tokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -167,11 +325,79 @@ namespace MudServer.MudUtils
                 }
             }
 
+            // Descriptor and Material support
+            // Exclude for categories where descriptors/materials are not useful
+            var skipCats = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Component", "Organic", "Food", "Currency" };
+            bool skipDescriptor = string.IsNullOrWhiteSpace(it?.Descriptor) || (!opts.IncludeDescriptorTokens) || (!string.IsNullOrWhiteSpace(it.ItemCategory) && skipCats.Contains(it.ItemCategory));
+            bool skipMaterial = string.IsNullOrWhiteSpace(it?.Material) || (!opts.IncludeMaterialTokens) || (!string.IsNullOrWhiteSpace(it.ItemCategory) && skipCats.Contains(it.ItemCategory));
+
+            if (!skipDescriptor)
+            {
+                foreach (var t in Tokenize(it!.Descriptor)) tokens.Add(t);
+            }
+
+            if (!skipMaterial)
+            {
+                foreach (var t in Tokenize(it!.Material)) tokens.Add(t);
+            }
+
             // Status tokens
             if (IsWorn(it)) tokens.Add("worn");
             if (IsHeld(it)) tokens.Add("held");
 
             return tokens;
+        }
+
+        // Build token -> weight map to allow weighted scoring (name tokens > descriptor > material > flags).
+        // Weights are tunable; kept conservative to produce deterministic ranking.
+        private static Dictionary<string, int> BuildItemTokenWeights(Item it, ItemParserOptions opts)
+        {
+            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            // Helper to add tokens with given weight
+            void AddTokens(string? s, int weight)
+            {
+                if (string.IsNullOrWhiteSpace(s)) return;
+                foreach (var t in Tokenize(s))
+                {
+                    if (!map.ContainsKey(t)) map[t] = weight;
+                    else map[t] = Math.Max(map[t], weight);
+                }
+            }
+
+            // Name tokens are most important
+            AddTokens(it?.Name, 10);
+
+            // ShortDesc somewhat important
+            AddTokens(it?.ShortDesc, 5);
+
+            // Category tokens
+            if (opts.IncludeCategoryTokens && !string.IsNullOrWhiteSpace(it?.ItemCategory))
+                AddTokens(it!.ItemCategory, 3);
+
+            // Flags / visual traits (lowest weight)
+            if (opts.IncludeVisualTraits)
+            {
+                if (it?.Flags != null)
+                {
+                    foreach (var f in it.Flags) AddTokens(f, 1);
+                }
+                if (!string.IsNullOrEmpty(it?.FlagsJson)) AddTokens(it.FlagsJson, 1);
+            }
+
+            // Descriptor / Material (middle weights), skip for excluded categories
+            var skipCats = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Component", "Organic", "Food", "Currency" };
+            bool skipDescriptor = string.IsNullOrWhiteSpace(it?.Descriptor) || (!opts.IncludeDescriptorTokens) || (!string.IsNullOrWhiteSpace(it.ItemCategory) && skipCats.Contains(it.ItemCategory));
+            bool skipMaterial = string.IsNullOrWhiteSpace(it?.Material) || (!opts.IncludeMaterialTokens) || (!string.IsNullOrWhiteSpace(it.ItemCategory) && skipCats.Contains(it.ItemCategory));
+
+            if (!skipDescriptor) AddTokens(it!.Descriptor, 8);
+            if (!skipMaterial) AddTokens(it!.Material, 7);
+
+            // runtime status tokens lowest priority
+            if (IsWorn(it)) map["worn"] = Math.Max(map.TryGetValue("worn", out var v1) ? v1 : 0, 1);
+            if (IsHeld(it)) map["held"] = Math.Max(map.TryGetValue("held", out var v2) ? v2 : 0, 1);
+
+            return map;
         }
 
         private static IEnumerable<string> Tokenize(string? s)

@@ -185,7 +185,18 @@ namespace MudCore.World
             else
                 item.Quantity = 1; // non-stackables always created as single item
 
+            // Assign descriptor for created items if applicable.
+            // This is best-effort and does not persist the item; callers should SaveItem(...) afterwards.
+            try
+            {
+                MudCore.World.ItemDescriptorManager.AssignDescriptorIfApplicable(item);
+            }
+            catch
+            {
+                // Non-fatal; descriptor assignment should not prevent item creation.
+            }
+
             return item;
-        }
+        } // end ItemFactory.CreateItem
     }
 }

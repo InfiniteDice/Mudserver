@@ -29,6 +29,33 @@ namespace MudServer.MudCore.Actions
         //     ores -> bits  : each ore -> 10 bits
         // - Persistence: mutations are persisted via ItemPersistence.SaveItem / DeleteItem
         // - Messaging: return a system Message for CommandHandler to return to caller
+        // Centralized allowed-material registries (accessible to other systems in this assembly).
+        // Stored as HashSet for fast lookup; exposed as IReadOnlyCollection to discourage mutation.
+        private static readonly HashSet<string> _allowedMetals = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","aluminium","cobalt","titanium"
+        };
+
+        private static readonly HashSet<string> _allowedWoods = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "oak","ash","maple","walnut","birch","pine","cherry","teak","mahogany","ebony"
+        };
+
+        private static readonly HashSet<string> _allowedCloths = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "linen","wool","silk","cotton","canvas","velvet"
+        };
+
+        private static readonly HashSet<string> _allowedStones = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "marble","granite","limestone","sandstone","basalt"
+        };
+
+        // Exposed read-only accessors (other code should read these, not mutate)
+        public static IReadOnlyCollection<string> AllowedMetals => _allowedMetals;
+        public static IReadOnlyCollection<string> AllowedWoods => _allowedWoods;
+        public static IReadOnlyCollection<string> AllowedCloths => _allowedCloths;
+        public static IReadOnlyCollection<string> AllowedStones => _allowedStones;
         public static Message Smelt(Player player, string args, World world, SqliteConnection conn)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
@@ -42,11 +69,8 @@ namespace MudServer.MudCore.Actions
             if (room.Flags == null || !room.Flags.Any(f => string.Equals(f, "Forge", StringComparison.OrdinalIgnoreCase)))
                 return MessageHandler.System("You need a forge to do that!");
 
-            // Allowed metals (editable list) - keep lower/upper flexible via OrdinalIgnoreCase
-            var allowedMetals = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","aluminium","cobalt","titanium"
-    };
+            // Allowed metals / materials are now resolved from MaterialRegistry so other systems can reuse them.
+            var allowedMetals = AllowedMetals;
 
             // Accept singular or plural source/dest tokens (bit/bits, ore/ores, bar/bars)
             var m = Regex.Match(args.Trim(), @"^\s*(\w+)\s+(bits?|ores?|bars?)\s+to\s+(bars?|bits?)\s*$", RegexOptions.IgnoreCase);
@@ -258,6 +282,10 @@ namespace MudServer.MudCore.Actions
                                     var barTemplate = $"bar_{material.ToLowerInvariant()}";
                                     var barItem = world.ItemFactory.CreateItem(barTemplate, "Player", player.DbPlayerID, room.RoomID, bars);
                                     barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+
+                                    // Assign descriptor before persisting (best-effort)
+                                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(barItem); } catch { }
+
                                     ItemPersistence.SaveItem(wConn, barItem, wTx);
                                     // reflect ItemID/Quantity back to in-memory later
                                 }
@@ -268,6 +296,9 @@ namespace MudServer.MudCore.Actions
                                     var bitTemplate = $"bit_{material.ToLowerInvariant()}";
                                     var bitItem = world.ItemFactory.CreateItem(bitTemplate, "Player", player.DbPlayerID, room.RoomID, bits);
                                     bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+
+                                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(bitItem); } catch { }
+
                                     ItemPersistence.SaveItem(wConn, bitItem, wTx);
                                 }
 
@@ -286,6 +317,9 @@ namespace MudServer.MudCore.Actions
                                     var barTemplate = $"bar_{material.ToLowerInvariant()}";
                                     var barItem = world.ItemFactory.CreateItem(barTemplate, "Player", player.DbPlayerID, room.RoomID, bars);
                                     barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+
+                                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(barItem); } catch { }
+
                                     ItemPersistence.SaveItem(conn, barItem);
                                 }
 
@@ -294,6 +328,9 @@ namespace MudServer.MudCore.Actions
                                     var bitTemplate = $"bit_{material.ToLowerInvariant()}";
                                     var bitItem = world.ItemFactory.CreateItem(bitTemplate, "Player", player.DbPlayerID, room.RoomID, bits);
                                     bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+
+                                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(bitItem); } catch { }
+
                                     ItemPersistence.SaveItem(conn, bitItem);
                                 }
                             }
@@ -427,6 +464,9 @@ namespace MudServer.MudCore.Actions
                             // create bars
                             var barItem = world.ItemFactory.CreateItem(dstTemplate, "Player", player.DbPlayerID, room.RoomID, barsToMake);
                             barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+
+                            try { ItemDescriptorManager.AssignDescriptorIfApplicable(barItem); } catch { }
+
                             ItemPersistence.SaveItem(wConn, barItem, wTx);
 
                             return (object?)null;
@@ -460,6 +500,9 @@ namespace MudServer.MudCore.Actions
 
                         var barItem = world.ItemFactory.CreateItem(dstTemplate, "Player", player.DbPlayerID, room.RoomID, barsToMake);
                         barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+
+                        try { ItemDescriptorManager.AssignDescriptorIfApplicable(barItem); } catch { }
+
                         ItemPersistence.SaveItem(conn, barItem);
                     }
 
@@ -519,12 +562,18 @@ namespace MudServer.MudCore.Actions
                                 {
                                     var barItem = world.ItemFactory.CreateItem($"bar_{metal}", "Player", player.DbPlayerID, room.RoomID, barsQty);
                                     barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+
+                                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(barItem); } catch { }
+
                                     ItemPersistence.SaveItem(wConn, barItem, wTx);
                                 }
                                 else
                                 {
                                     var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQty);
                                     bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+
+                                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(bitItem); } catch { }
+
                                     ItemPersistence.SaveItem(wConn, bitItem, wTx);
                                 }
 
@@ -544,12 +593,18 @@ namespace MudServer.MudCore.Actions
                             {
                                 var barItem = world.ItemFactory.CreateItem($"bar_{metal}", "Player", player.DbPlayerID, room.RoomID, barsQty);
                                 barItem.OwnerType = "Player"; barItem.OwnerID = player.DbPlayerID; barItem.RoomID = room.RoomID;
+
+                                try { ItemDescriptorManager.AssignDescriptorIfApplicable(barItem); } catch { }
+
                                 ItemPersistence.SaveItem(conn, barItem);
                             }
                             else
                             {
                                 var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQty);
                                 bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+
+                                try { ItemDescriptorManager.AssignDescriptorIfApplicable(bitItem); } catch { }
+
                                 ItemPersistence.SaveItem(conn, bitItem);
                             }
                         }
@@ -600,6 +655,9 @@ namespace MudServer.MudCore.Actions
                             // create bits
                             var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQtyResult);
                             bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+
+                            try { ItemDescriptorManager.AssignDescriptorIfApplicable(bitItem); } catch { }
+
                             ItemPersistence.SaveItem(wConn, bitItem, wTx);
 
                             return (object?)null;
@@ -616,6 +674,9 @@ namespace MudServer.MudCore.Actions
 
                         var bitItem = world.ItemFactory.CreateItem($"bit_{metal}", "Player", player.DbPlayerID, room.RoomID, bitsQtyResult);
                         bitItem.OwnerType = "Player"; bitItem.OwnerID = player.DbPlayerID; bitItem.RoomID = room.RoomID;
+
+                        try { ItemDescriptorManager.AssignDescriptorIfApplicable(bitItem); } catch { }
+
                         ItemPersistence.SaveItem(conn, bitItem);
                     }
 

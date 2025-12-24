@@ -16,7 +16,7 @@
   "CurrentAiTask": null,
   "HealthMax": 50,
   "Health": 50,
-  "Flags": ["CallHelp:Goblin"],
+  "Flags": [ "CallHelp:Goblin" ],
   "Level": 3,
   "Mass": 30.0,
   "EffMass": 30.0,
@@ -63,5 +63,6 @@
   ],
   "Debuffs": [],
   "Buffs": [],
-  "VisualTrait":""
+  "Hunger": 0,
+  "VisualTrait": ""
 }

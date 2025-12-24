@@ -1,0 +1,14 @@
+{
+  "Id": "grass",
+  "Name": "Grass",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "Grass, the green kind",
+  "LongDesc": "Some things eat grass, I bet you could make something with this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": ["HerbivoreFood"],
+  "Material": "Organic",
+  "Stackable": "true"
+}

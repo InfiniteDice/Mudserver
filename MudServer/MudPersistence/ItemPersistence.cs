@@ -14,6 +14,7 @@ namespace MudPersistence
         private static readonly object DbLock = new();
         private static bool? hasBaseAcBonus;
         private static bool? hasQuantity; // NEW: detect Quantity column presence
+        private static bool? hasDescriptor; // NEW: detect Descriptor column presence
 
         private static void EnsureOpen(SqliteConnection conn)
         {
@@ -115,150 +116,163 @@ namespace MudPersistence
                 item.OwnerAreaID = 0;
             }
 
+            // NOTE:
+            // - Writer serialization is provided by MudServer.DbWriteQueue for the normal write path.
+            // - SaveItemInternal accepts an optional SqliteTransaction (tx). When tx is supplied the caller
+            //   is responsible for serializing and owning the transaction (for example the writer queue).
+            // - We intentionally removed ad-hoc lock(DbLock) here to avoid blocking concurrent readers and
+            //   to rely on the centralized writer for serialization of writes.
             try
             {
-                lock (DbLock)
+                EnsureOpen(conn);
+
+                // Best-effort: ensure a descriptor is assigned for items created via factories or inline before persistence.
+                // Use the global qualifier so this code remains unambiguous even when compiled under other namespaces.
+                try
                 {
-                    EnsureOpen(conn);
+                    global::MudCore.World.ItemDescriptorManager.AssignDescriptorIfApplicable(item);
+                }
+                catch
+                {
+                    // Non-fatal: descriptor assignment must not prevent saves.
+                }
 
-                    // When a transaction is supplied, propagate it into schema checks so PRAGMA/SELECT uses the same transaction.
-                    if (!hasBaseAcBonus.HasValue)
-                        hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus", tx);
+                // When a transaction is supplied, propagate it into schema checks so PRAGMA/SELECT uses the same transaction.
+                if (!hasBaseAcBonus.HasValue)
+                    hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus", tx);
 
-                    if (!hasQuantity.HasValue)
-                        hasQuantity = TryHasColumn(conn, "Quantity", tx);
+                if (!hasQuantity.HasValue)
+                    hasQuantity = TryHasColumn(conn, "Quantity", tx);
 
-                    // Do a quick existence check for Material column (do not cache to avoid schema drift on long-running servers)
-                    bool hasMaterial = TryHasColumn(conn, "Material", tx);
+                // Do a quick existence check for Material column and Descriptor column (do not cache material to avoid schema drift on long-running servers)
+                bool hasMaterial = TryHasColumn(conn, "Material", tx);
 
-                    if (setVerboseServerLogs)
-                        Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ConnState={conn.State}, ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}', DmgDiceMult={item.DmgDiceMult}, Quantity={item.Quantity}");
+                if (!hasDescriptor.HasValue)
+                    hasDescriptor = TryHasColumn(conn, "Descriptor", tx);
 
-                    // MERGE PATH: only attempt to merge into an existing stack when ALL of:
-                    //  - DB supports Quantity,
-                    //  - this is a new insert (ItemID <= 0),
-                    //  - the item explicitly declares the "Stackable" flag in its FlagsJson,
-                    //  - AND the incoming operation is trying to add more than one unit (item.Quantity > 1).
-                    //
-                    // Rationale: do NOT treat presence of a Quantity column alone as a condition to merge.
-                    // Do NOT merge when callers create single-unit rows for non-stackable templates.
-                    if (item.ItemID <= 0 && hasQuantity == true)
+                if (setVerboseServerLogs)
+                    Console.WriteLine($"[ItemPersistence][TRACE] SaveItem START: ConnState={conn.State}, ItemID={item.ItemID}, TemplateID='{item.TemplateID}', Name='{item.Name}', OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}, FlagsJson='{item.FlagsJson}', DmgDiceMult={item.DmgDiceMult}, Quantity={item.Quantity}, Descriptor='{item.Descriptor}'");
+
+                // MERGE PATH...
+                if (item.ItemID <= 0 && hasQuantity == true)
+                {
+                    bool isStackable = false;
+                    try
                     {
-                        bool isStackable = false;
-                        try
-                        {
-                            if (!string.IsNullOrEmpty(item.FlagsJson) && item.FlagsJson.IndexOf("\"Stackable\"", StringComparison.OrdinalIgnoreCase) >= 0)
-                                isStackable = true;
-                        }
-                        catch { isStackable = false; }
+                        if (!string.IsNullOrEmpty(item.FlagsJson) && item.FlagsJson.IndexOf("\"Stackable\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                            isStackable = true;
+                    }
+                    catch { isStackable = false; }
 
-                        // Strict merge requirement: declared stackable AND incoming quantity indicates a stack addition.
-                        if (isStackable && item.Quantity > 1 && !string.IsNullOrEmpty(item.TemplateID))
-                        {
-                            // Try to find an existing stack with the same TemplateID, owner and identical flags JSON.
-                            using var findCmd = new SqliteCommand(
-                                @"SELECT ItemID, Quantity FROM Item
+                    if (isStackable && item.Quantity > 1 && !string.IsNullOrEmpty(item.TemplateID))
+                    {
+                        using var findCmd = new SqliteCommand(
+                            @"SELECT ItemID, Quantity FROM Item
           WHERE TemplateID = @template
             AND OwnerType = @otype
             AND OwnerID = @oid
             AND RoomID = @rid
             AND Flags = @flags"
-                                + (hasMaterial ? " AND Material = @material" : string.Empty)
-                                + @" ORDER BY ItemID LIMIT 1;", conn);
+                            + (hasMaterial ? " AND Material = @material" : string.Empty)
+                            + (hasDescriptor == true ? " AND Descriptor = @descriptor" : string.Empty)
+                            + @" ORDER BY ItemID LIMIT 1;", conn);
 
-                            if (tx != null) findCmd.Transaction = tx;
+                        if (tx != null) findCmd.Transaction = tx;
 
-                            findCmd.Parameters.AddWithValue("@template", item.TemplateID);
-                            findCmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
-                            findCmd.Parameters.AddWithValue("@oid", item.OwnerID);
-                            findCmd.Parameters.AddWithValue("@rid", item.RoomID);
-                            findCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
-                            if (hasMaterial) findCmd.Parameters.AddWithValue("@material", item.Material ?? "");
+                        findCmd.Parameters.AddWithValue("@template", item.TemplateID);
+                        findCmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
+                        findCmd.Parameters.AddWithValue("@oid", item.OwnerID);
+                        findCmd.Parameters.AddWithValue("@rid", item.RoomID);
+                        findCmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                        if (hasMaterial) findCmd.Parameters.AddWithValue("@material", item.Material ?? "");
+                        if (hasDescriptor == true) findCmd.Parameters.AddWithValue("@descriptor", item.Descriptor ?? "");
 
-                            using var rdr = findCmd.ExecuteReader();
-                            if (rdr.Read())
-                            {
-                                // Existing stack found -> increment quantity and short-circuit insert
-                                int existingId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
-                                int existingQty = rdr.IsDBNull(1) ? 1 : rdr.GetInt32(1);
-                                rdr.Close();
+                        using var rdr = findCmd.ExecuteReader();
+                        if (rdr.Read())
+                        {
+                            int existingId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+                            int existingQty = rdr.IsDBNull(1) ? 1 : rdr.GetInt32(1);
+                            rdr.Close();
 
-                                int addQty = Math.Max(1, item.Quantity);
-                                int newQty = existingQty + addQty;
+                            int addQty = Math.Max(1, item.Quantity);
+                            int newQty = existingQty + addQty;
 
-                                using var upd = new SqliteCommand("UPDATE Item SET Quantity = @newQty WHERE ItemID = @id", conn);
-                                if (tx != null) upd.Transaction = tx;
-                                upd.Parameters.AddWithValue("@newQty", newQty);
-                                upd.Parameters.AddWithValue("@id", existingId);
-                                upd.ExecuteNonQuery();
+                            using var upd = new SqliteCommand("UPDATE Item SET Quantity = @newQty WHERE ItemID = @id", conn);
+                            if (tx != null) upd.Transaction = tx;
+                            upd.Parameters.AddWithValue("@newQty", newQty);
+                            upd.Parameters.AddWithValue("@id", existingId);
+                            upd.ExecuteNonQuery();
 
-                                // Reflect merged result in the passed item instance
-                                item.ItemID = existingId;
-                                item.Quantity = newQty;
+                            item.ItemID = existingId;
+                            item.Quantity = newQty;
 
-                                if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] MERGED stackable item: Template='{item.TemplateID}' into ItemID={existingId}, NewQty={newQty}");
+                            if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] MERGED stackable item: Template='{item.TemplateID}' into ItemID={existingId}, NewQty={newQty}");
 
-                                return; // merged, nothing else to do
-                            }
+                            return; // merged, nothing else to do
                         }
                     }
+                }
 
-                    if (item.ItemID <= 0)
-                    {
-                        using var cmd = new SqliteCommand(
-                            @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags"
-                            + (hasMaterial ? ", Material" : string.Empty)
-                            + (hasQuantity == true ? ", Quantity" : string.Empty)
-                            + ", DmgDiceMult, OwnerAreaID"
-                            + (hasBaseAcBonus == true ? ", BaseACBonus" : string.Empty) + @")
+                if (item.ItemID <= 0)
+                {
+                    using var cmd = new SqliteCommand(
+                        @"INSERT INTO Item (TemplateID, Name, OwnerType, OwnerID, RoomID, Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc, LongDesc, Creator, Condition, Flags"
+                        + (hasMaterial ? ", Material" : string.Empty)
+                        + (hasDescriptor == true ? ", Descriptor" : string.Empty)
+                        + (hasQuantity == true ? ", Quantity" : string.Empty)
+                        + ", DmgDiceMult, OwnerAreaID"
+                        + (hasBaseAcBonus == true ? ", BaseACBonus" : string.Empty) + @")
       VALUES (@template, @name, @otype, @oid, @rid, @value, @weight, @wear, @hand, @category, @short, @long, @creator, @cond, @flags"
-                            + (hasMaterial ? ", @material" : string.Empty)
-                            + (hasQuantity == true ? ", @quantity" : string.Empty)
-                            + ", @dmgmult, @ownerarea"
-                            + (hasBaseAcBonus == true ? ", @baseac" : string.Empty) + @");
+                        + (hasMaterial ? ", @material" : string.Empty)
+                        + (hasDescriptor == true ? ", @descriptor" : string.Empty)
+                        + (hasQuantity == true ? ", @quantity" : string.Empty)
+                        + ", @dmgmult, @ownerarea"
+                        + (hasBaseAcBonus == true ? ", @baseac" : string.Empty) + @");
       SELECT last_insert_rowid();", conn);
 
-                        if (tx != null) cmd.Transaction = tx;
+                    if (tx != null) cmd.Transaction = tx;
 
-                        cmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
-                        cmd.Parameters.AddWithValue("@name", item.Name ?? "");
-                        cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "Room");
-                        cmd.Parameters.AddWithValue("@oid", item.OwnerID);
-                        cmd.Parameters.AddWithValue("@rid", item.RoomID);
-                        cmd.Parameters.AddWithValue("@value", item.Value);
-                        cmd.Parameters.AddWithValue("@weight", item.Weight);
-                        cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
-                        cmd.Parameters.AddWithValue("@hand", item.HandLoc);
-                        cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
-                        cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
-                        cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
-                        cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
-                        cmd.Parameters.AddWithValue("@cond", item.Condition);
-                        cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
-                        if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
-                        if (hasQuantity == true) cmd.Parameters.AddWithValue("@quantity", item.Quantity);
-                        cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
-                        cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
-                        if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
+                    cmd.Parameters.AddWithValue("@template", item.TemplateID ?? "");
+                    cmd.Parameters.AddWithValue("@name", item.Name ?? "");
+                    cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "Room");
+                    cmd.Parameters.AddWithValue("@oid", item.OwnerID);
+                    cmd.Parameters.AddWithValue("@rid", item.RoomID);
+                    cmd.Parameters.AddWithValue("@value", item.Value);
+                    cmd.Parameters.AddWithValue("@weight", item.Weight);
+                    cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
+                    cmd.Parameters.AddWithValue("@hand", item.HandLoc);
+                    cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
+                    cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
+                    cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
+                    cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
+                    cmd.Parameters.AddWithValue("@cond", item.Condition);
+                    cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                    if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
+                    if (hasDescriptor == true) cmd.Parameters.AddWithValue("@descriptor", item.Descriptor ?? "");
+                    if (hasQuantity == true) cmd.Parameters.AddWithValue("@quantity", item.Quantity);
+                    cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
+                    cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
+                    if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
 
-                        if (setVerboseServerLogs)
-                        {
-                            Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (INSERT): " + (item.FlagsJson ?? "null"));
-                            Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (INSERT): " + item.DmgDiceMult);
-                            if (hasQuantity == true) Console.WriteLine($"[ItemPersistence][TRACE] QUANTITY param (INSERT): {item.Quantity}");
-                            if (hasMaterial) Console.WriteLine($"[ItemPersistence][TRACE] MATERIAL param (INSERT): {item.Material}");
-                            Console.WriteLine($"[ItemPersistence][TRACE] INSERT Exec: ConnState={conn.State}");
-                        }
-
-                        long newId = (long)cmd.ExecuteScalar();
-                        item.ItemID = (int)newId;
-
-                        if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] INSERT result: ItemID={item.ItemID}");
-                    }
-                    else
+                    if (setVerboseServerLogs)
                     {
-                        using var cmd = new SqliteCommand(
-                            @"UPDATE Item SET
+                        Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (INSERT): " + (item.FlagsJson ?? "null"));
+                        Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (INSERT): " + item.DmgDiceMult);
+                        if (hasQuantity == true) Console.WriteLine($"[ItemPersistence][TRACE] QUANTITY param (INSERT): {item.Quantity}");
+                        if (hasMaterial) Console.WriteLine($"[ItemPersistence][TRACE] MATERIAL param (INSERT): {item.Material}");
+                        if (hasDescriptor == true) Console.WriteLine($"[ItemPersistence][TRACE] DESCRIPTOR param (INSERT): {item.Descriptor}");
+                        Console.WriteLine($"[ItemPersistence][TRACE] INSERT Exec: ConnState={conn.State}");
+                    }
+
+                    long newId = (long)cmd.ExecuteScalar();
+                    item.ItemID = (int)newId;
+
+                    if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] INSERT result: ItemID={item.ItemID}");
+                }
+                else
+                {
+                    using var cmd = new SqliteCommand(
+                        @"UPDATE Item SET
             Name = @name,
             OwnerType = @otype,
             OwnerID = @oid,
@@ -274,49 +288,51 @@ namespace MudPersistence
             Creator = @creator,
             Condition = @cond,
             Flags = @flags,"
-                            + (hasMaterial ? " Material = @material," : string.Empty)
-                            + (hasQuantity == true ? " Quantity = @quantity," : string.Empty) + @"
+                        + (hasMaterial ? " Material = @material," : string.Empty)
+                        + (hasDescriptor == true ? " Descriptor = @descriptor," : string.Empty)
+                        + (hasQuantity == true ? " Quantity = @quantity," : string.Empty) + @"
             DmgDiceMult = @dmgmult"
-                            + (hasBaseAcBonus == true ? ", BaseACBonus = @baseac" : string.Empty) + @"
+                        + (hasBaseAcBonus == true ? ", BaseACBonus = @baseac" : string.Empty) + @"
         WHERE ItemID = @id;", conn);
 
-                        if (tx != null) cmd.Transaction = tx;
+                    if (tx != null) cmd.Transaction = tx;
 
-                        cmd.Parameters.AddWithValue("@name", item.Name ?? "");
-                        cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
-                        cmd.Parameters.AddWithValue("@oid", item.OwnerID);
-                        cmd.Parameters.AddWithValue("@rid", item.RoomID);
-                        cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
-                        cmd.Parameters.AddWithValue("@value", item.Value);
-                        cmd.Parameters.AddWithValue("@weight", item.Weight);
-                        cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
-                        cmd.Parameters.AddWithValue("@hand", item.HandLoc);
-                        cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
-                        cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
-                        cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
-                        cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
-                        cmd.Parameters.AddWithValue("@cond", item.Condition);
-                        cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
-                        if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
-                        if (hasQuantity == true) cmd.Parameters.AddWithValue("@quantity", item.Quantity);
-                        cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
-                        if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
-                        cmd.Parameters.AddWithValue("@id", item.ItemID);
+                    cmd.Parameters.AddWithValue("@name", item.Name ?? "");
+                    cmd.Parameters.AddWithValue("@otype", item.OwnerType ?? "");
+                    cmd.Parameters.AddWithValue("@oid", item.OwnerID);
+                    cmd.Parameters.AddWithValue("@rid", item.RoomID);
+                    cmd.Parameters.AddWithValue("@ownerarea", item.OwnerAreaID);
+                    cmd.Parameters.AddWithValue("@value", item.Value);
+                    cmd.Parameters.AddWithValue("@weight", item.Weight);
+                    cmd.Parameters.AddWithValue("@wear", item.WearLoc ?? "");
+                    cmd.Parameters.AddWithValue("@hand", item.HandLoc);
+                    cmd.Parameters.AddWithValue("@category", item.ItemCategory ?? "");
+                    cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
+                    cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
+                    cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
+                    cmd.Parameters.AddWithValue("@cond", item.Condition);
+                    cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
+                    if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
+                    if (hasDescriptor == true) cmd.Parameters.AddWithValue("@descriptor", item.Descriptor ?? "");
+                    if (hasQuantity == true) cmd.Parameters.AddWithValue("@quantity", item.Quantity);
+                    cmd.Parameters.AddWithValue("@dmgmult", item.DmgDiceMult);
+                    if (hasBaseAcBonus == true) cmd.Parameters.AddWithValue("@baseac", item.BaseACBonus);
+                    cmd.Parameters.AddWithValue("@id", item.ItemID);
 
-                        if (setVerboseServerLogs)
-                        {
-                            Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (UPDATE): " + (item.FlagsJson ?? "null"));
-                            Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (UPDATE): " + item.DmgDiceMult);
-                            if (hasQuantity == true) Console.WriteLine($"[ItemPersistence][TRACE] QUANTITY param (UPDATE): {item.Quantity}");
-                            if (hasMaterial) Console.WriteLine($"[ItemPersistence][TRACE] MATERIAL param (UPDATE): {item.Material}");
-                            Console.WriteLine($"[ItemPersistence][TRACE] UPDATE Exec: ConnState={conn.State}, ItemID={item.ItemID}");
-                        }
-
-                        cmd.ExecuteNonQuery();
+                    if (setVerboseServerLogs)
+                    {
+                        Console.WriteLine("[ItemPersistence][TRACE] FLAGS param (UPDATE): " + (item.FlagsJson ?? "null"));
+                        Console.WriteLine("[ItemPersistence][TRACE] DMGMULT param (UPDATE): " + item.DmgDiceMult);
+                        if (hasQuantity == true) Console.WriteLine($"[ItemPersistence][TRACE] QUANTITY param (UPDATE): {item.Quantity}");
+                        if (hasMaterial) Console.WriteLine($"[ItemPersistence][TRACE] MATERIAL param (UPDATE): {item.Material}");
+                        if (hasDescriptor == true) Console.WriteLine($"[ItemPersistence][TRACE] DESCRIPTOR param (UPDATE): {item.Descriptor}");
+                        Console.WriteLine($"[ItemPersistence][TRACE] UPDATE Exec: ConnState={conn.State}, ItemID={item.ItemID}");
                     }
 
-                    if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] SaveItem END: ConnState={conn.State}, ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}");
+                    cmd.ExecuteNonQuery();
                 }
+
+                if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][TRACE] SaveItem END: ConnState={conn.State}, ItemID={item.ItemID}, OwnerType='{item.OwnerType}', OwnerID={item.OwnerID}, RoomID={item.RoomID}, OwnerAreaID={item.OwnerAreaID}");
             }
             catch (SqliteException sx)
             {
@@ -362,149 +378,14 @@ namespace MudPersistence
         private static void DeleteItemInternal(SqliteConnection conn, int itemId, SqliteTransaction? tx = null)
         {
             if (itemId <= 0) return;
-            lock (DbLock)
-            {
-                EnsureOpen(conn);
-                using var cmd = new SqliteCommand("DELETE FROM Item WHERE ItemID = @id", conn);
-                if (tx != null) cmd.Transaction = tx;
-                cmd.Parameters.AddWithValue("@id", itemId);
-                cmd.ExecuteNonQuery();
-            }
-        }
 
-        private static bool EnsureHasBaseAc(SqliteConnection conn)
-        {
-            if (!hasBaseAcBonus.HasValue) hasBaseAcBonus = TryHasColumn(conn, "BaseACBonus");
-            return hasBaseAcBonus == true;
-        }
-
-        public static List<Item> LoadItemsByOwner(SqliteConnection conn, string ownerType, int ownerId, SqliteTransaction? tx = null)
-        {
-            var list = new List<Item>();
-            if (conn == null) return list;
-
-            lock (DbLock)
-            {
-                EnsureOpen(conn);
-                var normalized = NormalizeOwnerType(ownerType);
-                bool includeBaseAc = EnsureHasBaseAc(conn, tx);
-                bool includeQuantity = false;
-                if (!hasQuantity.HasValue) hasQuantity = TryHasColumn(conn, "Quantity", tx);
-                includeQuantity = hasQuantity == true;
-
-                // detect Material column on the fly (do not cache globally here)
-                bool includeMaterial = TryHasColumn(conn, "Material", tx);
-
-                using var cmd = new SqliteCommand(@"
-            SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
-                   Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
-                   LongDesc, Creator, Condition, Flags"
-                               + (includeMaterial ? ", Material" : string.Empty)
-                               + (includeQuantity ? ", Quantity" : string.Empty)
-                               + ", DmgDiceMult"
-                               + (includeBaseAc ? ", BaseACBonus" : ""), conn);
-
-                if (tx != null) cmd.Transaction = tx;
-
-                cmd.CommandText += " FROM Item WHERE OwnerType = @otype AND OwnerID = @oid;";
-                cmd.Parameters.AddWithValue("@otype", normalized);
-                cmd.Parameters.AddWithValue("@oid", ownerId);
-
-                using var reader = cmd.ExecuteReader();
-                while (reader.Read())
-                {
-                    var it = new Item
-                    {
-                        ItemID = !reader.IsDBNull(0) ? reader.GetInt32(0) : 0,
-                        TemplateID = !reader.IsDBNull(1) ? reader.GetString(1) : "",
-                        Name = !reader.IsDBNull(2) ? reader.GetString(2) : "",
-                        OwnerType = !reader.IsDBNull(3) ? reader.GetString(3) : "",
-                        OwnerID = !reader.IsDBNull(4) ? reader.GetInt32(4) : 0,
-                        RoomID = !reader.IsDBNull(5) ? reader.GetInt32(5) : 0,
-                        Value = !reader.IsDBNull(6) ? reader.GetInt32(6) : 0,
-                        Weight = !reader.IsDBNull(7) ? reader.GetDouble(7) : 0.0,
-                        WearLoc = !reader.IsDBNull(8) ? reader.GetString(8) : "",
-                        HandLoc = !reader.IsDBNull(9) ? reader.GetInt32(9) : 0,
-                        ItemCategory = !reader.IsDBNull(10) ? reader.GetString(10) : "",
-                        ShortDesc = !reader.IsDBNull(11) ? reader.GetString(11) : "",
-                        LongDesc = !reader.IsDBNull(12) ? reader.GetString(12) : "",
-                        Creator = !reader.IsDBNull(13) ? reader.GetString(13) : "",
-                        Condition = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
-                        FlagsJson = !reader.IsDBNull(15) ? reader.GetString(15) : "[]"
-                    };
-
-                    // Determine ordinals for optional fields in a robust way
-                    int nextOrd = 16; // first ordinal after Flags
-                    int materialOrd = -1;
-                    int qtyOrd = -1;
-                    int dmgOrd = -1;
-                    int baseAcOrd = -1;
-
-                    if (includeMaterial)
-                    {
-                        materialOrd = nextOrd++;
-                    }
-                    if (includeQuantity)
-                    {
-                        qtyOrd = nextOrd++;
-                    }
-
-                    // DmgDiceMult is always present after optional columns
-                    dmgOrd = nextOrd++;
-                    if (includeBaseAc)
-                        baseAcOrd = nextOrd++;
-
-                    // Quantity (if present)
-                    try
-                    {
-                        if (qtyOrd != -1 && !reader.IsDBNull(qtyOrd))
-                            it.Quantity = reader.GetInt32(qtyOrd);
-                        else
-                            it.Quantity = 1;
-                    }
-                    catch { it.Quantity = 1; }
-
-                    // DmgDiceMult
-                    try
-                    {
-                        if (!reader.IsDBNull(dmgOrd))
-                            it.DmgDiceMult = reader.GetDouble(dmgOrd);
-                        else
-                            it.DmgDiceMult = 1.0;
-                    }
-                    catch
-                    {
-                        it.DmgDiceMult = 1.0;
-                    }
-
-                    if (includeBaseAc)
-                    {
-                        if (!reader.IsDBNull(baseAcOrd))
-                            it.BaseACBonus = reader.GetDouble(baseAcOrd);
-                    }
-
-                    // Material (if present)
-                    try
-                    {
-                        if (materialOrd != -1 && !reader.IsDBNull(materialOrd))
-                            it.Material = reader.GetString(materialOrd);
-                        else
-                            it.Material = null;
-                    }
-                    catch { it.Material = null; }
-
-                    try
-                    {
-                        it.Flags = JsonSerializer.Deserialize<List<string>>(it.FlagsJson ?? "[]") ?? new List<string>();
-                    }
-                    catch { it.Flags = new List<string>(); }
-
-                    it.OwnerType = NormalizeOwnerType(it.OwnerType);
-                    list.Add(it);
-                }
-            }
-            return list;
-        } // end LoadItemsByOwner
+            // NOTE: rely on DbWriteQueue for writer serialization. Do not use ad-hoc global locks here.
+            EnsureOpen(conn);
+            using var cmd = new SqliteCommand("DELETE FROM Item WHERE ItemID = @id", conn);
+            if (tx != null) cmd.Transaction = tx;
+            cmd.Parameters.AddWithValue("@id", itemId);
+            cmd.ExecuteNonQuery();
+        } // end DeleteItemInternal
 
         private static bool EnsureHasBaseAc(SqliteConnection conn, SqliteTransaction? tx = null)
         {
@@ -512,6 +393,152 @@ namespace MudPersistence
             return hasBaseAcBonus == true;
         } // end EnsureHasBaseAc
 
+        public static List<Item> LoadItemsByOwner(SqliteConnection conn, string ownerType, int ownerId, SqliteTransaction? tx = null)
+        {
+            var list = new List<Item>();
+            if (conn == null) return list;
+
+            EnsureOpen(conn);
+            var normalized = NormalizeOwnerType(ownerType);
+            bool includeBaseAc = EnsureHasBaseAc(conn, tx);
+            bool includeQuantity = false;
+            if (!hasQuantity.HasValue) hasQuantity = TryHasColumn(conn, "Quantity", tx);
+            includeQuantity = hasQuantity == true;
+
+            // detect Material and Descriptor column on the fly (do not cache here)
+            bool includeMaterial = TryHasColumn(conn, "Material", tx);
+            bool includeDescriptorLocal = TryHasColumn(conn, "Descriptor", tx);
+
+            using var cmd = new SqliteCommand(@"
+            SELECT ItemID, TemplateID, Name, OwnerType, OwnerID, RoomID,
+                   Value, Weight, WearLoc, HandLoc, ItemCategory, ShortDesc,
+                   LongDesc, Creator, Condition, Flags"
+                            + (includeMaterial ? ", Material" : string.Empty)
+                            + (includeDescriptorLocal ? ", Descriptor" : string.Empty)
+                            + (includeQuantity ? ", Quantity" : string.Empty)
+                            + ", DmgDiceMult"
+                            + (includeBaseAc ? ", BaseACBonus" : ""), conn);
+
+            if (tx != null) cmd.Transaction = tx;
+
+            cmd.CommandText += " FROM Item WHERE OwnerType = @otype AND OwnerID = @oid;";
+            cmd.Parameters.AddWithValue("@otype", normalized);
+            cmd.Parameters.AddWithValue("@oid", ownerId);
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var it = new Item
+                {
+                    ItemID = !reader.IsDBNull(0) ? reader.GetInt32(0) : 0,
+                    TemplateID = !reader.IsDBNull(1) ? reader.GetString(1) : "",
+                    Name = !reader.IsDBNull(2) ? reader.GetString(2) : "",
+                    OwnerType = !reader.IsDBNull(3) ? reader.GetString(3) : "",
+                    OwnerID = !reader.IsDBNull(4) ? reader.GetInt32(4) : 0,
+                    RoomID = !reader.IsDBNull(5) ? reader.GetInt32(5) : 0,
+                    Value = !reader.IsDBNull(6) ? reader.GetInt32(6) : 0,
+                    Weight = !reader.IsDBNull(7) ? reader.GetDouble(7) : 0.0,
+                    WearLoc = !reader.IsDBNull(8) ? reader.GetString(8) : "",
+                    HandLoc = !reader.IsDBNull(9) ? reader.GetInt32(9) : 0,
+                    ItemCategory = !reader.IsDBNull(10) ? reader.GetString(10) : "",
+                    ShortDesc = !reader.IsDBNull(11) ? reader.GetString(11) : "",
+                    LongDesc = !reader.IsDBNull(12) ? reader.GetString(12) : "",
+                    Creator = !reader.IsDBNull(13) ? reader.GetString(13) : "",
+                    Condition = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
+                    FlagsJson = !reader.IsDBNull(15) ? reader.GetString(15) : "[]"
+                };
+
+                // Determine ordinals for optional fields in a robust way
+                int nextOrd = 16; // first ordinal after Flags
+                int materialOrd = -1;
+                int descriptorOrd = -1;
+                int qtyOrd = -1;
+                int dmgOrd = -1;
+                int baseAcOrd = -1;
+
+                if (includeMaterial)
+                {
+                    materialOrd = nextOrd++;
+                }
+
+                if (includeDescriptorLocal)
+                {
+                    descriptorOrd = nextOrd++;
+                }
+
+                if (includeQuantity)
+                {
+                    qtyOrd = nextOrd++;
+                }
+
+                // DmgDiceMult is always present after optional columns
+                dmgOrd = nextOrd++;
+                if (includeBaseAc)
+                    baseAcOrd = nextOrd++;
+
+                // Quantity (if present)
+                try
+                {
+                    if (qtyOrd != -1 && !reader.IsDBNull(qtyOrd))
+                        it.Quantity = reader.GetInt32(qtyOrd);
+                    else
+                        it.Quantity = 1;
+                }
+                catch { it.Quantity = 1; }
+
+                // DmgDiceMult
+                try
+                {
+                    if (!reader.IsDBNull(dmgOrd))
+                        it.DmgDiceMult = reader.GetDouble(dmgOrd);
+                    else
+                        it.DmgDiceMult = 1.0;
+                }
+                catch
+                {
+                    it.DmgDiceMult = 1.0;
+                }
+
+                if (includeBaseAc)
+                {
+                    if (!reader.IsDBNull(baseAcOrd))
+                        it.BaseACBonus = reader.GetDouble(baseAcOrd);
+                }
+
+                // Material (if present)
+                try
+                {
+                    if (materialOrd != -1 && !reader.IsDBNull(materialOrd))
+                        it.Material = reader.GetString(materialOrd);
+                    else
+                        it.Material = null;
+                }
+                catch { it.Material = null; }
+
+                // Descriptor (if present)
+                try
+                {
+                    if (descriptorOrd != -1 && !reader.IsDBNull(descriptorOrd))
+                        it.Descriptor = reader.GetString(descriptorOrd) ?? "";
+                    else
+                        it.Descriptor = "";
+                }
+                catch { it.Descriptor = ""; }
+
+                try
+                {
+                    it.Flags = JsonSerializer.Deserialize<List<string>>(it.FlagsJson ?? "[]") ?? new List<string>();
+                }
+                catch { it.Flags = new List<string>(); }
+
+                it.OwnerType = NormalizeOwnerType(it.OwnerType);
+                list.Add(it);
+            }
+
+            return list;
+        } // end LoadItemsByOwner
+
+     
         private static bool TryHasColumn(SqliteConnection conn, string column, SqliteTransaction? tx = null)
         {
             EnsureOpen(conn);

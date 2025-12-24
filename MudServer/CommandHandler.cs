@@ -95,18 +95,185 @@ namespace MudServer
                 return EatItem(player, drinkName, true);
             }
 
-            // Inspect container (new): inspect <containername>
-            if (command.StartsWith("inspect ", StringComparison.OrdinalIgnoreCase))
+            // LOCK command: accept "lock" (usage) or "lock <container> [with <key>]"
+            if (command.StartsWith("lock", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                    return MessageHandler.System("Usage: lock <container> [with <key>]");
+                var payload = parts[1].Trim();
+                int idxWith = payload.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                string containerName = idxWith >= 0 ? payload.Substring(0, idxWith).Trim() : payload;
+                string keyName = idxWith >= 0 ? payload.Substring(idxWith + " with ".Length).Trim() : "";
+
+                if (string.IsNullOrWhiteSpace(containerName))
+                    return MessageHandler.System("Usage: lock <container> [with <key>]");
+
+                // Resolve container with ItemParser first (search player inventory + room). Conservative options for containers.
+                Item? container = null;
+                try
+                {
+                    var optsContainer = new ItemParserOptions
+                    {
+                        IncludeDescriptorTokens = false,
+                        IncludeMaterialTokens = false,
+                        AllowStartsWith = true
+                    };
+                    var pres = ItemParser.ResolveForAny(player, containerName, optsContainer);
+                    if (pres?.Winner != null) container = pres.Winner;
+                }
+                catch { /* best-effort; fall through to legacy lookup */ }
+
+                // Fallback to legacy lookup
+                if (container == null) container = InventoryManager.FindContainer(player, containerName);
+                if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
+
+                if (!string.IsNullOrWhiteSpace(keyName))
+                {
+                    // find key in player's inventory
+                    var key = player.Inventory?.FirstOrDefault(i =>
+                        i != null && (string.Equals(i.Name, keyName, StringComparison.OrdinalIgnoreCase)
+                                      || (!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, keyName, StringComparison.OrdinalIgnoreCase))))
+                        ?? null;
+
+                    if (key == null) return MessageHandler.System($"You are not carrying a key named '{keyName}'.");
+
+                    // Start pending flow to prompt for label (CheckPendingAction already handles "LockKey" NameKey)
+                    player.PendingAction = new PendingAction
+                    {
+                        Command = "LockKey",
+                        Step = "NameKey",
+                        Data = new KeyLocks.LockPendingData { Container = container, Key = key }
+                    };
+                    return MessageHandler.System($"Enter label for the key to lock {container.Name}:");
+                }
+                else
+                {
+                    // If no key specified, prompt for key name (or you could prompt to pick a carried key)
+                    player.PendingAction = new PendingAction
+                    {
+                        Command = "LockKey",
+                        Step = "NameKey",
+                        Data = new KeyLocks.LockPendingData { Container = container, Key = null! } // LockPendingData.Key may be filled by pending step handling
+                    };
+                    return MessageHandler.System($"Which key do you want to use to lock {container.Name}? Type the key name, or 'cancel'.");
+                }
+            }//End LOCK
+
+
+            // UNLOCK command: accept "unlock" (usage) or "unlock <container> with <key>"
+            if (command.StartsWith("unlock", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                    return MessageHandler.System("Usage: unlock <container> with <key>");
+                var payload = parts[1].Trim();
+                int idxWith = payload.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                if (idxWith < 0) return MessageHandler.System("Usage: unlock <container> with <key>");
+
+                var containerName = payload.Substring(0, idxWith).Trim();
+                var keyName = payload.Substring(idxWith + " with ".Length).Trim();
+
+                if (string.IsNullOrWhiteSpace(containerName) || string.IsNullOrWhiteSpace(keyName))
+                    return MessageHandler.System("Usage: unlock <container> with <key>");
+
+                // Resolve container using ItemParser first (player inventory + room)
+                Item? container = null;
+                try
+                {
+                    var optsContainer = new ItemParserOptions
+                    {
+                        IncludeDescriptorTokens = false,
+                        IncludeMaterialTokens = false,
+                        AllowStartsWith = true
+                    };
+                    var pres = ItemParser.ResolveForAny(player, containerName, optsContainer);
+                    if (pres?.Winner != null) container = pres.Winner;
+                }
+                catch { /* best-effort */ }
+
+                if (container == null) container = InventoryManager.FindContainer(player, containerName);
+                if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
+
+                var key = player.Inventory?.FirstOrDefault(i =>
+                        i != null && (string.Equals(i.Name, keyName, StringComparison.OrdinalIgnoreCase)
+                                      || (!string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, keyName, StringComparison.OrdinalIgnoreCase))))
+                        ?? null;
+
+                if (key == null) return MessageHandler.System($"You are not carrying a key named '{keyName}'.");
+
+                // Attempt unlock immediately
+                return KeyLocks.UnlockContainer(_dbConnection, player, container, key);
+            }//End UNLOCK
+
+            // Inspect container (accept "inspect" usage or "inspect <container>")
+            if (command.StartsWith("inspect", StringComparison.OrdinalIgnoreCase))
             {
                 var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2) return MessageHandler.System("Usage: inspect <container>");
                 var containerName = parts[1].Trim();
                 if (string.IsNullOrWhiteSpace(containerName)) return MessageHandler.System("Usage: inspect <container>");
 
-                var container = InventoryManager.FindContainer(player, containerName);
-                if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
+                // NEW BEHAVIOR:
+                // - Resolve across ALL scopes first (room + inventory + equipped).
+                // - If parser returns a single Winner, use it regardless of location.
+                // - If multiple candidates (tie), prefer a single inventory-held candidate when present.
+                // - If still ambiguous present the candidate list to the player.
+                var optsAny = new ItemParserOptions
+                {
+                    IncludeDescriptorTokens = true,
+                    IncludeMaterialTokens = true,
+                    AllowStartsWith = true
+                };
 
-                // NEW: enforce lock check
+                Item? container = null;
+                ItemResolutionResult presAny;
+                try
+                {
+                    presAny = ItemParser.ResolveForAny(player, containerName, optsAny);
+                }
+                catch
+                {
+                    presAny = new ItemResolutionResult { Reason = "Parser failure." };
+                }
+
+                // If parser produced a clear winner from any scope, use it.
+                if (presAny?.Winner != null)
+                {
+                    container = presAny.Winner;
+                }
+                else if (presAny != null && presAny.Candidates != null && presAny.Candidates.Count > 0)
+                {
+                    // Disambiguate tie: prefer an inventory match if exactly one inventory candidate exists.
+                    var invMatches = new List<Item>();
+                    if (player?.Inventory != null)
+                    {
+                        foreach (var c in presAny.Candidates)
+                        {
+                            if (player.Inventory.Any(inv => ReferenceEquals(inv, c) || inv.ItemID == c.ItemID))
+                                invMatches.Add(c);
+                        }
+                    }
+
+                    if (invMatches.Count == 1)
+                    {
+                        container = invMatches[0];
+                    }
+                    else
+                    {
+                        // No single inventory preference -> present ambiguous list (preserve current UX)
+                        var list = string.Join(", ", presAny.Candidates.Select(i => i.Name));
+                        return MessageHandler.System($"Multiple items match: {list}");
+                    }
+                }
+
+                // If still not resolved, report not found
+                if (container == null)
+                {
+                    return MessageHandler.System($"You see no '{containerName}' here.");
+                }
+
+                // Enforce lock check (works for both room and inventory containers)
                 var lockMsg = KeyLocks.EnsureAccessible(_dbConnection, player, container);
                 if (lockMsg != null) return MessageHandler.System(lockMsg);
 
@@ -121,7 +288,7 @@ namespace MudServer
                     {
                         using var cmd = _dbConnection.CreateCommand();
                         cmd.CommandText = @"SELECT SUM(COALESCE(Weight,0.0) * COALESCE(Quantity,1)) FROM Item
-                            WHERE OwnerType = 'Item' AND OwnerID = @cid;";
+            WHERE OwnerType = 'Item' AND OwnerID = @cid;";
                         cmd.Parameters.AddWithValue("@cid", container.ItemID);
                         var obj = cmd.ExecuteScalar();
                         if (!(obj == null || obj is DBNull))
@@ -160,7 +327,7 @@ namespace MudServer
                     Console.WriteLine($"[INSPECT] Failed to inspect container '{containerName}': {ex}");
                     return MessageHandler.System("Failed to inspect container due to a server error.");
                 }
-            }
+            }//END INSPECT
 
             // --- admin: debugrooms <areaid?> ---
             if (command.StartsWith("debugrooms", StringComparison.OrdinalIgnoreCase))
@@ -184,12 +351,58 @@ namespace MudServer
             {
                 var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2) return MessageHandler.System("Usage: cook <container>");
-                var containerName = parts[1].Trim();
-                if (string.IsNullOrWhiteSpace(containerName)) return MessageHandler.System("Usage: cook <container>");
+                var payload = parts[1].Trim();
+                if (string.IsNullOrWhiteSpace(payload)) return MessageHandler.System("Usage: cook <container>");
 
+                // Support explicit operator forms:
+                //  - "cook with <container>"  -> treat everything after "with " as container (allow descriptors)
+                //  - "cook <container>"       -> legacy behavior (conservative container lookup)
+                bool usedWithOperator = false;
+                string containerName = payload;
+
+                if (payload.StartsWith("with ", StringComparison.OrdinalIgnoreCase))
+                {
+                    usedWithOperator = true;
+                    containerName = payload.Substring("with ".Length).Trim();
+                }
                 try
                 {
-                    return MudServer.MudCore.Actions.Cooking.TryStartCooking(player, containerName, _world, _dbConnection);
+                    // Conservative parser options for normal forms (avoid descriptor collisions)
+                    var optsContainer = new ItemParserOptions
+                    {
+                        IncludeDescriptorTokens = false,
+                        IncludeMaterialTokens = false,
+                        AllowStartsWith = true
+                    };
+
+                    // If user used explicit "with", be more permissive and allow descriptor tokens
+                    if (usedWithOperator)
+                    {
+                        optsContainer.IncludeDescriptorTokens = true;
+                        optsContainer.IncludeMaterialTokens = true;
+                    }
+
+                    string resolvedName = containerName;
+                    Item? container = null;
+                    try
+                    {
+                        var pres = ItemParser.ResolveForAny(player, containerName, optsContainer);
+                        if (pres?.Winner != null)
+                        {
+                            container = pres.Winner;
+                            resolvedName = !string.IsNullOrWhiteSpace(pres.Winner.Name) ? pres.Winner.Name : (pres.Winner.TemplateID ?? containerName);
+                        }
+                    }
+                    catch { /* best-effort; fall back to provided containerName */ }
+
+                    // fallback legacy FindContainer if parser didn't find one
+                    if (container == null) container = InventoryManager.FindContainer(player, containerName);
+                    if (container == null)
+                    {
+                        return MessageHandler.System($"No container matching '{containerName}' found.");
+                    }
+
+                    return MudServer.MudCore.Actions.Cooking.TryStartCooking(player, resolvedName, _world, _dbConnection);
                 }
                 catch (Exception ex)
                 {
@@ -326,11 +539,11 @@ namespace MudServer
                 return _adminService.AddItem(player, template, qty);
             }
 
-            if (command.StartsWith("exchange ", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-                return _adminService.HandleExchange(player, command);
-            }
+            //if (command.StartsWith("exchange ", StringComparison.OrdinalIgnoreCase))
+            //{
+            //    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            //    return _adminService.HandleExchange(player, command);
+            //}
 
             if (command.StartsWith("removeitem ", StringComparison.OrdinalIgnoreCase))
             {
@@ -462,7 +675,10 @@ namespace MudServer
                                 IsWorn = isWorn,
                                 IsHeld = isHeld,
                                 HandLoc = isHeld ? i.HandLoc : 0,
-                                Quantity = i.Quantity > 0 ? i.Quantity : 1
+                                Quantity = i.Quantity > 0 ? i.Quantity : 1,
+                                // New fields for client inventory panel
+                                Descriptor = i.Descriptor ?? "",
+                                Material = i.Material ?? ""
                             };
                         }).ToList() ?? new List<MudNetworking.InventoryItem>();
 
@@ -592,10 +808,7 @@ namespace MudServer
 
         private Message? HandleLookCommand(Player player, string command)
         {
-            var lookParts = command.Split(' ', 2);
-            if (lookParts.Length == 1)
-                return Look(player);
-
+            var lookParts = command.Split(' ', 2); if (lookParts.Length == 1) return Look(player);
             var targetExpr = lookParts[1].Trim();
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are lost in the void.");
@@ -664,30 +877,146 @@ namespace MudServer
                 return MessageHandler.System(text);
             }
 
-            var itemMatches = InventoryManager.FindRoomMatches(room, targetExpr);
-            if (itemMatches == null || itemMatches.Count == 0)
-                return MessageHandler.System($"You see no '{targetExpr}' here.");
-
-            if (itemMatches.Count > 1)
+            // Support "look all <query>" to return descriptions for every matching item in the room.
+            // Example: "look all iron" -> items whose material/descriptor/name/token matches "iron".
+            try
             {
-                var list = string.Join(", ", itemMatches.Select(i => i.Name));
+                if (targetExpr.StartsWith("all ", StringComparison.OrdinalIgnoreCase))
+                {
+                    var query = targetExpr.Substring(4).Trim();
+                    if (string.IsNullOrWhiteSpace(query))
+                        return MessageHandler.System("Usage: look all <item>");
+
+                    string qLower = query.ToLowerInvariant();
+
+                    // local tokenizer: returns lowercased alphanumeric tokens
+                    IEnumerable<string> TokenizeLocal(string? s)
+                    {
+                        if (string.IsNullOrWhiteSpace(s)) yield break;
+                        int i = 0, n = s.Length;
+                        while (i < n)
+                        {
+                            while (i < n && !char.IsLetterOrDigit(s[i])) i++;
+                            int start = i;
+                            while (i < n && char.IsLetterOrDigit(s[i])) i++;
+                            if (i > start) yield return s.Substring(start, i - start).ToLowerInvariant();
+                        }
+                    }
+
+                    bool ItemMatchesQuery(Item it, string q)
+                    {
+                        if (it == null || string.IsNullOrWhiteSpace(q)) return false;
+                        // TemplateID exact
+                        if (!string.IsNullOrWhiteSpace(it.TemplateID) && string.Equals(it.TemplateID, q, StringComparison.OrdinalIgnoreCase)) return true;
+
+                        // Name exact / starts-with / contains token
+                        if (!string.IsNullOrWhiteSpace(it.Name))
+                        {
+                            if (it.Name.Equals(q, StringComparison.OrdinalIgnoreCase) || it.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase)) return true;
+                            var nameTokens = TokenizeLocal(it.Name).ToList();
+                            if (nameTokens.Any(t => t.Equals(q) || t.StartsWith(q))) return true;
+                            if (it.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                        }
+
+                        // Descriptor match
+                        if (!string.IsNullOrWhiteSpace(it.Descriptor) && it.Descriptor.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+
+                        // Material match
+                        if (!string.IsNullOrWhiteSpace(it.Material) && it.Material.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+
+                        return false;
+                    }
+
+                    var matches = room.Inventory?
+                        .Where(i => i != null && ItemMatchesQuery(i, qLower))
+                        .ToList() ?? new List<Item>();
+
+                    if (matches.Count == 0)
+                        return MessageHandler.System($"You see no '{query}' here.");
+
+                    // Build combined descriptions, one after another separated by blank line
+                    var pieces = new List<string>();
+                    foreach (var it in matches)
+                    {
+                        var getItemDesc = !string.IsNullOrWhiteSpace(it.LongDesc) ? it.LongDesc :
+                                       !string.IsNullOrWhiteSpace(it.ShortDesc) ? it.ShortDesc : "No description.";
+
+                        // Build metadata: "Key words: [name] [descriptor] [material]"
+                        string getMeta = "";
+                        try
+                        {
+                            var metaParts = new List<string>();
+                            if (!string.IsNullOrWhiteSpace(it.Name)) metaParts.Add(it.Name.Trim());
+                            if (!string.IsNullOrWhiteSpace(it.Descriptor)) metaParts.Add(it.Descriptor.Trim());
+                            if (!string.IsNullOrWhiteSpace(it.Material)) metaParts.Add(it.Material.Trim());
+
+                            if (metaParts.Count > 0)
+                            {
+                                var joined = string.Join(" ", metaParts.Where(s => !string.IsNullOrWhiteSpace(s)));
+                                const int maxMetaLen = 120;
+                                if (joined.Length > maxMetaLen) joined = joined.Substring(0, maxMetaLen) + "...";
+                                getMeta = $" Key words: {joined}";
+                            }
+                        }
+                        catch { /* best-effort */ }
+
+                        pieces.Add($"{it.Name}: {getItemDesc}{getMeta}");
+                    }
+
+                    var header = matches.Count == 1 ? $"You see {matches.Count} matching item:" : $"You see {matches.Count} matching items:";
+                    var result = header + "\n\n" + string.Join("\n\n", pieces);
+                    return MessageHandler.System(result);
+                }
+            }
+            catch { /* non-fatal; fall through to single-item lookup below */ }
+
+            // Use ItemParser to resolve room items (supports descriptor/material tokens)
+            var opts = new ItemParserOptions { IncludeDescriptorTokens = true, IncludeMaterialTokens = true, AllowStartsWith = true };
+            var pres = ItemParser.ResolveForGet(player, targetExpr, opts);
+
+            if (pres.Winner == null)
+            {
+                if (pres.Candidates.Count == 0)
+                    return MessageHandler.System($"You see no '{targetExpr}' here.");
+                var list = string.Join(", ", pres.Candidates.Select(i => i.Name));
                 return MessageHandler.System($"Multiple items match: {list}");
             }
 
-            var item = itemMatches[0];
+            var item = pres.Winner;
             var itemDesc = !string.IsNullOrWhiteSpace(item.LongDesc) ? item.LongDesc :
                            !string.IsNullOrWhiteSpace(item.ShortDesc) ? item.ShortDesc : "No description.";
-            return MessageHandler.System($"{item.Name}: {itemDesc}");
+
+            // Build metadata: "Key words: [name] [descriptor] [material]"
+            string meta = "";
+            try
+            {
+                var metaParts = new List<string>();
+                // include name as requested (may duplicate the leading Name in the output)
+                if (!string.IsNullOrWhiteSpace(item.Name)) metaParts.Add(item.Name.Trim());
+                if (!string.IsNullOrWhiteSpace(item.Descriptor)) metaParts.Add(item.Descriptor.Trim());
+                if (!string.IsNullOrWhiteSpace(item.Material)) metaParts.Add(item.Material.Trim());
+
+                if (metaParts.Count > 0)
+                {
+                    var joined = string.Join(" ", metaParts.Where(s => !string.IsNullOrWhiteSpace(s)));
+                    // limit metadata length for UX (avoid huge lines)
+                    const int maxMetaLen = 120;
+                    if (joined.Length > maxMetaLen) joined = joined.Substring(0, maxMetaLen) + "...";
+                    meta = $" Key words: {joined}";
+                }
+            }
+            catch { /* best-effort - do not break look */ }
+
+            return MessageHandler.System($"{item.Name}: {itemDesc}{meta}");
         } // end HandleLookCommand
 
         private Message? HandleGetCommand(Player player, string command)
         {
-            var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (tokens.Count < 2) return MessageHandler.System("Usage: get <item> [container] OR get <n|all> <item> <container>");
-
+            var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList(); if (tokens.Count < 2) return MessageHandler.System("Usage: get <item> [container] OR get <n|all> <item> <container>");
             var (quantity, explicitQuantity, itemExpr, containerName, getErr) = ParseQuantityItemContainer(tokens, 1);
             if (getErr != null) return MessageHandler.System(getErr);
 
+            // If a container is specified, operate against its contents.
             if (!string.IsNullOrWhiteSpace(containerName))
             {
                 var container = InventoryManager.FindContainer(player, containerName);
@@ -697,12 +1026,72 @@ namespace MudServer
                 var lockMsg = KeyLocks.EnsureAccessible(_dbConnection, player, container);
                 if (lockMsg != null) return MessageHandler.System(lockMsg);
 
-                // Load and resolve inside container
-                List<Item> containerItems = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", container.ItemID) ?? new List<Item>();
+                // Load container contents (DB authoritative)
+                List<Item> containerItems;
+                try { containerItems = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", container.ItemID) ?? new List<Item>(); }
+                catch { containerItems = new List<Item>(); }
 
-                // NEW: token-aware matching for container contents so "grain" matches "Barley Grain"
-                List<Item> matches = new List<Item>();
+                // Prefer parser-based resolution first (allow descriptors/materials for general GET)
+                var opts = new ItemParserOptions { IncludeDescriptorTokens = true, IncludeMaterialTokens = true, AllowStartsWith = true };
+                var pres = ItemParser.ResolveCandidates(containerItems, player, itemExpr, opts);
 
+                // Helper for logical equality (prefer TemplateID)
+                bool SameLogical(Item a, Item b)
+                {
+                    if (!string.IsNullOrWhiteSpace(a.TemplateID) && !string.IsNullOrWhiteSpace(b.TemplateID))
+                        return string.Equals(a.TemplateID, b.TemplateID, StringComparison.OrdinalIgnoreCase);
+                    return string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+                }
+
+                // If parser produced a winner, use it (and honor explicit quantity logic)
+                if (pres.Winner != null)
+                {
+                    var representative = pres.Winner;
+                    var matchingRows = containerItems.Where(c => SameLogical(representative, c)).OrderByDescending(r => r.Quantity).ToList();
+                    int available = matchingRows.Sum(r => r.Quantity);
+
+                    if (explicitQuantity)
+                    {
+                        if (quantity < 0) // 'all'
+                        {
+                            if (available == 0) return MessageHandler.System($"No '{representative.Name}' remain in {container.Name}.");
+                            foreach (var row in matchingRows)
+                                InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, row, row.Quantity);
+                            return MessageHandler.System($"You took {available} x {representative.Name} from {container.Name}.");
+                        }
+
+                        if (available < quantity)
+                            return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
+
+                        int remaining = quantity;
+                        int taken = 0;
+                        foreach (var row in matchingRows)
+                        {
+                            if (remaining <= 0) break;
+                            int take = Math.Min(remaining, row.Quantity);
+                            InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, row, take);
+                            taken += take;
+                            remaining -= take;
+                        }
+
+                        return MessageHandler.System($"You took {taken} x {representative.Name} from {container.Name}.");
+                    }
+
+                    // No explicit quantity: take one from the best matching row
+                    var getCandidate = matchingRows.OrderByDescending(m => !string.IsNullOrWhiteSpace(m.TemplateID) && string.Equals(m.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                                                .ThenByDescending(m => m.Quantity).FirstOrDefault();
+                    if (getCandidate == null) return MessageHandler.System($"No '{itemExpr}' found inside '{container.Name}'.");
+
+                    bool isLiquid = (getCandidate.Flags != null && getCandidate.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                    || (!string.IsNullOrEmpty(getCandidate.FlagsJson) && getCandidate.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (isLiquid)
+                        return MessageHandler.System($"That's a liquid. Use: fill <liquid> from {container.Name} to <target container>.");
+
+                    return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, getCandidate, 1);
+                }
+
+                // Parser returned nothing useful — fall back to legacy heuristics to preserve behavior.
+                // Tokenize helper (kept from previous logic)
                 IEnumerable<string> Tokenize(string? s)
                 {
                     if (string.IsNullOrWhiteSpace(s)) yield break;
@@ -716,14 +1105,13 @@ namespace MudServer
                     }
                 }
 
-                // 1) exact name or template id
-                matches = containerItems
+                // Matching heuristics (legacy fallback)
+                var matches = containerItems
                     .Where(i => !string.IsNullOrEmpty(i.Name) &&
                                 (i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)
                                  || (!string.IsNullOrEmpty(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase))))
                     .ToList();
 
-                // 2) token-equals (e.g., "grain" matches "Barley Grain")
                 if (matches.Count == 0)
                 {
                     var reqTokens = Tokenize(itemExpr).ToList();
@@ -732,20 +1120,13 @@ namespace MudServer
                         matches = containerItems.Where(it =>
                         {
                             var nameTokens = Tokenize(it?.Name).ToList();
-                            // any requested token exactly equals any name token
-                            if (reqTokens.Any(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase))))
-                                return true;
-
-                            // full-request tokens are all contained in the item's name tokens (e.g., "barley grain")
-                            if (reqTokens.All(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase))))
-                                return true;
-
+                            if (reqTokens.Any(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
+                            if (reqTokens.All(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
                             return false;
                         }).ToList();
                     }
                 }
 
-                // 3) name starts-with (fallback)
                 if (matches.Count == 0)
                 {
                     matches = containerItems
@@ -753,7 +1134,6 @@ namespace MudServer
                         .ToList();
                 }
 
-                // If still none, try token starts-with (e.g., "bar" matches "Barley")
                 if (matches.Count == 0)
                 {
                     var reqTokens2 = Tokenize(itemExpr).ToList();
@@ -768,39 +1148,63 @@ namespace MudServer
                 }
 
                 if (matches.Count == 0)
-                {
                     return MessageHandler.System($"No '{itemExpr}' found inside '{container.Name}'.");
-                }
 
-                if (matches.Count == 1)
+                // If user specified a quantity, fulfill it by distributing across matching rows in the container.
+                if (explicitQuantity)
                 {
-                    // BLOCK: Liquids must be transferred via 'fill', not 'get'
-                    var candidate = matches[0];
-                    bool isLiquid = (candidate.Flags != null && candidate.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
-                                    || (!string.IsNullOrEmpty(candidate.FlagsJson) && candidate.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
-                    if (isLiquid)
+                    // logical matching: prefer TemplateID match, otherwise Name equality
+                    bool SameLogicalFallback(Item a, Item b)
                     {
-                        return MessageHandler.System($"That's a liquid. Use: fill <liquid> from {container.Name} to <target container>.");
+                        if (!string.IsNullOrWhiteSpace(a.TemplateID) && !string.IsNullOrWhiteSpace(b.TemplateID))
+                            return string.Equals(a.TemplateID, b.TemplateID, StringComparison.OrdinalIgnoreCase);
+                        return string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
                     }
 
-                    int qtyToTake = explicitQuantity ? (quantity < 0 ? matches[0].Quantity : quantity) : 1;
-                    return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, matches[0], qtyToTake);
-                }
-                else
-                {
-                    var listText = string.Join("\n", matches.Select((it, idx2) => $"{idx2 + 1}) {it.Name} (Qty {it.Quantity})"));
-                    player.PendingAction = new PendingAction
-                    {
-                        Command = "GetFromContainer",
-                        Step = "SelectIndex",
-                        Data = new GetPendingData { Matches = matches, ContainerItemId = container.ItemID }
-                    };
+                    var representative = matches.First();
 
-                    return MessageHandler.System($"Multiple items match '{itemExpr}' inside '{container.Name}'. Choose which one:\n{listText}\nType the number of the item to take.");
+                    var matchingRows = containerItems.Where(c => SameLogicalFallback(representative, c)).OrderByDescending(r => r.Quantity).ToList();
+                    int available = matchingRows.Sum(r => r.Quantity);
+
+                    if (quantity < 0) // 'all'
+                    {
+                        if (available == 0) return MessageHandler.System($"No '{representative.Name}' remain in {container.Name}.");
+                        foreach (var row in matchingRows)
+                            InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, row, row.Quantity);
+                        return MessageHandler.System($"You took {available} x {representative.Name} from {container.Name}.");
+                    }
+
+                    if (available < quantity)
+                        return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
+
+                    int remaining = quantity;
+                    int taken = 0;
+                    foreach (var row in matchingRows)
+                    {
+                        if (remaining <= 0) break;
+                        int take = Math.Min(remaining, row.Quantity);
+                        InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, row, take);
+                        taken += take;
+                        remaining -= take;
+                    }
+
+                    return MessageHandler.System($"You took {taken} x {representative.Name} from {container.Name}.");
                 }
+
+                // No explicit quantity: transfer a single unit from the first match (preserve simple UX, no menu).
+                var candidate = matches.OrderByDescending(m => !string.IsNullOrWhiteSpace(m.TemplateID) && string.Equals(m.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                                       .ThenByDescending(m => m.Quantity).First();
+
+                bool isLiquid2 = (candidate.Flags != null && candidate.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                || (!string.IsNullOrEmpty(candidate.FlagsJson) && candidate.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (isLiquid2)
+                    return MessageHandler.System($"That's a liquid. Use: fill <liquid> from {container.Name} to <target container>.");
+
+                return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, candidate, 1);
             }
             else
             {
+                // No container: delegate to room-based GetItem which follows the new explicit-only policy.
                 int forwardQty = explicitQuantity ? quantity : 0;
                 return GetItem(player, itemExpr, forwardQty);
             }
@@ -808,9 +1212,7 @@ namespace MudServer
 
         private Message? HandlePutCommand(Player player, string command)
         {
-            var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (tokens.Count < 2) return MessageHandler.System("Usage: put <item> <container> OR put <n> <item> <container>");
-
+            var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList(); if (tokens.Count < 2) return MessageHandler.System("Usage: put <item> <container> OR put <n> <item> <container>");
             var (quantity, explicitQuantity, itemExpr, containerName, putErr) = ParseQuantityItemContainer(tokens, 1);
             if (putErr != null) return MessageHandler.System("Usage: put <n?> <item> in <container> (recommended).");
 
@@ -819,7 +1221,23 @@ namespace MudServer
             if (string.IsNullOrWhiteSpace(containerName))
                 return MessageHandler.System("Usage: put <n?> <item> in <container> (use 'in' or 'into' for multi-word containers).");
 
-            var container = InventoryManager.FindContainer(player, containerName);
+            // Resolve container using parser first (search player's inventory + room). Fallback to InventoryManager.FindContainer.
+            Item? container = null;
+            try
+            {
+                var optsContainer = new ItemParserOptions
+                {
+                    IncludeDescriptorTokens = false, // be conservative for container lookup
+                    IncludeMaterialTokens = false,
+                    AllowStartsWith = true
+                };
+                var pres = ItemParser.ResolveForAny(player, containerName, optsContainer);
+                if (pres.Winner != null) container = pres.Winner;
+            }
+            catch { /* best-effort */ }
+
+            if (container == null) container = InventoryManager.FindContainer(player, containerName);
+
             if (container == null)
             {
                 Console.WriteLine($"[PUT] No container matching '{containerName}' found. Player inventory: {string.Join(", ", player.Inventory.Select(i => i.Name ?? $"Item#{i.ItemID}"))}");
@@ -836,13 +1254,136 @@ namespace MudServer
             }
             catch { }
 
-            var parse = ItemParser.ResolveForInventoryCommand(player, itemExpr);
-            Console.WriteLine($"[PUT] ItemParser: winner={(parse.Winner != null ? $"{parse.Winner.Name} (ID={parse.Winner.ItemID})" : "(null)")} candidates={string.Join(", ", parse.Candidates.Select(c => c.Name ?? $"#{c.ItemID}"))}");
-
-            Item? item = null;
-            if (parse.Winner != null)
+            // If an explicit quantity was specified, fulfill it by distributing across matching carried items.
+            if (explicitQuantity)
             {
-                item = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == parse.Winner.ItemID);
+                // Build a list of candidate carried items that match the requested expression.
+                // Prefer parser-based template matching when available to avoid ambiguous name matches.
+                var parse = ItemParser.ResolveForInventoryCommand(player, itemExpr);
+
+                List<Item> candidates = new List<Item>();
+
+                if (parse.Winner != null)
+                {
+                    // collect all carried items that match the resolved winner (template/name/id)
+                    candidates = player.Inventory
+                        .Where(i => i != null && (
+                            i.ItemID == parse.Winner.ItemID ||
+                            (!string.IsNullOrEmpty(i.TemplateID) && !string.IsNullOrEmpty(parse.Winner.TemplateID) && i.TemplateID == parse.Winner.TemplateID) ||
+                            (!string.IsNullOrEmpty(i.Name) && !string.IsNullOrEmpty(parse.Winner.Name) && string.Equals(i.Name, parse.Winner.Name, StringComparison.OrdinalIgnoreCase))
+                        ))
+                        .Where(i => !IsRuntimeWorn(i) && !IsRuntimeHeld(i))
+                        .ToList();
+
+                    // If none non-equipped, broaden search to any carried matching instances (but still prefer non-equipped earlier)
+                    if (candidates.Count == 0)
+                    {
+                        candidates = player.Inventory
+                            .Where(i => i != null && (
+                                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)) ||
+                                i.ItemID == parse.Winner.ItemID
+                            ))
+                            .Where(i => !IsRuntimeWorn(i) && !IsRuntimeHeld(i))
+                            .ToList();
+                    }
+                }
+                else
+                {
+                    // No deterministic parser winner - try non-equipped matches first
+                    candidates = FindNonEquippedMatches(player, itemExpr);
+                    if (candidates.Count == 0)
+                    {
+                        // Fallback: broader match across inventory
+                        var firstTok = itemExpr.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? itemExpr;
+                        candidates = player.Inventory
+                            .Where(i => i != null && !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
+                                        (!string.IsNullOrWhiteSpace(i.Name) && (i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)
+                                         || i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)
+                                         || i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0)
+                                        || (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase))))
+                            .ToList();
+                    }
+                }
+
+                if (candidates.Count == 0)
+                {
+                    return MessageHandler.System($"You are not carrying '{itemExpr}' (or it's equipped).");
+                }
+
+                // Combine available quantity across candidates
+                int available = candidates.Sum(c => c.Quantity);
+
+                if (quantity < 0) // 'all'
+                {
+                    if (available == 0) return MessageHandler.System($"You have no '{itemExpr}' to put into {container.Name}.");
+
+                    int moved = 0;
+                    foreach (var row in candidates.OrderByDescending(c => c.Quantity).ToList())
+                    {
+                        int take = row.Quantity;
+                        var result = InventoryManager.TransferToContainer(_world, _dbConnection, player, row, container, take);
+                        // propagate failure immediately
+                        if (result == null) continue;
+                        var text = result.Text ?? "";
+                        if (text.StartsWith("You put", StringComparison.OrdinalIgnoreCase) ||
+                            text.StartsWith("Partial:", StringComparison.OrdinalIgnoreCase) ||
+                            text.IndexOf("already inside", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            // successful-ish
+                            moved += take;
+                        }
+                        else
+                        {
+                            // return the failure message to the player immediately
+                            return result;
+                        }
+                    }
+
+                    return MessageHandler.System($"You put {moved} x {candidates.First().Name} into {container.Name}.");
+                }
+
+                // numeric requested
+                if (available < quantity)
+                    return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
+
+                int remaining = quantity;
+                int movedTotal = 0;
+                // Prefer larger stacks first to minimize number of DB ops
+                foreach (var row in candidates.OrderByDescending(c => c.Quantity).ToList())
+                {
+                    if (remaining <= 0) break;
+                    int take = Math.Min(remaining, row.Quantity);
+                    var result = InventoryManager.TransferToContainer(_world, _dbConnection, player, row, container, take);
+                    if (result == null)
+                    {
+                        // treat as failure and stop (defensive)
+                        return MessageHandler.System("Failed to put the item due to a server error.");
+                    }
+                    var text = result.Text ?? "";
+                    if (text.StartsWith("You put", StringComparison.OrdinalIgnoreCase) ||
+                        text.StartsWith("Partial:", StringComparison.OrdinalIgnoreCase) ||
+                        text.IndexOf("already inside", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        movedTotal += take;
+                        remaining -= take;
+                    }
+                    else
+                    {
+                        // Propagate the failure message immediately (do not claim success)
+                        return result;
+                    }
+                }
+
+                return MessageHandler.System($"You put {movedTotal} x {candidates.First().Name} into {container.Name}.");
+            }
+
+            // No explicit quantity: resolve a single item and put one unit.
+            var parseSingle = ItemParser.ResolveForInventoryCommand(player, itemExpr);
+            Item? item = null;
+            if (parseSingle.Winner != null)
+            {
+                item = player.Inventory.FirstOrDefault(i => i != null && i.ItemID == parseSingle.Winner.ItemID);
 
                 if (item != null && (IsRuntimeWorn(item) || IsRuntimeHeld(item)))
                 {
@@ -905,8 +1446,9 @@ namespace MudServer
             if (!containerAccessible)
                 return MessageHandler.System($"Container '{container.Name}' not accessible.");
 
-            return InventoryManager.TransferToContainer(_world, _dbConnection, player, item, container, quantity);
-        }
+            // Transfer a single unit
+            return InventoryManager.TransferToContainer(_world, _dbConnection, player, item, container, 1);
+        } // end HandlePutCommand
 
         // Helper: perform admin 'anchor' behavior. Kept private and focused so ProcessCommand stays compact.
         // - Adds 'Anchored' to Flags (deterministically via Flags property) and persists via ItemPersistence.
@@ -925,22 +1467,43 @@ namespace MudServer
             var arg = command.Length > 7 ? command.Substring(7).Trim() : string.Empty;
             if (string.IsNullOrWhiteSpace(arg)) return MessageHandler.System("Usage: anchor <item>");
 
-            // find matching room items (same behavior as inline code)
-            var matches = InventoryManager.FindRoomMatches(room, arg);
-            if (matches == null || matches.Count == 0) return MessageHandler.System($"No '{arg}' found in this room.");
-            if (matches.Count > 1)
+            // Prefer ItemParser to resolve the intended room item (supports descriptor/material tokens for look-like matches)
+            var opts = new ItemParserOptions
             {
-                var list = string.Join(", ", matches.Select((it, idx) => $"{idx + 1}) {it.Name}"));
+                IncludeDescriptorTokens = true,
+                IncludeMaterialTokens = true,
+                AllowStartsWith = true
+            };
+
+            ItemResolutionResult pres;
+            try
+            {
+                pres = ItemParser.ResolveForGet(player, arg, opts);
+            }
+            catch
+            {
+                pres = new ItemResolutionResult { Reason = "Parser failure." };
+            }
+
+            if (pres.Winner == null)
+            {
+                if (pres.Candidates.Count == 0)
+                    return MessageHandler.System($"No '{arg}' found in this room.");
+                var list = string.Join(", ", pres.Candidates.Select(i => i.Name));
                 return MessageHandler.System($"Multiple items match: {list}");
             }
 
-            var target = matches[0];
+            var target = pres.Winner;
 
-            // Only room-owned items may be anchored
+            // Ensure the resolved instance is actually a room-owned item present in this room.
             if (!string.Equals(target.OwnerType ?? "", "Room", StringComparison.OrdinalIgnoreCase) ||
                 target.OwnerID != room.RoomID)
             {
-                return MessageHandler.System($"Only room-owned items can be anchored.");
+                // Attempt to locate a matching instance in the current room inventory by ItemID or Name
+                var found = room.Inventory.FirstOrDefault(i => i != null && (i.ItemID == target.ItemID || string.Equals(i.Name, target.Name, StringComparison.OrdinalIgnoreCase)));
+                if (found == null)
+                    return MessageHandler.System($"No '{arg}' found in this room.");
+                target = found;
             }
 
             try
@@ -974,20 +1537,19 @@ namespace MudServer
         private Message? GetItem(Player player, string requested, int requestedQuantity = 0)
         {
             // requestedQuantity meanings:
-            //   0  => no explicit quantity provided (prompt for stacks)
+            //   0  => no explicit quantity provided (transfer one)
             //  >0  => explicit numeric requested
-            //  -1  => 'all' requested (take entire stack or as much as available)
+            //  -1  => 'all' requested (take entire stack(s) or as much as available)
 
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
 
-            // Prefer ItemParser resolution but preserve existing multi-match UX.
+            // Prefer ItemParser resolution but preserve matching heuristics.
             var parseRes = ItemParser.ResolveForGet(player, requested);
             List<Item> matches;
 
             if (parseRes.Winner != null)
             {
-                // collect all room items that match the resolved winner (template/name/id)
                 matches = room.Inventory
                     .Where(i => i != null && (
                         i.ItemID == parseRes.Winner.ItemID ||
@@ -996,101 +1558,75 @@ namespace MudServer
                     ))
                     .ToList();
 
-                // If parser returned a winner but we couldn't map to items (unexpected), fall back to InventoryManager
                 if (matches.Count == 0)
                     matches = InventoryManager.FindRoomMatches(room, requested);
             }
             else
             {
-                // No deterministic winner from parser, fall back to current logic (preserves prompts)
                 matches = InventoryManager.FindRoomMatches(room, requested);
             }
 
-            if (matches.Count == 0)
+            if (matches == null || matches.Count == 0)
                 return MessageHandler.System($"No '{requested}' found in this room.");
 
-            if (matches.Count == 1)
+            // If explicit quantity requested, distribute across matching rows (no menu).
+            if (requestedQuantity != 0)
             {
-                var item = matches[0];
-
-                // Stack handling
-                if (item.Quantity > 1)
+                // logical match helper
+                bool SameLogical(Item a, Item b)
                 {
-                    if (requestedQuantity == 0)
-                    {
-                        // Prompt for how many (player didn't specify)
-                        player.PendingAction = new PendingAction
-                        {
-                            Command = "GetStack",
-                            Step = "ChooseQuantity",
-                            Data = new GetPendingData { Matches = new List<Item> { item } }
-                        };
-
-                        return MessageHandler.System($"There are {item.Quantity} of '{item.Name}'. How many do you want to get? (type a number or 'all')");
-                    }
-                    else if (requestedQuantity < 0)
-                    {
-                        // 'all' requested: transfer entire quantity
-                        return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, item.Quantity);
-                    }
-                    else
-                    {
-                        int take = Math.Min(requestedQuantity, item.Quantity);
-                        return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, take);
-                    }
-                }
-                else
-                {
-                    // Non-stackable / single quantity: honor explicit quantity if >0 (will be treated as 1)
-                    int take = (requestedQuantity > 0) ? requestedQuantity : 1;
-                    return InventoryManager.TransferToPlayer(_world, _dbConnection, player, item, take);
-                }
-            }
-
-            // Multiple matches: check if they are identical (same TemplateID)
-            bool allSameTemplate = matches.All(i => i.TemplateID == matches[0].TemplateID);
-
-            if (allSameTemplate)
-            {
-                // If player specified an explicit numeric quantity, take that many rows
-                if (requestedQuantity > 0)
-                {
-                    int want = Math.Min(requestedQuantity, matches.Count);
-                    var toTransfer = matches.Take(want).ToList();
-                    foreach (var it in toTransfer)
-                        InventoryManager.TransferToPlayer(_world, _dbConnection, player, it, 1);
-                    return MessageHandler.System($"You picked up {want} x {toTransfer.First().Name}.");
+                    if (!string.IsNullOrWhiteSpace(a.TemplateID) && !string.IsNullOrWhiteSpace(b.TemplateID))
+                        return string.Equals(a.TemplateID, b.TemplateID, StringComparison.OrdinalIgnoreCase);
+                    return string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
                 }
 
-                // Ask how many to pick up (preserve existing UX)
-                player.PendingAction = new PendingAction
-                {
-                    Command = "GetItem",
-                    Step = "ChooseQuantity",
-                    Data = new GetPendingData { Matches = matches }
-                };
+                var representative = matches.First();
+                var matchingRows = room.Inventory.Where(c => SameLogical(representative, c)).OrderByDescending(r => r.Quantity).ToList();
+                int available = matchingRows.Sum(r => r.Quantity);
 
-                return MessageHandler.System($"There are {matches.Count} of '{matches[0].Name}'. How many do you want to get?");
+                if (requestedQuantity < 0) // 'all'
+                {
+                    if (available == 0) return MessageHandler.System($"No '{representative.Name}' remain here.");
+                    foreach (var row in matchingRows)
+                        InventoryManager.TransferToPlayer(_world, _dbConnection, player, row, row.Quantity);
+                    return MessageHandler.System($"You picked up {available} x {representative.Name}.");
+                }
+
+                if (available < requestedQuantity)
+                    return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
+
+                int remaining = requestedQuantity;
+                int taken = 0;
+                foreach (var row in matchingRows)
+                {
+                    if (remaining <= 0) break;
+                    int take = Math.Min(remaining, row.Quantity);
+                    InventoryManager.TransferToPlayer(_world, _dbConnection, player, row, take);
+                    taken += take;
+                    remaining -= take;
+                }
+
+                return MessageHandler.System($"You picked up {taken} x {representative.Name}.");
             }
-            else
+
+            // No explicit quantity: transfer 1 from the best candidate (no menu)
+            var candidate = matches.OrderByDescending(m => !string.IsNullOrWhiteSpace(m.TemplateID) && string.Equals(m.TemplateID, requested, StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                                   .ThenByDescending(m => m.Quantity)
+                                   .First();
+
+            if (candidate.Quantity > 1)
             {
-                // Different kinds - ask which one (show indices)
-                var listText = string.Join("\n", matches.Select((it, idx) => $"{idx + 1}) {it.Name} (Template: {it.TemplateID})"));
-                player.PendingAction = new PendingAction
-                {
-                    Command = "GetItem",
-                    Step = "SelectIndex",
-                    Data = new GetPendingData { Matches = matches }
-                };
-
-                return MessageHandler.System($"Multiple items match '{requested}'. Choose which one:\n{listText}\nType the number of the item to take.");
+                // treat "get item" with no qty as "take one"
+                return InventoryManager.TransferToPlayer(_world, _dbConnection, player, candidate, 1);
             }
+
+            return InventoryManager.TransferToPlayer(_world, _dbConnection, player, candidate, 1);
         } // end GetItem
 
         // New eat logic
         private Message? EatItem(Player player, string requested, bool isDrink = false)
         {
-            // requested: "item" or "item from container"
+            // requested: "item" or "item from <container>"
             if (player == null) return MessageHandler.System("Invalid player.");
             if (string.IsNullOrWhiteSpace(requested)) return MessageHandler.System("Usage: eat <food> OR drink <liquid> OR <item> from <container>");
             var room = player.CurrentRoom;
@@ -1119,6 +1655,50 @@ namespace MudServer
                 itemExpr = requested.Substring(0, idxFrom).Trim();
                 containerName = requested.Substring(idxFrom + " from ".Length).Trim();
             }
+            else
+            {
+                // SUPPORT: shorthand "drink water cup" (no 'from') -> treat last token as container if it matches an accessible container.
+                // This preserves prior behavior when the last token is not a container.
+                try
+                {
+                    var toks = requested.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (toks.Length >= 2)
+                    {
+                        var lastTok = toks[^1].Trim();
+                        if (!string.IsNullOrWhiteSpace(lastTok))
+                        {
+                            // Use ItemParser first for robust descriptor/material-aware container matching
+                            Item? maybeContainer = null;
+                            try
+                            {
+                                var optsTry = new ItemParserOptions
+                                {
+                                    IncludeDescriptorTokens = true,
+                                    IncludeMaterialTokens = true,
+                                    AllowStartsWith = true
+                                };
+                                var presTry = ItemParser.ResolveForAny(player, lastTok, optsTry);
+                                if (presTry?.Winner != null) maybeContainer = presTry.Winner;
+                            }
+                            catch { /* best-effort */ }
+
+                            // Fallback to legacy lookup if parser didn't find anything
+                            if (maybeContainer == null)
+                            {
+                                maybeContainer = InventoryManager.FindContainer(player, lastTok);
+                            }
+
+                            if (maybeContainer != null)
+                            {
+                                containerName = lastTok;
+                                itemExpr = string.Join(" ", toks.Take(toks.Length - 1)).Trim();
+                                Console.WriteLine($"[EAT] Interpreting shorthand: item='{itemExpr}' container='{containerName}' (resolved via parser/legacy)");
+                            }
+                        }
+                    }
+                }
+                catch { /* best-effort; fall back to original parsing */ }
+            }
 
             Item? toConsume = null;
 
@@ -1131,7 +1711,24 @@ namespace MudServer
                 // If container specified, attempt to take one unit from it into player's inventory then consume
                 if (!string.IsNullOrWhiteSpace(containerName))
                 {
-                    var container = InventoryManager.FindContainer(player, containerName);
+                    // Prefer ItemParser first (descriptor/material aware). Be permissive for eat/drink flows.
+                    Item? container = null;
+                    try
+                    {
+                        var optsContainer = new ItemParserOptions
+                        {
+                            IncludeDescriptorTokens = true,
+                            IncludeMaterialTokens = true,
+                            AllowStartsWith = true
+                        };
+                        var pres = ItemParser.ResolveForAny(player, containerName, optsContainer);
+                        if (pres?.Winner != null) container = pres.Winner;
+                    }
+                    catch { /* best-effort */ }
+
+                    // Fallback to legacy lookup
+                    if (container == null) container = InventoryManager.FindContainer(player, containerName);
+
                     if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
 
                     sourceContainer = container;
@@ -1144,117 +1741,173 @@ namespace MudServer
                     var contents = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", container.ItemID) ?? new List<Item>();
                     if (contents.Count == 0) return MessageHandler.System($"{container.Name} is empty.");
 
-                    // find matches using tokenization and heuristics (prefer template match)
-                    List<Item> matches = new List<Item>();
+                    // Use parser but disable descriptor/material for food/liquid flows (they are not relevant for Eat/Drink)
+                    var opts = new ItemParserOptions { IncludeDescriptorTokens = false, IncludeMaterialTokens = false, AllowStartsWith = true };
+                    var presContents = ItemParser.ResolveCandidates(contents, player, itemExpr, opts);
 
-                    // exact template or name
-                    matches = contents.Where(it =>
-                        (!string.IsNullOrWhiteSpace(it.TemplateID) && string.Equals(it.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase)) ||
-                        (!string.IsNullOrWhiteSpace(it.Name) && string.Equals(it.Name, itemExpr, StringComparison.OrdinalIgnoreCase)))
-                        .ToList();
-
-                    // token-equals
-                    if (matches.Count == 0)
+                    if (presContents.Winner != null)
                     {
-                        var reqToks = Tokenize(itemExpr).ToList();
-                        if (reqToks.Count > 0)
+                        var chosen = presContents.Winner;
+                        chosenFromContainer = chosen;
+
+                        // If chosen is liquid and user typed 'eat' but not 'drink', we'll allow and show a "drink" text.
+                        bool chosenIsLiquid = (chosen.Flags != null && chosen.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                              || (!string.IsNullOrEmpty(chosen.FlagsJson) && chosen.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                        // Transfer one unit from container into player's inventory
+                        var takeMsg = InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, chosen, 1);
+                        if (takeMsg == null) return MessageHandler.System("Failed to take item from container.");
+
+                        var txt = takeMsg.Text ?? "";
+                        if (txt.IndexOf("not", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                            (txt.IndexOf("inside", StringComparison.OrdinalIgnoreCase) >= 0 || txt.IndexOf("accessible", StringComparison.OrdinalIgnoreCase) >= 0))
                         {
-                            matches = contents.Where(it =>
-                            {
-                                var nameTokens = Tokenize(it?.Name).ToList();
-                                if (reqToks.Any(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
-                                if (reqToks.All(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
-                                return false;
-                            }).ToList();
+                            return takeMsg;
                         }
-                    }
 
-                    // starts-with fallback
-                    if (matches.Count == 0)
-                    {
-                        matches = contents.Where(it => !string.IsNullOrWhiteSpace(it.Name) && it.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)).ToList();
-                    }
-
-                    if (matches.Count == 0)
-                    {
-                        // token start fallback
-                        var reqToks2 = Tokenize(itemExpr).ToList();
-                        if (reqToks2.Count > 0)
+                        // Locate the transferred item in player's inventory. Prefer template match + flags.
+                        Item? transferred = null;
+                        if (!string.IsNullOrWhiteSpace(chosen.TemplateID))
                         {
-                            matches = contents.Where(it =>
-                            {
-                                var nameTokens = Tokenize(it?.Name).ToList();
-                                return nameTokens.Any(nt => reqToks2.Any(rt => nt.StartsWith(rt, StringComparison.OrdinalIgnoreCase)));
-                            }).ToList();
+                            transferred = player.Inventory?.FirstOrDefault(i =>
+                                !string.IsNullOrWhiteSpace(i.TemplateID) &&
+                                string.Equals(i.TemplateID, chosen.TemplateID, StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(i.FlagsJson ?? "[]", chosen.FlagsJson ?? "[]", StringComparison.OrdinalIgnoreCase));
                         }
-                    }
 
-                    if (matches.Count == 0)
-                        return MessageHandler.System($"No '{itemExpr}' found inside '{container.Name}'.");
-
-                    // Prefer template id matches first
-                    var chosen = matches.OrderByDescending(m => string.Equals(m.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase) ? 1 : 0).First();
-                    chosenFromContainer = chosen;
-
-                    // If chosen is liquid and user typed 'eat' but not 'drink', we'll allow and show a "drink" text.
-                    bool chosenIsLiquid = (chosen.Flags != null && chosen.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
-                                          || (!string.IsNullOrEmpty(chosen.FlagsJson) && chosen.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
-
-                    // Transfer one unit from container into player's inventory
-                    var takeMsg = InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, chosen, 1);
-                    if (takeMsg == null) return MessageHandler.System("Failed to take item from container.");
-
-                    var txt = takeMsg.Text ?? "";
-                    if (txt.IndexOf("not", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                        (txt.IndexOf("inside", StringComparison.OrdinalIgnoreCase) >= 0 || txt.IndexOf("accessible", StringComparison.OrdinalIgnoreCase) >= 0))
-                    {
-                        return takeMsg;
-                    }
-
-                    // Locate the transferred item in player's inventory. Prefer template match + flags.
-                    Item? transferred = null;
-                    if (!string.IsNullOrWhiteSpace(chosen.TemplateID))
-                    {
-                        transferred = player.Inventory?.FirstOrDefault(i =>
-                            !string.IsNullOrWhiteSpace(i.TemplateID) &&
-                            string.Equals(i.TemplateID, chosen.TemplateID, StringComparison.OrdinalIgnoreCase) &&
-                            string.Equals(i.FlagsJson ?? "[]", chosen.FlagsJson ?? "[]", StringComparison.OrdinalIgnoreCase));
-                    }
-
-                    // fallback by name
-                    if (transferred == null)
-                    {
-                        transferred = player.Inventory?.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, chosen.Name, StringComparison.OrdinalIgnoreCase));
-                    }
-
-                    // Final fallback: any item with same template or name tokens
-                    if (transferred == null && !string.IsNullOrWhiteSpace(chosen.Name))
-                    {
-                        var toks = Tokenize(chosen.Name).ToList();
-                        if (toks.Count > 0 && player.Inventory != null)
+                        // fallback by name
+                        if (transferred == null)
                         {
-                            transferred = player.Inventory.FirstOrDefault(it =>
-                            {
-                                var its = Tokenize(it.Name).ToList();
-                                return toks.All(t => its.Any(x => x.StartsWith(t)));
-                            });
+                            transferred = player.Inventory?.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, chosen.Name, StringComparison.OrdinalIgnoreCase));
                         }
-                    }
 
-                    if (transferred == null)
+                        // Final fallback: any item with same template or name tokens
+                        if (transferred == null && !string.IsNullOrWhiteSpace(chosen.Name))
+                        {
+                            var toks = Tokenize(chosen.Name).ToList();
+                            if (toks.Count > 0 && player.Inventory != null)
+                            {
+                                transferred = player.Inventory.FirstOrDefault(it =>
+                                {
+                                    var its = Tokenize(it.Name).ToList();
+                                    return toks.All(t => its.Any(x => x.StartsWith(t)));
+                                });
+                            }
+                        }
+
+                        if (transferred == null)
+                        {
+                            // Strange: item transfer succeeded but we couldn't find instance - inform user
+                            return MessageHandler.System($"You took {chosen.Name}, but cannot locate it to consume. Try again.");
+                        }
+
+                        toConsume = transferred;
+                        // If it was liquid and user executed 'drink' we respect wording; if user typed 'eat' and it is liquid, show 'drink' text.
+                        isDrink = isDrink || chosenIsLiquid;
+                    }
+                    else
                     {
-                        // Strange: item transfer succeeded but we couldn't find instance - inform user
-                        return MessageHandler.System($"You took {chosen.Name}, but cannot locate it to consume. Try again.");
-                    }
+                        // Fallback to legacy matching when parser didn't return a winner
+                        // find matches using tokenization and heuristics (prefer template match)
+                        List<Item> matches = new List<Item>();
 
-                    toConsume = transferred;
-                    // If it was liquid and user executed 'drink' we respect wording; if user typed 'eat' and it is liquid, show 'drink' text.
-                    isDrink = isDrink || chosenIsLiquid;
+                        // exact template or name
+                        matches = contents.Where(it =>
+                            (!string.IsNullOrWhiteSpace(it.TemplateID) && string.Equals(it.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase)) ||
+                            (!string.IsNullOrWhiteSpace(it.Name) && string.Equals(it.Name, itemExpr, StringComparison.OrdinalIgnoreCase)))
+                            .ToList();
+
+                        // token-equals
+                        if (matches.Count == 0)
+                        {
+                            var reqToks = Tokenize(itemExpr).ToList();
+                            if (reqToks.Count > 0)
+                            {
+                                matches = contents.Where(it =>
+                                {
+                                    var nameTokens = Tokenize(it?.Name).ToList();
+                                    if (reqToks.Any(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
+                                    if (reqToks.All(rt => nameTokens.Any(nt => string.Equals(nt, rt, StringComparison.OrdinalIgnoreCase)))) return true;
+                                    return false;
+                                }).ToList();
+                            }
+                        }
+
+                        // starts-with fallback
+                        if (matches.Count == 0)
+                        {
+                            matches = contents.Where(it => !string.IsNullOrWhiteSpace(it.Name) && it.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)).ToList();
+                        }
+
+                        if (matches.Count == 0)
+                        {
+                            // token start fallback
+                            var reqToks2 = Tokenize(itemExpr).ToList();
+                            if (reqToks2.Count > 0)
+                            {
+                                matches = contents.Where(it =>
+                                {
+                                    var nameTokens = Tokenize(it?.Name).ToList();
+                                    return nameTokens.Any(nt => reqToks2.Any(rt => nt.StartsWith(rt, StringComparison.OrdinalIgnoreCase)));
+                                }).ToList();
+                            }
+                        }
+
+                        if (matches.Count == 0)
+                            return MessageHandler.System($"No '{itemExpr}' found inside '{container.Name}'.");
+
+                        // Prefer template id matches first
+                        var chosen = matches.OrderByDescending(m => string.Equals(m.TemplateID, itemExpr, StringComparison.OrdinalIgnoreCase) ? 1 : 0).First();
+                        chosenFromContainer = chosen;
+
+                        // transfer same as above
+                        bool chosenIsLiquid = (chosen.Flags != null && chosen.Flags.Any(f => string.Equals(f, "IsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                              || (!string.IsNullOrEmpty(chosen.FlagsJson) && chosen.FlagsJson.IndexOf("\"IsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                        var takeMsg = InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, chosen, 1);
+                        if (takeMsg == null) return MessageHandler.System("Failed to take item from container.");
+                        var txt = takeMsg.Text ?? "";
+                        if (txt.IndexOf("not", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                            (txt.IndexOf("inside", StringComparison.OrdinalIgnoreCase) >= 0 || txt.IndexOf("accessible", StringComparison.OrdinalIgnoreCase) >= 0))
+                        {
+                            return takeMsg;
+                        }
+
+                        Item? transferred = null;
+                        if (!string.IsNullOrWhiteSpace(chosen.TemplateID))
+                        {
+                            transferred = player.Inventory?.FirstOrDefault(i =>
+                                !string.IsNullOrWhiteSpace(i.TemplateID) &&
+                                string.Equals(i.TemplateID, chosen.TemplateID, StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(i.FlagsJson ?? "[]", chosen.FlagsJson ?? "[]", StringComparison.OrdinalIgnoreCase));
+                        }
+                        if (transferred == null)
+                        {
+                            transferred = player.Inventory?.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Name) && string.Equals(i.Name, chosen.Name, StringComparison.OrdinalIgnoreCase));
+                        }
+                        if (transferred == null && !string.IsNullOrWhiteSpace(chosen.Name))
+                        {
+                            var toks = Tokenize(chosen.Name).ToList();
+                            if (toks.Count > 0 && player.Inventory != null)
+                            {
+                                transferred = player.Inventory.FirstOrDefault(it =>
+                                {
+                                    var its = Tokenize(it.Name).ToList();
+                                    return toks.All(t => its.Any(x => x.StartsWith(t)));
+                                });
+                            }
+                        }
+
+                        if (transferred == null) return MessageHandler.System($"You took {chosen.Name}, but cannot locate it to consume. Try again.");
+                        toConsume = transferred;
+                        isDrink = isDrink || chosenIsLiquid;
+                    }
                 }
                 else
                 {
                     // No container - consume from player's inventory (existing behavior)
-                    var parse = ItemParser.ResolveForInventoryCommand(player, itemExpr);
+                    var optsInv = new ItemParserOptions { IncludeDescriptorTokens = false, IncludeMaterialTokens = false, AllowStartsWith = true };
+                    var parse = ItemParser.ResolveForInventoryCommand(player, itemExpr, optsInv);
                     Item? item = null;
 
                     if (parse.Winner != null)
@@ -1264,6 +1917,12 @@ namespace MudServer
                                           (!string.IsNullOrEmpty(i.TemplateID) && !string.IsNullOrEmpty(parse.Winner.TemplateID) && i.TemplateID == parse.Winner.TemplateID) ||
                                           (!string.IsNullOrEmpty(i.Name) && !string.IsNullOrEmpty(parse.Winner.Name) && string.Equals(i.Name, parse.Winner.Name, StringComparison.OrdinalIgnoreCase)))
                         );
+
+                        // Reject attempts to eat/drink container items directly
+                        if (item != null && string.Equals(item.ItemCategory ?? "", "Container", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return MessageHandler.System($"You cannot {(isDrink ? "drink" : "eat")} a container. To consume its contents use: 'drink <liquid> from {item.Name}' or 'drink <liquid> <container>'.");
+                        }
                     }
 
                     if (item == null)
@@ -1285,6 +1944,12 @@ namespace MudServer
 
                             if (item == null)
                                 return MessageHandler.System($"No food item matches '{itemExpr}'.");
+
+                            // If a direct name/template match resolved to a container, reject
+                            if (item != null && string.Equals(item.ItemCategory ?? "", "Container", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return MessageHandler.System($"You cannot {(isDrink ? "drink" : "eat")} a container. To consume its contents use: 'drink <liquid> from {item.Name}' or 'drink <liquid> <container>'.");
+                            }
                         }
                         else
                         {
@@ -1312,6 +1977,12 @@ namespace MudServer
                 // Now toConsume is a player-carried item instance to consume
                 if (toConsume == null) return MessageHandler.System("Nothing to eat or drink.");
 
+                // Prevent consuming containers in any unexpected path
+                if (string.Equals(toConsume.ItemCategory ?? "", "Container", StringComparison.OrdinalIgnoreCase))
+                {
+                    return MessageHandler.System($"You cannot {(isDrink ? "drink" : "eat")} a container. Use 'drink <liquid> from <container>' to consume the contents.");
+                }
+
                 // Determine if item provides healing (Heal flag)
                 bool canHeal = (toConsume.Flags != null && toConsume.Flags.Any(f => f.Equals("Heal", StringComparison.OrdinalIgnoreCase)))
                                || (!string.IsNullOrEmpty(toConsume.FlagsJson) && toConsume.FlagsJson.IndexOf("\"Heal\"", StringComparison.OrdinalIgnoreCase) >= 0);
@@ -1332,7 +2003,7 @@ namespace MudServer
                     {
                         Console.WriteLine($"[EAT][DEBUG] Player='{player?.Name}' Consuming ItemID={toConsume.ItemID} Template='{toConsume.TemplateID}' Name='{toConsume.Name}' Weight={toConsume.Weight:F3} FlagsJson='{toConsume.FlagsJson ?? "[]"}' ProposedHeal={proposedHeal} AppliedHeal={appliedHeal} PlayerHPBefore={player.Health}/{player.MaxHealth}");
                     }
-                    catch { /* best-effort */ }
+                    catch { /*best-effort*/ }
 
                     if (appliedHeal > 0)
                     {
@@ -1378,7 +2049,7 @@ namespace MudServer
                         if (!string.IsNullOrWhiteSpace(chosenFromContainer.TemplateID))
                         {
                             cmd.CommandText = @"SELECT SUM(COALESCE(Quantity,1)) FROM Item
-                                        WHERE OwnerType = 'Item' AND OwnerID = @cid AND TemplateID = @template AND Flags = @flags;";
+                                WHERE OwnerType = 'Item' AND OwnerID = @cid AND TemplateID = @template AND Flags = @flags;";
                             cmd.Parameters.AddWithValue("@cid", sourceContainer.ItemID);
                             cmd.Parameters.AddWithValue("@template", chosenFromContainer.TemplateID);
                             cmd.Parameters.AddWithValue("@flags", chosenFromContainer.FlagsJson ?? "[]");
@@ -1386,7 +2057,7 @@ namespace MudServer
                         else
                         {
                             cmd.CommandText = @"SELECT SUM(COALESCE(Quantity,1)) FROM Item
-                                        WHERE OwnerType = 'Item' AND OwnerID = @cid AND Name = @name;";
+                                WHERE OwnerType = 'Item' AND OwnerID = @cid AND Name = @name;";
                             cmd.Parameters.AddWithValue("@cid", sourceContainer.ItemID);
                             cmd.Parameters.AddWithValue("@name", chosenFromContainer.Name ?? "");
                         }
@@ -1528,6 +2199,9 @@ namespace MudServer
         private (int quantity, bool explicitQuantity, string itemExpr, string containerName, string? error) ParseQuantityItemContainer(List<string> tokens, int startIdx)
         {
             // tokens: full token list; startIdx = index of first token after command word (e.g. 1 for "put"/"get")
+            // Enforce strict-separator policy: only treat a container when an explicit separator
+            // (in/into/from/inside) is present. This avoids misinterpreting descriptors/adjectives
+            // as container names when the user supplies multi-word item expressions like "pot polished".
             if (tokens == null || tokens.Count <= startIdx)
                 return (1, false, "", "", "Usage: <command> <item> [container] or <n|all> <item> <container>");
 
@@ -1582,18 +2256,10 @@ namespace MudServer
             }
             else
             {
-                // fallback: assume last token is container if there are at least two tokens remaining
-                if (tokens.Count - idx >= 2)
-                {
-                    containerName = tokens.Last();
-                    itemExpr = string.Join(" ", tokens.Skip(idx).Take(tokens.Count - idx - 1));
-                }
-                else
-                {
-                    // only an item expression present
-                    itemExpr = string.Join(" ", tokens.Skip(idx));
-                    containerName = "";
-                }
+                // No separator: treat the entire remaining text as the item expression.
+                // This is the strict behavior you requested: both-object commands MUST use a separator.
+                itemExpr = string.Join(" ", tokens.Skip(idx));
+                containerName = "";
             }
 
             itemExpr = itemExpr?.Trim() ?? "";
@@ -1601,7 +2267,7 @@ namespace MudServer
 
             if (string.IsNullOrWhiteSpace(itemExpr)) return (quantity, explicitQuantity, "", "", "Usage: missing item name.");
             return (quantity, explicitQuantity, itemExpr, containerName, null);
-        }
+        } // end ParseQuantityItemContainer
 
         private Message? Look(Player player)
         {
@@ -1618,8 +2284,9 @@ namespace MudServer
                 .Select(p => p.Name)
                 .ToList();
 
-            return MessageHandler.Room(room, npcs, players, _world);
-        }
+            // Mark this room message as an explicit look so the client displays "You look at ..." text.
+            return MessageHandler.Room(room, npcs, players, _world, null, explicitLook: true);
+        } // end Look
 
         private Message? Move(Player player, string rawCommand)
         {
@@ -1647,23 +2314,20 @@ namespace MudServer
         private Message? DropItem(Player player, string requested, int requestedQuantity = 0)
         {
             // requestedQuantity meanings:
-            //   0  => no explicit quantity provided (prompt for stacks)
+            //   0  => no explicit quantity provided (drop one)
             //  >0  => explicit numeric requested
-            //  -1  => 'all' requested (drop entire stack or as much as available)
+            //  -1  => 'all' requested (drop entire stack(s) or as much as available)
 
             if (player == null) return MessageHandler.System("Invalid player.");
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
 
-            // Prefer ItemParser for inventory resolution; still preserve multi-match UX.
+            // Prefer ItemParser for inventory resolution; still preserve matching heuristics.
             var parseRes = ItemParser.ResolveForInventoryCommand(player, requested);
             List<Item> matches;
 
-            // --- Replace the early-matches section in DropItem (after parser resolution) with this updated logic ---
-
             if (parseRes.Winner != null)
             {
-                // collect all carried items that match the resolved winner (template/name/id)
                 matches = player.Inventory
                     .Where(i => i != null && (
                         i.ItemID == parseRes.Winner.ItemID ||
@@ -1680,16 +2344,13 @@ namespace MudServer
                 }
                 else
                 {
-                    // Try broader search for non-equipped matching items (template/name/startswith)
                     var alt = FindNonEquippedMatches(player, requested);
                     if (alt.Count > 0)
                         matches = alt;
                 }
 
-                // If still no matches, keep the original (likely equipped) matches so later logic can instruct to unwear/unhold.
                 if (matches.Count == 0)
                 {
-                    // fallback to conservative behavior (use winner-based filtering but nothing matched)
                     matches = player.Inventory
                         .Where(i => (i?.Name != null && i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase))
                                  || (!string.IsNullOrWhiteSpace(i?.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase)))
@@ -1698,20 +2359,19 @@ namespace MudServer
             }
             else
             {
-                // Parser did not determine a winner -> use the existing behavior
                 matches = player.Inventory
-                    .Where(i => i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase)
-                             || i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase))
+                    .Where(i => !string.IsNullOrWhiteSpace(i.Name) &&
+                                (i.Name.Equals(requested, StringComparison.OrdinalIgnoreCase) ||
+                                 (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(requested, StringComparison.OrdinalIgnoreCase))))
                     .ToList();
 
                 if (matches.Count == 0)
                 {
-                    // try partial (prefer non-equipped)
                     matches = FindNonEquippedMatches(player, requested);
                     if (matches.Count == 0)
                     {
                         matches = player.Inventory
-                            .Where(i => i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
+                            .Where(i => !string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(requested, StringComparison.OrdinalIgnoreCase))
                             .ToList();
                     }
                 }
@@ -1720,13 +2380,11 @@ namespace MudServer
             if (matches.Count == 0)
                 return MessageHandler.System($"You are not carrying '{requested}'.");
 
-            // Use runtime flags for worn/held detection (do NOT treat template HandLoc/WearLoc as runtime state)
+            // Use runtime flags for worn/held detection
             var droppable = matches.Where(m => !IsRuntimeWorn(m) && !IsRuntimeHeld(m)).ToList();
 
-            // If there are no droppable matches but there are matches that are worn/held, instruct player
             if (droppable.Count == 0)
             {
-                // Decide whether to instruct unwear or unhold (or both) based on matched items
                 bool anyWorn = matches.Any(m => IsRuntimeWorn(m));
                 bool anyHeld = matches.Any(m => IsRuntimeHeld(m));
 
@@ -1737,106 +2395,78 @@ namespace MudServer
                 if (anyHeld)
                     return MessageHandler.System($"That item is currently held. Please unhold it before dropping.");
 
-                // fallback (shouldn't hit)
                 return MessageHandler.System($"You cannot drop that item while it is equipped.");
             }
 
-            // Use the droppable list for all subsequent logic (single / multiple / quantity selection)
+            // Now operate only on droppable items
             matches = droppable;
 
-            if (matches.Count == 1)
+            // Helper to determine logical equality (prefer TemplateID)
+            bool SameLogical(Item a, Item b)
             {
-                var item = matches[0];
-
-                // If it's a stackable item (Quantity > 1) handle explicit vs unspecified quantity
-                if (item.Quantity > 1)
-                {
-                    if (requestedQuantity == 0)
-                    {
-                        // unspecified -> prompt for how many
-                        player.PendingAction = new PendingAction
-                        {
-                            Command = "DropStack",
-                            Step = "ChooseQuantity",
-                            Data = new GetPendingData { Matches = new List<Item> { item } }
-                        };
-
-                        return MessageHandler.System($"You have {item.Quantity} of '{item.Name}'. How many do you want to drop? (type a number or 'all')");
-                    }
-
-                    // explicit request
-                    if (requestedQuantity < 0)
-                    {
-                        // 'all'
-                        return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, item.Quantity);
-                    }
-
-                    int dropQty = Math.Min(requestedQuantity, item.Quantity);
-                    return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, dropQty);
-                }
-
-                // non-stackable or single-qty
-                return InventoryManager.TransferToRoom(_world, _dbConnection, player, item, 1);
+                if (!string.IsNullOrWhiteSpace(a.TemplateID) && !string.IsNullOrWhiteSpace(b.TemplateID))
+                    return string.Equals(a.TemplateID, b.TemplateID, StringComparison.OrdinalIgnoreCase);
+                return string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
             }
 
-            bool allSameTemplate = matches.All(i => i.TemplateID == matches[0].TemplateID);
-
-            if (allSameTemplate)
+            // If explicit quantity requested, fulfill it immediately (no menu)
+            if (requestedQuantity != 0)
             {
-                // NEW: if the player explicitly requested a numeric quantity, fulfill it automatically
-                // prefer a single stack that can satisfy the request; otherwise consume across stacks.
-                if (requestedQuantity > 0)
-                {
-                    // prefer single stack with enough quantity
-                    var single = matches.FirstOrDefault(m => m.Quantity >= requestedQuantity);
-                    if (single != null)
-                    {
-                        return InventoryManager.TransferToRoom(_world, _dbConnection, player, single, Math.Min(requestedQuantity, single.Quantity));
-                    }
+                // Representative for matching identity
+                var representative = matches.First();
 
-                    // if combined quantity across matches satisfies request, consume in descending-size order
-                    int combined = matches.Sum(m => m.Quantity);
-                    if (combined >= requestedQuantity)
+                var matchingRows = matches.Where(c => SameLogical(representative, c)).OrderByDescending(r => r.Quantity).ToList();
+                int available = matchingRows.Sum(r => r.Quantity);
+
+                if (requestedQuantity < 0) // all
+                {
+                    if (available == 0) return MessageHandler.System($"You have no '{representative.Name}' to drop.");
+                    int dropped = 0;
+                    foreach (var row in matchingRows)
                     {
-                        int remaining = requestedQuantity;
-                        foreach (var it in matches.OrderByDescending(m => m.Quantity).ToList())
+                        try
                         {
-                            int take = Math.Min(remaining, it.Quantity);
-                            InventoryManager.TransferToRoom(_world, _dbConnection, player, it, take);
-                            remaining -= take;
-                            if (remaining <= 0) break;
+                            InventoryManager.TransferToRoom(_world, _dbConnection, player, row, row.Quantity);
+                            dropped += row.Quantity;
                         }
-
-                        return MessageHandler.System($"You dropped {requestedQuantity} x {matches.First().Name}.");
+                        catch { /* best-effort */ }
                     }
-
-                    // not enough total quantity -> inform player
-                    return MessageHandler.System($"Only {combined} available. Enter a number up to {combined}.");
+                    return MessageHandler.System($"You dropped {dropped} x {representative.Name}.");
                 }
 
-                // preserve existing UX (prompt) when no explicit quantity supplied
-                player.PendingAction = new PendingAction
-                {
-                    Command = "DropItem",
-                    Step = "ChooseQuantity",
-                    Data = new GetPendingData { Matches = matches }
-                };
+                if (available < requestedQuantity)
+                    return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
 
-                return MessageHandler.System($"You have {matches.Count} of '{matches[0].Name}'. How many do you want to drop?");
+                int remaining = requestedQuantity;
+                int droppedTotal = 0;
+                foreach (var row in matchingRows)
+                {
+                    if (remaining <= 0) break;
+                    int take = Math.Min(remaining, row.Quantity);
+                    try
+                    {
+                        InventoryManager.TransferToRoom(_world, _dbConnection, player, row, take);
+                        droppedTotal += take;
+                        remaining -= take;
+                    }
+                    catch { /* continue best-effort */ }
+                }
+
+                return MessageHandler.System($"You dropped {droppedTotal} x {representative.Name}.");
             }
-            else
+
+            // No explicit quantity: drop a single unit from the best candidate (prefer larger stacks)
+            var candidate = matches.OrderByDescending(m => m.Quantity).First();
+
+            if (candidate.Quantity > 1)
             {
-                var listText = string.Join("\n", matches.Select((it, idx) => $"{idx + 1}) {it.Name} (Template: {it.TemplateID})"));
-                player.PendingAction = new PendingAction
-                {
-                    Command = "DropItem",
-                    Step = "SelectIndex",
-                    Data = new GetPendingData { Matches = matches }
-                };
-
-                return MessageHandler.System($"Multiple carried items match '{requested}'. Choose which one to drop:\n{listText}\nType the number of the item to drop.");
+                // treat "drop item" as dropping one unit
+                return InventoryManager.TransferToRoom(_world, _dbConnection, player, candidate, 1);
             }
-        }
+
+            // single-qty item
+            return InventoryManager.TransferToRoom(_world, _dbConnection, player, candidate, 1);
+        } // end DropItem
 
         // Called when we have a single item to transfer to player
         private Message? TransferItemToPlayer(Player player, Item item)
@@ -1865,13 +2495,21 @@ namespace MudServer
         {
             if (player.PendingAction == null) return null;
 
-            // First, allow immediate handling of the LockKey pending flow so the
-            // label entered by the player is consumed correctly (was being treated
-            // as a normal command previously).
             string input = ExtractCommandText(rawCommand).Trim();
             var pa = player.PendingAction!;
 
-            // Handle LockKey pending action (name the key)
+            bool TryHandleCancel()
+            {
+                if (string.Equals(input, "cancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    player.PendingAction = null!;
+                    try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+                    return true;
+                }
+                return false;
+            }
+
+            // Handle LockKey pending action (unchanged)
             if (pa.Command == "LockKey")
             {
                 var data = pa.Data as KeyLocks.LockPendingData;
@@ -1890,16 +2528,13 @@ namespace MudServer
                     player.PendingAction = null!;
                     return KeyLocks.LockContainer(_dbConnection, player, data.Container, data.Key, label.Trim());
                 }
-
-                // If there are other LockKey steps in future, handle them here...
             }
 
-            // Delegate auth flow to PlayerAuthentication (unchanged behavior for auth pending)
+            // Delegate auth pending
             var authHandled = _auth.HandleAuthPending(player, rawCommand);
             if (authHandled != null) return authHandled;
 
-            // NEW: delegate pending actions to AdminService first so admin flows (EditExit, EditRoom, etc.)
-            // get priority processing. If AdminService handles it, consume the pending action.
+            // Admin pending
             try
             {
                 var adminHandled = _adminService.HandlePendingAction(player, pa, input);
@@ -1908,12 +2543,11 @@ namespace MudServer
             catch (Exception ex)
             {
                 Console.WriteLine($"[PENDING][ADMIN] HandlePendingAction failed: {ex}");
-                // Fail-safe: clear pending to avoid blocking, and return an error to the user.
                 player.PendingAction = null!;
                 return MessageHandler.System("Server error while processing pending admin action.");
             }
 
-            // NEW: AttackSelect pending action (when multiple NPC matches were shown)
+            // AttackSelect pending
             if (pa.Command == "AttackSelect")
             {
                 var data = pa.Data as NpcPendingData;
@@ -1930,7 +2564,6 @@ namespace MudServer
 
                     var chosen = data.Matches[idx - 1];
 
-                    // Ensure the chosen NPC is still present in the player's room
                     var room = player.CurrentRoom;
                     if (room == null)
                     {
@@ -1950,9 +2583,378 @@ namespace MudServer
                 }
             }
 
-            // (existing pending handlers follow unchanged) ...
-            // ... (GetFromContainer, GetStack, DropStack, GetItem, DropItem, EditRoom, CreateArea, CreateRoom)
-            // If no pending action matched, return null so normal command processing continues.
+            // --- Pending: GetFromContainer ---
+            if (pa.Command == "GetFromContainer")
+            {
+                var data = pa.Data as GetPendingData;
+                if (data == null || data.Matches == null || data.Matches.Count == 0)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
+
+                if (pa.Step == "SelectIndex")
+                {
+                    if (TryHandleCancel()) return MessageHandler.System("Selection cancelled.");
+
+                    if (!int.TryParse(input, out int sel) || sel < 1 || sel > data.Matches.Count)
+                        return MessageHandler.System("Invalid selection. Type the number of the item to take.");
+
+                    var chosen = data.Matches[sel - 1];
+
+                    var room = player.CurrentRoom;
+                    if (room == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("You are not in a valid room.");
+                    }
+
+                    Item? container = null;
+                    if (data.ContainerItemId.HasValue)
+                    {
+                        container = (player.Inventory ?? new List<Item>()).FirstOrDefault(i => i.ItemID == data.ContainerItemId.Value)
+                                    ?? room.Inventory.FirstOrDefault(i => i.ItemID == data.ContainerItemId.Value);
+                    }
+
+                    if (container == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("The container is no longer accessible.");
+                    }
+
+                    // Reload container contents (DB authoritative)
+                    var contents = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", container.ItemID) ?? new List<Item>();
+                    var live = contents.FirstOrDefault(c => c.ItemID == chosen.ItemID);
+                    if (live == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("That item is no longer in the container.");
+                    }
+
+                    // If explicit quantity was provided, distribute across matching rows in the container
+                    if (data.ExplicitQuantity)
+                    {
+                        // helper to match same logical item: prefer TemplateID when present, otherwise Name equality
+                        bool SameLogical(Item a, Item b)
+                        {
+                            if (!string.IsNullOrWhiteSpace(a.TemplateID) && !string.IsNullOrWhiteSpace(b.TemplateID))
+                                return string.Equals(a.TemplateID, b.TemplateID, StringComparison.OrdinalIgnoreCase);
+                            return string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+                        }
+
+                        // 'all' requested: transfer all matching rows
+                        if (data.RequestedQuantity < 0)
+                        {
+                            var matchingRows = contents.Where(c => SameLogical(live, c)).ToList();
+                            int total = matchingRows.Sum(r => r.Quantity);
+                            if (total == 0)
+                            {
+                                player.PendingAction = null!;
+                                return MessageHandler.System($"No '{live.Name}' remain in {container.Name}.");
+                            }
+
+                            foreach (var row in matchingRows.OrderByDescending(r => r.Quantity).ToList())
+                            {
+                                try { InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, row, row.Quantity); }
+                                catch { /* best-effort per-row */ }
+                            }
+
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"You took {total} x {live.Name} from {container.Name}.");
+                        }
+
+                        // explicit numeric request: fulfill across rows starting with selected row
+                        int remaining = data.RequestedQuantity;
+                        // gather matching rows, with chosen row first
+                        var matchingOrdered = contents
+                            .Where(c => SameLogical(live, c))
+                            .OrderByDescending(c => c.ItemID == live.ItemID ? 1 : 0) // chosen first
+                            .ThenByDescending(c => c.Quantity) // larger stacks earlier
+                            .ToList();
+
+                        int available = matchingOrdered.Sum(r => r.Quantity);
+                        if (available == 0)
+                        {
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"No '{live.Name}' remain in {container.Name}.");
+                        }
+                        if (available < remaining)
+                        {
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
+                        }
+
+                        int takenTotal = 0;
+                        foreach (var row in matchingOrdered)
+                        {
+                            if (remaining <= 0) break;
+                            int take = Math.Min(remaining, row.Quantity);
+                            try
+                            {
+                                InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, row, take);
+                                takenTotal += take;
+                                remaining -= take;
+                            }
+                            catch
+                            {
+                                // ignore per-row failure and continue best-effort
+                            }
+                        }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"You took {takenTotal} x {live.Name} from {container.Name}.");
+                    }
+
+                    // No explicit quantity — if chosen row is stacked, prompt for how many; otherwise transfer one.
+                    if (live.Quantity > 1)
+                    {
+                        player.PendingAction = new PendingAction
+                        {
+                            Command = "GetStack",
+                            Step = "ChooseQuantity",
+                            Data = new GetPendingData { Matches = new List<Item> { live }, ContainerItemId = container.ItemID }
+                        };
+                        return MessageHandler.System($"There are {live.Quantity} of '{live.Name}' in {container.Name}. How many do you want to take? (type a number or 'all')");
+                    }
+
+                    player.PendingAction = null!;
+                    return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, live, 1);
+                }
+            }
+
+            // --- Pending: GetStack ---
+            if (pa.Command == "GetStack")
+            {
+                var data = pa.Data as GetPendingData;
+                if (data == null || data.Matches == null || data.Matches.Count == 0)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
+
+                if (pa.Step == "ChooseQuantity")
+                {
+                    if (TryHandleCancel()) return MessageHandler.System("Selection cancelled.");
+
+                    var item = data.Matches[0];
+
+                    // Determine source: room vs container
+                    Item? live = null;
+                    if (data.ContainerItemId.HasValue)
+                    {
+                        var contents = ItemPersistence.LoadItemsByOwner(_dbConnection, "Item", data.ContainerItemId.Value) ?? new List<Item>();
+                        live = contents.FirstOrDefault(i => i.ItemID == item.ItemID);
+                    }
+                    else
+                    {
+                        var room = player.CurrentRoom;
+                        if (room != null)
+                        {
+                            live = room.Inventory.FirstOrDefault(i => i.ItemID == item.ItemID) ?? ItemPersistence.LoadItemsByOwner(_dbConnection, "Room", room.RoomID)?.FirstOrDefault(i => i.ItemID == item.ItemID);
+                        }
+                    }
+
+                    if (live == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("That item is no longer available.");
+                    }
+
+                    if (string.Equals(input, "all", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        if (data.ContainerItemId.HasValue)
+                        {
+                            var container = (player.Inventory ?? new List<Item>()).FirstOrDefault(i => i.ItemID == data.ContainerItemId.Value)
+                                            ?? player.CurrentRoom?.Inventory.FirstOrDefault(i => i.ItemID == data.ContainerItemId.Value);
+                            return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, live, live.Quantity);
+                        }
+                        return InventoryManager.TransferToPlayer(_world, _dbConnection, player, live, live.Quantity);
+                    }
+
+                    if (!int.TryParse(input, out int qty) || qty < 1)
+                        return MessageHandler.System("Invalid number. Enter a positive integer or 'all'.");
+
+                    qty = Math.Min(qty, live.Quantity);
+                    player.PendingAction = null!;
+                    if (data.ContainerItemId.HasValue)
+                    {
+                        var container = (player.Inventory ?? new List<Item>()).FirstOrDefault(i => i.ItemID == data.ContainerItemId.Value)
+                                        ?? player.CurrentRoom?.Inventory.FirstOrDefault(i => i.ItemID == data.ContainerItemId.Value);
+                        return InventoryManager.TransferFromContainer(_world, _dbConnection, player, container, live, qty);
+                    }
+                    else
+                    {
+                        return InventoryManager.TransferToPlayer(_world, _dbConnection, player, live, qty);
+                    }
+                }
+            }
+
+            // --- Pending: GetItem ---
+            if (pa.Command == "GetItem")
+            {
+                var data = pa.Data as GetPendingData;
+                if (data == null || data.Matches == null || data.Matches.Count == 0)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
+
+                if (pa.Step == "SelectIndex")
+                {
+                    if (TryHandleCancel()) return MessageHandler.System("Selection cancelled.");
+
+                    if (!int.TryParse(input, out int sel) || sel < 1 || sel > data.Matches.Count)
+                        return MessageHandler.System("Invalid selection. Type the number of the item to take.");
+
+                    var chosen = data.Matches[sel - 1];
+
+                    // If explicit quantity was provided earlier, honor by distributing across room rows (similar to container flow)
+                    if (data.ExplicitQuantity)
+                    {
+                        var room = player.CurrentRoom;
+                        if (room == null)
+                        {
+                            player.PendingAction = null!;
+                            return MessageHandler.System("You are not in a valid room.");
+                        }
+
+                        // Reload room contents
+                        var contents = room.Inventory.ToList();
+                        // helper: match by TemplateID or Name
+                        bool SameLogical(Item a, Item b)
+                        {
+                            if (!string.IsNullOrWhiteSpace(a.TemplateID) && !string.IsNullOrWhiteSpace(b.TemplateID))
+                                return string.Equals(a.TemplateID, b.TemplateID, StringComparison.OrdinalIgnoreCase);
+                            return string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+                        }
+
+                        var liveChosen = contents.FirstOrDefault(i => i.ItemID == chosen.ItemID)
+                                        ?? ItemPersistence.LoadItemsByOwner(_dbConnection, "Room", room.RoomID)?.FirstOrDefault(i => i.ItemID == chosen.ItemID);
+
+                        if (liveChosen == null)
+                        {
+                            player.PendingAction = null!;
+                            return MessageHandler.System("That item is no longer here.");
+                        }
+
+                        if (data.RequestedQuantity < 0)
+                        {
+                            var matchingRows = contents.Where(c => SameLogical(liveChosen, c)).ToList();
+                            int total = matchingRows.Sum(r => r.Quantity);
+                            foreach (var row in matchingRows.OrderByDescending(r => r.Quantity).ToList())
+                                try { InventoryManager.TransferToPlayer(_world, _dbConnection, player, row, row.Quantity); } catch { }
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"You picked up {total} x {liveChosen.Name}.");
+                        }
+
+                        int remaining = data.RequestedQuantity;
+                        var matchingOrdered = contents
+                            .Where(c => SameLogical(liveChosen, c))
+                            .OrderByDescending(c => c.ItemID == liveChosen.ItemID ? 1 : 0)
+                            .ThenByDescending(c => c.Quantity)
+                            .ToList();
+
+                        int available = matchingOrdered.Sum(r => r.Quantity);
+                        if (available < remaining)
+                        {
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
+                        }
+
+                        int taken = 0;
+                        foreach (var row in matchingOrdered)
+                        {
+                            if (remaining <= 0) break;
+                            int take = Math.Min(remaining, row.Quantity);
+                            try
+                            {
+                                InventoryManager.TransferToPlayer(_world, _dbConnection, player, row, take);
+                                taken += take;
+                                remaining -= take;
+                            }
+                            catch { }
+                        }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"You picked up {taken} x {liveChosen.Name}.");
+                    }
+
+                    // If chosen is a stack, prompt for quantity
+                    if (chosen.Quantity > 1)
+                    {
+                        player.PendingAction = new PendingAction
+                        {
+                            Command = "GetStack",
+                            Step = "ChooseQuantity",
+                            Data = new GetPendingData { Matches = new List<Item> { chosen } }
+                        };
+                        return MessageHandler.System($"There are {chosen.Quantity} of '{chosen.Name}'. How many do you want to get? (type a number or 'all')");
+                    }
+
+                    // Single quantity - transfer
+                    var room2 = player.CurrentRoom;
+                    if (room2 == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("You are not in a valid room.");
+                    }
+
+                    var liveSingle = room2.Inventory.FirstOrDefault(i => i.ItemID == chosen.ItemID)
+                                     ?? ItemPersistence.LoadItemsByOwner(_dbConnection, "Room", room2.RoomID)?.FirstOrDefault(i => i.ItemID == chosen.ItemID);
+
+                    if (liveSingle == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("That item is no longer here.");
+                    }
+
+                    player.PendingAction = null!;
+                    return InventoryManager.TransferToPlayer(_world, _dbConnection, player, liveSingle, 1);
+                }
+
+                // ChooseQuantity for GetItem (unchanged behavior)
+                if (pa.Step == "ChooseQuantity")
+                {
+                    if (TryHandleCancel()) return MessageHandler.System("Selection cancelled.");
+
+                    if (string.Equals(input, "all", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int totalAvailable = data.Matches.Sum(m => m.Quantity);
+                        int remaining = totalAvailable;
+                        foreach (var it in data.Matches.OrderByDescending(m => m.Quantity).ToList())
+                        {
+                            int take = Math.Min(remaining, it.Quantity);
+                            InventoryManager.TransferToPlayer(_world, _dbConnection, player, it, take);
+                            remaining -= take;
+                            if (remaining <= 0) break;
+                        }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"You picked up {totalAvailable} x {data.Matches[0].Name}.");
+                    }
+
+                    if (!int.TryParse(input, out int want) || want < 1)
+                        return MessageHandler.System("Invalid number. Enter a positive integer or 'all'.");
+
+                    int combined = data.Matches.Sum(m => m.Quantity);
+                    if (want > combined)
+                        return MessageHandler.System($"Only {combined} available. Enter a number up to {combined}.");
+
+                    int remainingWanted = want;
+                    foreach (var it in data.Matches.OrderByDescending(m => m.Quantity).ToList())
+                    {
+                        int take = Math.Min(remainingWanted, it.Quantity);
+                        InventoryManager.TransferToPlayer(_world, _dbConnection, player, it, take);
+                        remainingWanted -= take;
+                        if (remainingWanted <= 0) break;
+                    }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"You picked up {want} x {data.Matches[0].Name}.");
+                }
+            }
+
             return null;
         } // end CheckPendingAction
 
@@ -1963,6 +2965,11 @@ namespace MudServer
 
             // Optional: when selection comes from a container, store the container ItemID so completion can resolve it.
             public int? ContainerItemId { get; set; } = null;
+
+            // Preserve original request quantity (and whether it was explicit) so selection-step can honor it.
+            // RequestedQuantity: >0 explicit numeric, -1 means 'all', 0 means none supplied.
+            public int RequestedQuantity { get; set; } = 0;
+            public bool ExplicitQuantity { get; set; } = false;
         } // end GetPendingData
 
         // NEW: pending data DTO for NPC selection prompts

@@ -20,24 +20,17 @@ Examples:
   //CODE REMOVED - 2025-12-02 14:37:00 // 'RoomSpawner.ProcessSpawns(_world, _db);'
 
 Scope:
-- Applies to all files in this repository .
-- For larger removals, add a reference line:
-  //REF: PR #123 or Issue #456
+- Applies to all files in this repository.
 
-Notes:
-- Use __Format Document__ before committing.
-- Keep changes small and include a short rationale alongside markers.
+Use the following when applying fixes to large files.
+Every contributor and every AI assistant must follow this exact procedure when proposing code changes or patches that modify large classes. Failing to follow this format will cause the patch to be rejected.
 
-
-## Required Patch Output Format (MANDATORY)
-To reduce friction when applying fixes to large files, every contributor and every AI assistant must follow this exact procedure when proposing code changes or patches that modify existing methods or add new methods. Failing to follow this format will cause the patch to be rejected.
-
-1) Always output the whole changed method
-- For any method that is changed, the patch must include the entire method declaration and body (from the method signature line to the closing brace that ends the method). Partial-method diffs are not acceptable.
-- Rationale: large files and multi-line signatures make it error-prone to apply partial snippets.
+1) Always output the whole a) IF block b) CASE block or c)METHOD, whichever is the smallest complete syntactic unit.
+- If c)Method that is changed, the patch must include the entire method declaration and body (from the method signature line to the closing brace that ends the method). Partial-method diffs are not acceptable.
+- Rationale: large files and multi-line signatures make it error-prone to apply partial snippets, whole sections are preferred for clarity and correctness.
 
 2) Provide explicit, machine-findable replacement instructions
-- For each changed method include a one-line search-start and search-end marker in plain text so the patch can be applied with two simple text searches.
+- For each changed 'unit' include a one-line search-start and search-end marker in plain text so the patch can be applied with two simple text searches.
 - Format (required):
   - Search start keyword: "REPLACE FROM: <exact search string>"
   - Search end keyword:   "REPLACE TO:   <exact search string>"
@@ -46,51 +39,104 @@ To reduce friction when applying fixes to large files, every contributor and eve
   REPLACE FROM: "public static Message TransferFromContainer(MudCore.World.World world, SqliteConnection conn, Player player, Item container, Item item, int quantity = 1)"
   REPLACE TO:   "} // end TransferFromContainer"
 
-3) Show the full replacement block as a single code block and the target file path
-- Provide the complete replacement code block and prefix the block with the exact file path.
-- Example (required format):
-```csharp MudServer/MudCore/Entities/Inventory.cs
-<entire method here>
-```
-- This must be the only code block describing the replacement for that method.
-
-4) Include short explicit apply instructions for humans
+3) Include short explicit apply instructions for humans
 - After the code block include exact steps (3–4 lines) describing how to apply the patch in Visual Studio 2022, e.g.:
-  1. Open `MudServer/MudCore/Entities/Inventory.cs` in Visual Studio.
-  2. Find the line that contains the SEARCH START string you were given (use __Edit__ > __Find and Replace__ > __Quick Find__).
-  3. Replace from that line through the line that matches the SEARCH END string with the provided block.
-  4. Save, __Format Document__ and __Build Solution__.
+ 1. Open `MudServer/MudCore/Entities/Inventory.cs` in Visual Studio.
+ 2. Find the line that contains the SEARCH START string you were given (use __Edit__ > __Find and Replace__ > __Quick Find__).
+ 3. Replace from that line through the line that matches the SEARCH END string with the provided block.
+ 4. Save, __Format Document__ and __Build Solution__.
+
+4) Show the full replacement block as a single code block and the target file path
+- Provide the complete replacement code block
+- Example (required format):
+- - This must be the only code block describing the replacement for that method.
 
 5) Provide a brief test checklist
-- At minimum: build the solution and run a focused manual test that exercises the changed method. Provide the specific commands to run in-game (e.g., `drop 30 copper`, `get 30 copper`).
+- At minimum: build the solution and run a focused manual test that exercises the changed method. Provide the specific in-game commands to run (e.g., `drop 30 copper`, `get 30 copper`).
 
-6) When changing multiple methods, repeat steps 1–5 for each method in the same message.
+6) When changing multiple units of code, repeat steps 1–5 for each method in the same message.
 
 7) Flags and JSON normalization recommendation
-- If your change affects Flags/FlagsJson semantics ensure flags are serialized deterministically (e.g., sort the list before JsonSerializer.Serialize) and document that in the patch notes.
+- If your change affects Flags/FlagsJson semantics ensure flags are serialized deterministically (for example: sort the flag list before calling `JsonSerializer.Serialize`) and document that in the patch notes.
 
 8) Commit message and PR guidelines
-- Suggested commit message prefix: "fix(inv):" or "feat(inv):" followed by short description.
+- Suggested commit message prefix: `fix(inv):` or `feat(inv):` followed by a short description.
 - In the PR description repeat the replacement instructions and test checklist so reviewers can quickly apply or test locally.
 
+## Persistence and DB write rules (MANDATORY)
+- All new persistence writes (inserts, updates, deletes) MUST be performed via the centralized single-writer scheduler `DbWriteQueue` unless a method explicitly accepts and is provided a `SqliteTransaction` object.
+  - Rationale: Prevents concurrent-writer SQLite errors and enforces a single serialized writer path for safety.
+- If a change needs to perform multiple DB statements atomically, implement the logic inside a job submitted to `MudServer.DbWriteQueue.Instance.RunWriteAndWait<T>((conn, tx) => { ... }, timeout: TimeSpan)` and use the provided `conn` and `tx` inside the writer job.
+- Helper persistence methods that may be called both from writer jobs and from direct callers must accept an optional `SqliteTransaction? tx = null` parameter and use it on every command when non-null (do not execute commands on a connection with a pending local transaction without assigning the Transaction property).
+- Examples and checks:
+  - When creating or updating multiple tables together, run the operations inside a `RunWriteAndWait` job.
+  - When adding a method that performs DB reads followed by writes which must be atomic, ensure the reads and writes run inside the same writer job and transaction.
+- Enforcement:
+  - PR reviewers and automated checks should verify: new code performing DB writes either calls `DbWriteQueue` or accepts/propagates a `SqliteTransaction` and assigns it to every created `SqliteCommand`.
+  - Pre-commit hooks should scan diffs for usages of `ExecuteNonQuery`, `ExecuteScalar`, or `ExecuteReader` on `SqliteCommand` instances and assert that either `cmd.Transaction = tx` is set when a local transaction is in scope or the call is within a `RunWriteAndWait` writer lambda.
 
-## Examples
-- Minimal valid example (for changing `TransferFromContainer`):
-  - Provide REPLACE FROM with exact signature line.
-  - Provide REPLACE TO with unique trailing comment or the closing brace line.
-  - Provide the full method code block (signature + body).
-  - Provide apply steps and a test checklist.
+## Refactoring large loops and phase extraction (preferred pattern)
 
+Large single-method loops (for example the main `GameLoop.Start()` while loop) should be extracted into focused helper methods when it is safe to do so. The goals are improved readability, testability, and lower risk for future changes. Follow these rules when extracting phases (Effects, Combat, Spawner, WorldTick, Persistence):
+
+1) Extract only one phase at a time
+- Make a single, focused extraction (for example `ProcessEffectsTick`) and ensure no semantic changes are introduced. Keep the public external behavior identical.
+
+2) Preserve ordering and side-effects
+- The top-level loop must retain the same phase ordering as before. Extraction must not change when or how often phases run. If ordering or atomicity changes, document and justify it in the PR.
+
+3) Keep DB access centralized in the loop
+- Helpers may compute results and mutate in-memory state (HP, flags, lists), but `Start()` should remain responsible for persistence unless you explicitly redesign DB concurrency. This avoids subtle connection/transaction changes.
+
+4) Small return values, not implicit side-effects
+- Prefer helper signatures that return lists or small result objects (e.g., `(List<Player> playersToPersist, List<Npc> npcsToPersist)`) rather than hiding large side-effects. This makes testing and reasoning easier.
+
+5) Add focused unit/integration tests
+- For each extracted helper add tests that validate the behavior (effects application, messaging decisions, returned persist lists). If exact unit test coverage is not achievable due to complex dependencies, add a small integration test or a manual test checklist in the PR.
+
+6) Messaging rules and UX parity
+- Keep user-facing messages unchanged during refactor. If you decide to change phrasing, include it in the PR notes and add the new tests/manual checks.
+
+7) DB & concurrency safety checklist (must be followed before merging)
+- Confirm the helper does not create new concurrent DB access paths or require multiple `SqliteConnection` instances.
+- If you must parallelize any phase later, convert to separate connections and transactions intentionally and add a migration note.
+
+8) Minimal public surface change
+- New helpers should be private instance methods inside the same class where possible (e.g., `private void ProcessEffectsTick(out ...)`). Avoid spreading logic into new public API unless required.
+
+9) Incremental commits
+- Make the refactor in small commits: extract helper, adjust `Start()` to call helper, run tests, then change next phase.
+
+10) Rollback / DEPRECATED markers
+- If you remove lines from `Start()` replace them with a DEPRECATED or CODE REMOVED marker following repo rules so reviewers can see what was removed.
+
+## Example checklist for extracting Effects processing
+- Create `ProcessEffectsTick(out List<Player>, out List<Npc>)` as a private method.
+- Keep message phrasing identical and preserve the returned lists for persistence by `Start()`.
+- Add unit/integration tests for a player and NPC effect tick application.
+- Validate in a manual run: Start server, create an entity with an active effect, wait one tick, confirm messaging and DB persisted fields.
+- Update PR description with the REPLACE FROM/TO markers and manual test steps.
+
+## When it is safe to extract
+- The extraction is safe when:
+  - There is no change to external behavior (messages, persisted fields) in the happy path.
+  - The helper is fully covered by tests or a manual test checklist is included.
+  - The change does not introduce new concurrent DB use or change transaction boundaries.
+  - The change is reviewed and approved by a maintainer.
+
+## Suggested PR review focus for refactors
+- Verify REPLACE FROM/TO markers and full-method blocks are correct.
+- Run the provided manual test checklist.
+- Confirm no change in user-facing messages unless intentionally changed.
+- Confirm DB queries and updates are unchanged or documented.
 
 ## Enforcement
-- Automated pre-commit checks and PR templates will verify the presence of REPLACE FROM / REPLACE TO markers and full-method blocks. Non-conforming patches will be blocked.
-
+- Automated pre-commit checks and PR templates should verify the presence of REPLACE FROM / REPLACE TO markers and full-method blocks. Non-conforming patches will be blocked.
+- Automated checks should also flag direct DB write calls that are not routed through `DbWriteQueue` or do not set the `SqliteTransaction` on commands when a transaction is in scope.
 
 ## Rationale
 - Large files (thousands of lines) make small inline snippets ambiguous and error-prone. This policy ensures a deterministic apply path and speeds developer workflows.
 
-
 ## Final notes
 - These rules are additive to the repo rules at the top of this document. Follow both sections when preparing patches.
-
 - If you have suggestions for improving the exact marker strings or tooling to automate apply, open an Issue describing the proposal.

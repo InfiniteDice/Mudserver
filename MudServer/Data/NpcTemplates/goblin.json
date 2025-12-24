@@ -63,5 +63,6 @@
   ],
   "Debuffs": [],
   "Buffs": [],
-  "VisualTrait":""
+  "Hunger": 0,
+  "VisualTrait": ""
 }

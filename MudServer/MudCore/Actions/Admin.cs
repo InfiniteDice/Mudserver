@@ -4,6 +4,7 @@ using MudCore.Entities;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
+using MudServer.MudUtils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -523,15 +524,22 @@ namespace MudServer
                 }
                 catch { targetPlayer = null; }
 
-                // 2) If not player, try to resolve a container (player inventory first then room) using InventoryManager
+                // 2) If not player, try to resolve a container (parser-first then legacy fallback)
                 Item? targetContainer = null;
                 if (targetPlayer == null)
                 {
                     try
                     {
-                        targetContainer = InventoryManager.FindContainer(player, targetPart);
+                        var optsCont = new ItemParserOptions { IncludeDescriptorTokens = false, IncludeMaterialTokens = false, AllowStartsWith = true };
+                        var pres = ItemParser.ResolveForAny(player, targetPart, optsCont);
+                        if (pres?.Winner != null) targetContainer = pres.Winner;
                     }
-                    catch { targetContainer = null; }
+                    catch { /* best-effort */ }
+
+                    if (targetContainer == null)
+                    {
+                        try { targetContainer = InventoryManager.FindContainer(player, targetPart); } catch { targetContainer = null; }
+                    }
                 }
 
                 if (targetPlayer == null && targetContainer == null)
@@ -1712,6 +1720,36 @@ namespace MudServer
                     player.CurrentRoom.IsDirty = true;
                     createdRoomInstance.IsDirty = true;
                     _world.SaveDirtyRooms(_db);
+
+                    // Broadcast updated room views so clients immediately see the new exit
+                    try
+                    {
+                        var srcRoom = player.CurrentRoom;
+                        if (srcRoom != null)
+                        {
+                            foreach (var p in srcRoom.Players)
+                            {
+                                p.PendingMessageQueue.Add(MessageHandler.Room(
+                                    srcRoom,
+                                    srcRoom.Npcs.Select(n => n.DisplayName).ToList(),
+                                    srcRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                    _world));
+                            }
+                        }
+
+                        if (createdRoomInstance != null)
+                        {
+                            foreach (var p in createdRoomInstance.Players)
+                            {
+                                p.PendingMessageQueue.Add(MessageHandler.Room(
+                                    createdRoomInstance,
+                                    createdRoomInstance.Npcs.Select(n => n.DisplayName).ToList(),
+                                    createdRoomInstance.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                    _world));
+                            }
+                        }
+                    }
+                    catch { /* best-effort */ }
 
                     player.PendingAction = null!;
                     return MessageHandler.System("Room created.");

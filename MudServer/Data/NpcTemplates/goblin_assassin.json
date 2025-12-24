@@ -16,7 +16,7 @@
   "CurrentAiTask": null,
   "HealthMax": 35,
   "Health": 35,
-  "Flags": ["PoisonHit30T"],
+  "Flags": [ "PoisonHit30T" ],
   "Level": 3,
   "Mass": 20.0,
   "EffMass": 20.0,
@@ -63,5 +63,6 @@
   ],
   "Debuffs": [],
   "Buffs": [],
-  "VisualTrait":""
+  "Hunger": 0,
+  "VisualTrait": ""
 }

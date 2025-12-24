@@ -1,0 +1,15 @@
+{
+  "Id": "fur_fox",
+  "Name": "Fox Fur",
+  "ItemCategory": "Component",
+  "Weight": 0.2,
+  "Value": 4,
+  "ShortDesc": "The fur from a fox",
+  "LongDesc": "A nice fox fur, you can make something with this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "false"
+}

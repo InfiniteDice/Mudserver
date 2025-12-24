@@ -308,7 +308,11 @@
                         itemsEl.innerHTML = (msg.items || []).map(i => `<span class="badge item">${escapeHtml(i)}</span>`).join(' ');
                     }
 
-                    addLog(title ? `You look at ${title}` : `You look around`, 'info');
+                    // Only log "You look at ..." when the server explicitly marked this room message as an explicit look
+                    // (server sets msg.isLook = true for explicit look commands).
+                    if (msg.isLook) {
+                        addLog(title ? `You look at ${title}` : `You look around`, 'info');
+                    }
                     return;
                 }
 

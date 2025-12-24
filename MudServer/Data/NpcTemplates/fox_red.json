@@ -1,0 +1,59 @@
+{
+  "Id": "fox_red",
+  "Name": "Red Fox",
+  "Alignment": "Neutral",
+  "Description": "A cute furry fox, quick reflexes and very clever.",
+  "IdleActions": [
+    "pauses to consider your intentions",
+    "sniffs for prey",
+    "peers at you but keeps its distance",
+    "looks around for food"
+  ],
+  "WanderChance": 0.03,
+  "WanderAreas": [],
+  "AiBehaviors": [ "FindFood", "Evade" ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 10,
+  "Health": 10,
+  "Flags": ["Carnivore"],
+  "Level": 1,
+  "Mass": 6.0,
+  "EffMass": 6.0,
+  "SizeEnum": 2,
+  "CombatSkill": 65.0,
+  "EffCombatSkill": 65.0,
+  "BaseDmgDice": 1.5,
+  "EffDmgDice": 1.5,
+  "BaseArmorClass": 10.0,
+  "EffArmorClass": 10.0,
+  "IsHumanoid": false,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.50,
+  "DropCountMin": 1,
+  "DropCountMax": 1,
+  "DropPool": [
+    {
+      "TemplateId": "fur_fox",
+      "Weight": 90,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "crafting component"
+    },
+    {
+      "TemplateId": "fox_tail_lucky",
+      "Weight": 10,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "spell/potion component"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 3,
+  "VisualTrait": ""
+}

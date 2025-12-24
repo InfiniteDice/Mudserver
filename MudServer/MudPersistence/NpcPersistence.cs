@@ -95,7 +95,8 @@ namespace MudPersistence
                         + (Has("Level") ? ", Level" : "")
                         + (Has("CombatSkill") ? ", CombatSkill" : "")
                         + (Has("EffCombatSkill") ? ", EffCombatSkill" : "")
-                        + (Has("Flags") ? ", Flags" : "") + @")
+                        + (Has("Flags") ? ", Flags" : "")
+                        + (Has("Hunger") ? ", Hunger" : "") + @")
         VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area"
                         + (Has("Description") ? ", @desc" : "")
                         + (Has("IsHumanoid") ? ", @isHumanoid" : "")
@@ -103,7 +104,8 @@ namespace MudPersistence
                         + (Has("Level") ? ", @lvl" : "")
                         + (Has("CombatSkill") ? ", @cs" : "")
                         + (Has("EffCombatSkill") ? ", @ecs" : "")
-                        + (Has("Flags") ? ", @flags" : "") + @");
+                        + (Has("Flags") ? ", @flags" : "")
+                        + (Has("Hunger") ? ", @hunger" : "") + @");
         SELECT last_insert_rowid();";
 
             cmd.Parameters.AddWithValue("@tid", npc.TemplateID ?? "");
@@ -144,6 +146,18 @@ namespace MudPersistence
                 catch
                 {
                     cmd.Parameters.AddWithValue("@flags", "[]");
+                }
+            }
+
+            if (Has("Hunger"))
+            {
+                try
+                {
+                    cmd.Parameters.AddWithValue("@hunger", npc.Hunger);
+                }
+                catch
+                {
+                    cmd.Parameters.AddWithValue("@hunger", 0);
                 }
             }
 
@@ -399,6 +413,7 @@ namespace MudPersistence
             if (Has("Debuffs")) assignments.Add("Debuffs = @Debuffs");
             if (Has("Level")) assignments.Add("Level = @Level");
             if (Has("Flags")) assignments.Add("Flags = @Flags");
+            if (Has("Hunger")) assignments.Add("Hunger = @Hunger");
 
             if (assignments.Count == 0) return;
 
@@ -435,6 +450,18 @@ namespace MudPersistence
                 catch
                 {
                     up.Parameters.AddWithValue("@Flags", "[]");
+                }
+            }
+
+            if (Has("Hunger"))
+            {
+                try
+                {
+                    up.Parameters.AddWithValue("@Hunger", npc.Hunger);
+                }
+                catch
+                {
+                    up.Parameters.AddWithValue("@Hunger", 0);
                 }
             }
 
@@ -528,6 +555,9 @@ namespace MudPersistence
                         }
                         catch { }
                     }
+
+                    // Read Hunger if present; default 0 (meaning never hungry).
+                    npc.Hunger = Has("Hunger") ? GetInt(rdr, "Hunger", 0) : 0;
 
                     // Skip dead or invalid rows (Health <= 0 or HealthMax <= 0)
                     if (npc.Health <= 0 || npc.HealthMax <= 0)

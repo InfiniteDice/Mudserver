@@ -1,0 +1,15 @@
+{
+  "Id": "fox_tail_lucky",
+  "Name": "Lucky Fox Tail",
+  "ItemCategory": "Component",
+  "Weight": 0.2,
+  "Value": 10,
+  "ShortDesc": "A special tail from a fox",
+  "LongDesc": "A tail from a fox, this is special, you can use this for something.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "false"
+}

@@ -162,6 +162,10 @@ namespace MudServer
                                         item.OwnerID = npc.NpcID;
                                         item.RoomID = room.RoomID;
                                         item.OwnerAreaID = 0;
+
+                                        // Ensure descriptor assigned for spawned/equipped items
+                                        try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
+
                                         ItemPersistence.SaveItem(conn, item);
                                         npc.Inventory.Add(item);
                                     }
@@ -257,6 +261,9 @@ namespace MudServer
                                 item.RoomID = room.RoomID;
                                 item.OwnerAreaID = room.AreaID;
 
+                                // Ensure descriptor assigned for spawned items
+                                try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
+
                                 if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Pre-SaveItem: Template='{templateId}', Name='{item.Name}', Quantity={item.Quantity}, FlagsJson='{item.FlagsJson}'.");
 
                                 ItemPersistence.SaveItem(conn, item);
@@ -334,6 +341,9 @@ namespace MudServer
                                     item.OwnerID = room.RoomID;
                                     item.RoomID = room.RoomID;
                                     item.OwnerAreaID = room.AreaID;
+
+                                    // Ensure descriptor assigned for spawned items
+                                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
                                     ItemPersistence.SaveItem(conn, item);
 

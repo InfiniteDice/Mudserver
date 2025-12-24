@@ -25,9 +25,9 @@ Scope:
 Use the following when applying fixes to large files.
 Every contributor and every AI assistant must follow this exact procedure when proposing code changes or patches that modify large classes. Failing to follow this format will cause the patch to be rejected.
 
-1) Always output the whole a) IF block b) CASE block or c)METHOD, whichever is the smallest complete syntactic unit.
-- If c)Method that is changed, the patch must include the entire method declaration and body (from the method signature line to the closing brace that ends the method). Partial-method diffs are not acceptable.
-- Rationale: large files and multi-line signatures make it error-prone to apply partial snippets, whole sections are preferred for clarity and correctness.
+1) Always provide the smallest syntactic unit that fully contains all modifications: a Try/Catch block, an IF/ELSE block (including its else-if/else
+branches), a single CASE block, or — when changes touch multiple such blocks — the entire METHOD (signature and body). If you change a declaration
+(field/property/method signature), include the whole declaration. This ensures deterministic, machine-applicable patches.
 
 2) Provide explicit, machine-findable replacement instructions
 - For each changed 'unit' include a one-line search-start and search-end marker in plain text so the patch can be applied with two simple text searches.
@@ -63,6 +63,40 @@ Every contributor and every AI assistant must follow this exact procedure when p
 - Suggested commit message prefix: `fix(inv):` or `feat(inv):` followed by a short description.
 - In the PR description repeat the replacement instructions and test checklist so reviewers can quickly apply or test locally.
 
+## Inventory changes policy (NEW)
+When proposing changes that touch inventory behavior (any file or method that reads/writes or manipulates item ownership, stacking, flags, categories or container logic) you MUST also:
+
+1) Analyze and update all relevant call sites
+- InventoryManager helpers are NOT an isolated surface. Callers such as `CommandHandler.HandlePutCommand`, `HandleGetCommand`, `DropItem`, `TransferToPlayer`, `TransferToContainer`, `TransferFromContainer`, `TransferToRoom` and any admin or pending-action flows that rely on inventory must be reviewed and updated to preserve user-visible message propagation and atomicity.
+
+2) Propagate Message results and failures
+- When a helper returns a `Message` (success, rejection, or error), callers MUST propagate non-success messages immediately (do not swallow or replace them with summary success text). Log and return the original `Message` when appropriate so the player sees accurate feedback.
+
+3) Preserve transactional boundaries and writer-queue usage
+- If your change affects persistence semantics, ensure the writer queue (`DbWriteQueue`) and local transaction boundaries remain correct. Document if a change requires a broader transaction or different ordering to avoid mid-operation visibility inconsistencies.
+
+4) Tests and manual checklist
+- Add at least one focused manual test case in the PR description covering both acceptance and rejection paths. Example checks:
+  - `put 10 coin_copper in cup` => expect rejection: "Container 'Cup' does not accept items of category 'Currency'."
+  - `put 10 coin_copper in bag_small` => expect success and `inspect bag_small` shows coins.
+  - `put all copper in bag_small` when mixed stacks exist => verify partial merges and accurate messages.
+
+5) Deterministic Flags serialization
+- If you modify code that merges or serializes `Flags`/`FlagsJson`, sort the flag list before serializing and update any callers that compare `FlagsJson` string equality to instead use normalized lists or deterministic strings.
+
+6) Logging
+- Add short debug logs at call-sites where message decisions are made (for example, log the returned Message.Text from `TransferToContainer` before summarizing). Keep logs guarded with try/catch and avoid leaking sensitive data.
+
+7) Patch apply instructions
+- When inventory-affecting changes are provided in a PR, include the exact REPLACE FROM/REPLACE TO markers and the method-level full replacement blocks as required by this file.
+
+8) PR reviewers checklist
+- Verify all related call-sites were considered and tests/manual checks pass.
+- Confirm no user-facing message regressions.
+
+9) Rationale
+- Inventory flows are cross-cutting and user-visible. Small internal fixes can produce confusing UX if callers summarize or swallow returned messages. This policy makes reviewers verify cross-layer behavior before merging.
+
 ## Refactoring large loops and phase extraction (preferred pattern)
 
 Large single-method loops (for example the main `GameLoop.Start()` while loop) should be extracted into focused helper methods when it is safe to do so. The goals are improved readability, testability, and lower risk for future changes. Follow these rules when extracting phases (Effects, Combat, Spawner, WorldTick, Persistence):
@@ -97,13 +131,6 @@ Large single-method loops (for example the main `GameLoop.Start()` while loop) s
 
 10) Rollback / DEPRECATED markers
 - If you remove lines from `Start()` replace them with a DEPRECATED or CODE REMOVED marker following repo rules so reviewers can see what was removed.
-
-## Example checklist for extracting Effects processing
-- Create `ProcessEffectsTick(out List<Player>, out List<Npc>)` as a private method.
-- Keep message phrasing identical and preserve the returned lists for persistence by `Start()`.
-- Add unit/integration tests for a player and NPC effect tick application.
-- Validate in a manual run: Start server, create an entity with an active effect, wait one tick, confirm messaging and DB persisted fields.
-- Update PR description with the REPLACE FROM/TO markers and manual test steps.
 
 ## When it is safe to extract
 - The extraction is safe when:

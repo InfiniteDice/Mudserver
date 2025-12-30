@@ -18,6 +18,19 @@ namespace MudCore.World
             if (!_templateManager.TryGet(templateId, out var template))
                 throw new KeyNotFoundException($"NPC template '{templateId}' not found.");
 
+            // Diagnostic: when investigating missing persisted fields, log a compact snapshot for the 'cow' template.
+            // This is intentionally narrow to avoid spamming logs in normal runs.
+            bool diagCow = false;
+            if (diagCow)
+            {
+                try
+                {
+                    // Print high-level template info (do not serialize entire object to avoid noise)
+                    Console.WriteLine($"[NpcFactory][DIAG] Loading template '{templateId}': Name='{template.Name}', AiBehaviorConfigs={(template.AiBehaviorConfigs?.Count ?? 0)}, AiBehaviors={(template.AiBehaviors?.Count ?? 0)}, Flags={(template.Flags != null ? string.Join(",", template.Flags) : "(none)")}");
+                }
+                catch { /* best-effort */ }
+            }
+
             var npc = new Npc
             {
                 TemplateID = template.Id,
@@ -45,31 +58,73 @@ namespace MudCore.World
                 EffCombatSkill = template.EffCombatSkill
             };
 
-            // Select visual trait. Prefer category-aware selection when available.
-            if (VisualTraitManager.HasTraits && Random.Shared.NextDouble() < 0.9)
+            // Explicitly inherit hunger when the template provides it (including zero).
+            // This gives a single-time assignment on create. ApplyTemplateDefaults() also guards assignment to avoid overwriting DB-loaded values.
+            try
             {
-                // If template marks the NPC as humanoid, request a humanoid trait; otherwise request creature trait.
-                // VisualTraitManager falls back to the combined pool if the category is missing or empty.
-                if (template.IsHumanoid)
+                if (template.Hunger.HasValue)
+                    npc.Hunger = template.Hunger.Value;
+            }
+            catch { /* best-effort */ }
+
+            // Pre-apply diagnostics for cow: inspect AiBehaviorConfigs / AiBehaviors prior to ApplyTemplateDefaults
+            if (diagCow)
+            {
+                try
                 {
-                    npc.VisualTrait = VisualTraitManager.GetRandomTrait("humanoid", Random.Shared) ?? VisualTraitManager.GetRandomTrait(Random.Shared);
+                    Console.WriteLine($"[NpcFactory][DIAG] BEFORE ApplyTemplateDefaults: Template.AiBehaviorConfigs.Count={(template.AiBehaviorConfigs?.Count ?? 0)} Template.AiBehaviors.Count={(template.AiBehaviors?.Count ?? 0)}");
+                    if (template.AiBehaviorConfigs != null && template.AiBehaviorConfigs.Count > 0)
+                    {
+                        try
+                        {
+                            string sj = System.Text.Json.JsonSerializer.Serialize(template.AiBehaviorConfigs);
+                            Console.WriteLine($"[NpcFactory][DIAG] Template.AiBehaviorConfigs JSON: {sj}");
+                        }
+                        catch { }
+                    }
                 }
-                else
+                catch { }
+            }
+
+            // Behavior:
+            //  - If the template declares a VisualTraitType and the visual_traits.json contains that category,
+            //    choose one random trait from that category.
+            //  - If VisualTraitType is missing or the category is not present, assign no trait (null / empty).
+            if (VisualTraitManager.HasTraits && !string.IsNullOrWhiteSpace(template.VisualTraitType) && Random.Shared.NextDouble() < 0.9)
+            {
+                try
                 {
-                    npc.VisualTrait = VisualTraitManager.GetRandomTrait("creature", Random.Shared) ?? VisualTraitManager.GetRandomTrait(Random.Shared);
+                    // VisualTraitManager.GetRandomTrait(category) returns null when category missing/empty.
+                    npc.VisualTrait = VisualTraitManager.GetRandomTrait(template.VisualTraitType.Trim(), Random.Shared);
+                }
+                catch
+                {
+                    // best-effort: if something goes wrong, leave VisualTrait empty.
+                    npc.VisualTrait = null;
                 }
             }
 
             npc.ApplyTemplateDefaults();
+
+            // Post-apply diagnostics for cow: inspect instance fields after template defaults applied.
+            if (diagCow)
+            {
+                try
+                {
+                    Console.WriteLine($"[NpcFactory][DIAG] AFTER ApplyTemplateDefaults: npc.AiBehaviors.Count={(npc.AiBehaviors?.Count ?? 0)} npc.Template.AiBehaviorConfigs.Count={(npc.Template?.AiBehaviorConfigs?.Count ?? 0)}");
+                    try { Console.WriteLine($"[NpcFactory][DIAG] npc.Flags (runtime): {System.Text.Json.JsonSerializer.Serialize(npc.Flags)}"); } catch { }
+                    try { Console.WriteLine($"[NpcFactory][DIAG] npc.WanderAreas (runtime): {System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas)}"); } catch { }
+                }
+                catch { }
+            }
+
             MudServer.Combat.InitializeSizeDefaults(npc);
             MudServer.Combat.UpdateEffectiveStats(npc);
 
             // Ensure NPC inherits area from the room so it can wander within its own area.
             npc.CurrentAreaID = room.AreaID;
-            // If template does not specify WanderAreas, default to the NPC's current area.
             if (npc.WanderAreas == null || npc.WanderAreas.Count == 0)
             {
-                //DEPRECATED// WanderAreas empty at creation; default to room.AreaID for safe local wandering.
                 npc.WanderAreas = new System.Collections.Generic.List<int> { room.AreaID };
             }
 

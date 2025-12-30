@@ -29,10 +29,10 @@ namespace MudPersistence
                 var baseDir = AppContext.BaseDirectory;
                 var candidateDirs = new[]
                 {
-                    Path.Combine(baseDir, "Data", "NpcTemplates"),
-                    Path.Combine(baseDir, "..", "..", "..", "Data", "NpcTemplates"),
-                    Path.Combine(baseDir, "..", "Data", "NpcTemplates")
-                };
+            Path.Combine(baseDir, "Data", "NpcTemplates"),
+            Path.Combine(baseDir, "..", "..", "..", "Data", "NpcTemplates"),
+            Path.Combine(baseDir, "..", "Data", "NpcTemplates")
+        };
 
                 string npcTemplateDir = candidateDirs.FirstOrDefault(Directory.Exists) ?? candidateDirs.Last();
                 Console.WriteLine($"[TEMPLATE] Loading NPC templates from: {npcTemplateDir}");
@@ -54,8 +54,122 @@ namespace MudPersistence
                             };
                             opts.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
 
-                            var tmpl = System.Text.Json.JsonSerializer.Deserialize<MudCore.Templates.NpcTemplate>(json, opts);
-                            if (tmpl != null && !string.IsNullOrWhiteSpace(tmpl.Id))
+                            // Primary attempt: deserialize into NpcTemplate
+                            MudCore.Templates.NpcTemplate? tmpl = null;
+                            try
+                            {
+                                tmpl = System.Text.Json.JsonSerializer.Deserialize<MudCore.Templates.NpcTemplate>(json, opts);
+                            }
+                            catch
+                            {
+                                tmpl = null;
+                            }
+
+                            // If deserialization failed or required fields missing, attempt to extract Id and Name from JSON.
+                            // IMPORTANT: Enforce that a template must include a human-friendly "Name" in JSON.
+                            if (tmpl == null || string.IsNullOrWhiteSpace(tmpl.Id) || string.IsNullOrWhiteSpace(tmpl.Name))
+                            {
+                                try
+                                {
+                                    using var doc = JsonDocument.Parse(json);
+                                    var root = doc.RootElement;
+                                    if (root.ValueKind == JsonValueKind.Object)
+                                    {
+                                        // If Id present, try to read minimal id to validate file
+                                        string id = "";
+                                        if (root.TryGetProperty("Id", out var idNode) && idNode.ValueKind == JsonValueKind.String)
+                                            id = idNode.GetString() ?? "";
+
+                                        string name = "";
+                                        if (root.TryGetProperty("Name", out var nameNode) && nameNode.ValueKind == JsonValueKind.String)
+                                            name = nameNode.GetString() ?? "";
+
+                                        // If we couldn't deserialize into full shape, but JSON contains both Id and Name,
+                                        // create a minimal template using those values. If Name is missing, skip the file.
+                                        if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(name))
+                                        {
+                                            if (tmpl == null)
+                                                tmpl = new MudCore.Templates.NpcTemplate { Id = id, Name = name };
+                                            else
+                                            {
+                                                // ensure required identity fields are present
+                                                tmpl.Id = string.IsNullOrWhiteSpace(tmpl.Id) ? id : tmpl.Id;
+                                                tmpl.Name = string.IsNullOrWhiteSpace(tmpl.Name) ? name : tmpl.Name;
+                                            }
+
+                                            // If AiBehaviors is an array of objects, deserialize into structured configs
+                                            if (root.TryGetProperty("AiBehaviors", out var abNode) && abNode.ValueKind == JsonValueKind.Array)
+                                            {
+                                                bool elementsAreObjects = abNode.EnumerateArray().Any(e => e.ValueKind == JsonValueKind.Object);
+                                                if (elementsAreObjects)
+                                                {
+                                                    try
+                                                    {
+                                                        var configs = JsonSerializer.Deserialize<List<MudCore.Templates.NpcTemplate.AiBehaviorConfig>>(abNode.GetRawText(), opts);
+                                                        if (configs != null)
+                                                        {
+                                                            tmpl.AiBehaviorConfigs = configs;
+                                                        }
+                                                    }
+                                                    catch (Exception exc)
+                                                    {
+                                                        Console.WriteLine($"[NpcTemplateManager] Failed to parse structured AiBehaviors in {Path.GetFileName(file)}: {exc.Message}");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Enforce NO FALLBACKS for display Name: skip templates missing Name.
+                                            Console.WriteLine($"[TEMPLATE][WARN] Skipped NPC template (missing Name or Id): {Path.GetFileName(file)}");
+                                            continue;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine($"[TEMPLATE][WARN] Skipped invalid NPC template file (root not object): {Path.GetFileName(file)}");
+                                        continue;
+                                    }
+                                }
+                                catch
+                                {
+                                    Console.WriteLine($"[TEMPLATE][WARN] Skipped invalid NPC template file: {Path.GetFileName(file)}");
+                                    continue;
+                                }
+                            }
+                            else
+                            {
+                                // tmpl deserialized successfully — still check for structured AiBehaviors and populate AiBehaviorConfigs
+                                try
+                                {
+                                    using var doc = JsonDocument.Parse(json);
+                                    var root = doc.RootElement;
+                                    if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("AiBehaviors", out var abNode) && abNode.ValueKind == JsonValueKind.Array)
+                                    {
+                                        bool elementsAreObjects = abNode.EnumerateArray().Any(e => e.ValueKind == JsonValueKind.Object);
+                                        if (elementsAreObjects)
+                                        {
+                                            try
+                                            {
+                                                var configs = JsonSerializer.Deserialize<List<MudCore.Templates.NpcTemplate.AiBehaviorConfig>>(abNode.GetRawText(), opts);
+                                                if (configs != null)
+                                                    tmpl.AiBehaviorConfigs = configs;
+                                            }
+                                            catch (Exception exc)
+                                            {
+                                                Console.WriteLine($"[NpcTemplateManager] Failed to parse structured AiBehaviors in {Path.GetFileName(file)}: {exc.Message}");
+                                            }
+                                        }
+                                    }
+                                }
+                                catch
+                                {
+                                    // ignore post-parse errors; proceed with tmpl as deserialized
+                                }
+                            }
+
+                            // Enforce: templates must have both Id and Name. Do not register otherwise.
+                            if (tmpl != null && !string.IsNullOrWhiteSpace(tmpl.Id) && !string.IsNullOrWhiteSpace(tmpl.Name))
                             {
                                 tmplMgr.Register(tmpl);
                                 loaded++;

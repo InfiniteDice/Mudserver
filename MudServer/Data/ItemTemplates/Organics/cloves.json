@@ -1,0 +1,14 @@
+{
+  "Id": "cloves",
+  "Name": "Cloves",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "Cloves, the green kind",
+  "LongDesc": "Some things eat cloves, I bet if you look hard enough you could find a four leaf one!",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": ["HerbivoreFood"],
+  "Material": "Organic",
+  "Stackable": "true"
+}

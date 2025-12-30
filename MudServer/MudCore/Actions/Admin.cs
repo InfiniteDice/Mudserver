@@ -1,6 +1,7 @@
 ﻿using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using MudCore.Entities;
+using MudCore.Templates;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
@@ -8,6 +9,7 @@ using MudServer.MudUtils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 
 namespace MudServer
 {
@@ -340,6 +342,290 @@ namespace MudServer
             );
         }
 
+        // HandleEditRoomPending: processes pending steps for EditRoom flows (Name/Description/Distant + AI generation).
+        // This method assumes pa.Command == "EditRoom" and returns a non-null Message if it consumes/handles the pending input.
+        public Message? HandleEditRoomPending(Player player, PendingAction pa, string input)
+        {
+            if (!player.IsAdmin)
+            {
+                player.PendingAction = null!;
+                return MessageHandler.System("Permission denied. Admins only.");
+            }
+
+            var room = player.CurrentRoom;
+            if (room == null)
+            {
+                player.PendingAction = null!;
+                return MessageHandler.System("You are not inside a valid room.");
+            }
+
+            // Cancel/finish
+            if (!string.IsNullOrEmpty(input) && input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase))
+            {
+                player.PendingAction = null!;
+                return MessageHandler.System("Room editing ended.");
+            }
+
+            // Selection menu
+            if (pa.Step == "SelectField")
+            {
+                if (input == "1" || input.Equals("Name", StringComparison.OrdinalIgnoreCase))
+                {
+                    pa.Step = "EditName";
+                    return MessageHandler.System("Enter new name for this room:");
+                }
+                if (input == "2" || input.Equals("Description", StringComparison.OrdinalIgnoreCase))
+                {
+                    pa.Step = "EditDescription";
+                    return MessageHandler.System("Enter new description for this room:");
+                }
+                if (input == "3" || input.Equals("DistantDescription", StringComparison.OrdinalIgnoreCase))
+                {
+                    pa.Step = "EditDistantDescription";
+                    return MessageHandler.System("Enter new distant description for this room:");
+                }
+                if (input == "4" || input.Equals("GenerateDescription", StringComparison.OrdinalIgnoreCase) ||
+                    input.Equals("Generate Description", StringComparison.OrdinalIgnoreCase) ||
+                    input.Equals("Generate Description from Prompt", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Initialize typed pending data if missing
+                    var edata = pa.Data as EditRoomPendingData ?? new EditRoomPendingData { RoomID = room.RoomID };
+                    pa.Data = edata;
+                    pa.Step = "CollectKeywords";
+                    return MessageHandler.System("Enter comma-separated keywords to guide the AI (or type 'none' to skip). Type 'EndEdit' to cancel.");
+                }
+
+                return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, GenerateDescription, 1, 2, 3, 4, or EndEdit.");
+            }
+
+            // Simple text edits
+            if (pa.Step == "EditName")
+            {
+                room.Name = input ?? "";
+                room.IsDirty = true;
+                _world.SaveDirtyRooms(_db);
+                player.PendingAction = null!;
+                return MessageHandler.System($"Room name updated to '{room.Name}'.");
+            }
+
+            if (pa.Step == "EditDescription")
+            {
+                room.Description = input ?? "";
+                room.IsDirty = true;
+                _world.SaveDirtyRooms(_db);
+                player.PendingAction = null!;
+                return MessageHandler.System("Room description updated.");
+            }
+
+            if (pa.Step == "EditDistantDescription")
+            {
+                room.DistantDescription = input ?? "";
+                room.IsDirty = true;
+                _world.SaveDirtyRooms(_db);
+                player.PendingAction = null!;
+                return MessageHandler.System("Room distant description updated.");
+            }
+
+            // AI generation flow: CollectKeywords -> GenerateDescriptionConfirm
+            if (pa.Step == "CollectKeywords")
+            {
+                var edata = pa.Data as EditRoomPendingData ?? new EditRoomPendingData { RoomID = room.RoomID };
+
+                var keywordsRaw = (input ?? "").Trim();
+                if (string.Equals(keywordsRaw, "none", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(keywordsRaw))
+                    edata.Keywords = Array.Empty<string>();
+                else
+                    edata.Keywords = keywordsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                                .Select(s => s.Trim())
+                                                .Where(s => !string.IsNullOrWhiteSpace(s))
+                                                .Take(12)
+                                                .ToArray();
+
+                pa.Data = edata;
+
+                // Build user payload for the model
+                var exitsList = new List<string>();
+                try
+                {
+                    if (room.Exits != null)
+                    {
+                        foreach (var ex in room.Exits)
+                        {
+                            var toRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == ex.ToRoomID);
+                            var toName = toRoom?.Name ?? "";
+                            var dirWord = Movement.DirectionDisplayName(ex.Direction);
+                            var label = string.IsNullOrWhiteSpace(ex.DiscoverKeyword) ? ex.Direction : ex.DiscoverKeyword;
+                            exitsList.Add($"{dirWord}: {label} -> {toName}");
+                        }
+                    }
+                }
+                catch { /* best-effort */ }
+
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine($"Title: {room.Name}");
+                if (exitsList.Count > 0) sb.AppendLine($"Exits: {string.Join(", ", exitsList)}");
+                if (edata.Keywords != null && edata.Keywords.Length > 0) sb.AppendLine($"Keywords: {string.Join(", ", edata.Keywords)}");
+                sb.AppendLine($"ExistingDescription: {room.Description ?? ""}");
+                sb.AppendLine();
+                sb.AppendLine("Produce a JSON object exactly like: {\"Description\":\"<full text>\",\"DistantDescription\":\"<short text>\"} with Description and DistantDescription only.");
+
+                var lmUrl = Environment.GetEnvironmentVariable("LMSTUDIO_URL") ?? "http://127.0.0.1:8000/";
+                var lmModel = Environment.GetEnvironmentVariable("LMSTUDIO_MODEL") ?? "default";
+                var systemPrompt = Environment.GetEnvironmentVariable("LMSTUDIO_SYSTEM_PROMPT") ??
+                    "You are a concise immersive worldbuilding assistant for a text MUD. Use only information provided in the structured user payload (title, exits, keywords, existingDescription). Do NOT invent objects, plants, buildings, or people not present in the inputs. If information is not provided, be vague. Produce exactly one JSON object with keys 'Description' and 'DistantDescription'. Do not include any extra text. Use neutral, evocative language; no markup. Description should be 60-300 characters. DistantDescription should be one or two brief sentences.";
+
+                try
+                {
+                    using var lmClient = new MudServer.Integrations.LmStudioClient(lmUrl);
+                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(25));
+
+                    // Prefer using the wrapper if available
+                    try
+                    {
+                        var (generatedDesc, generatedDistant) = lmClient.GenerateRoomDescriptionsAsync(
+                            lmModel,
+                            systemPrompt,
+                            sb.ToString(),
+                            maxDescriptionChars: 4000,
+                            maxDistantChars: 500,
+                            temperature: 0.7,
+                            ct: cts.Token).GetAwaiter().GetResult();
+
+                        edata.DraftDescription = generatedDesc ?? "";
+                        edata.DraftDistant = generatedDistant ?? "";
+                    }
+                    catch (Exception wrapperEx)
+                    {
+                        // Fallback: call chat completion directly and attempt to extract JSON if wrapper not supported
+                        var messages = new List<(string role, string content)>
+                {
+                    ("system", systemPrompt),
+                    ("user", sb.ToString())
+                };
+                        using var respDoc = lmClient.CreateChatCompletionAsync(lmModel, messages, temperature: 0.7, ct: cts.Token)
+                                                   .GetAwaiter().GetResult();
+
+                        string raw = "";
+                        try
+                        {
+                            var root = respDoc.RootElement;
+                            if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
+                            {
+                                var first = choices[0];
+                                if (first.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.Object && msg.TryGetProperty("content", out var content))
+                                    raw = content.GetString() ?? "";
+                                else if (first.TryGetProperty("text", out var textProp))
+                                    raw = textProp.GetString() ?? "";
+                            }
+                            if (string.IsNullOrWhiteSpace(raw) && root.TryGetProperty("output_text", out var outText) && outText.ValueKind == JsonValueKind.String)
+                                raw = outText.GetString() ?? "";
+                            if (string.IsNullOrWhiteSpace(raw) && root.TryGetProperty("output", out var outNode))
+                            {
+                                if (outNode.ValueKind == JsonValueKind.String) raw = outNode.GetString() ?? "";
+                                else if (outNode.ValueKind == JsonValueKind.Array && outNode.GetArrayLength() > 0)
+                                    raw = string.Join("\n", outNode.EnumerateArray().Select(e => e.GetString() ?? ""));
+                            }
+                        }
+                        catch { raw = ""; }
+
+                        raw = (raw ?? "").Trim();
+                        if (string.IsNullOrWhiteSpace(raw))
+                            return MessageHandler.System("LLM returned empty description. Try different keywords or try again later.");
+
+                        // Extract JSON substring
+                        int firstIdx = raw.IndexOf('{');
+                        int lastIdx = raw.LastIndexOf('}');
+                        if (firstIdx >= 0 && lastIdx > firstIdx)
+                            raw = raw.Substring(firstIdx, lastIdx - firstIdx + 1);
+
+                        try
+                        {
+                            using var jd = JsonDocument.Parse(raw);
+                            var root = jd.RootElement;
+                            string desc = root.TryGetProperty("Description", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() ?? "" : "";
+                            string distant = root.TryGetProperty("DistantDescription", out var dd) && dd.ValueKind == JsonValueKind.String ? dd.GetString() ?? "" : "";
+
+                            if (string.IsNullOrWhiteSpace(desc))
+                                return MessageHandler.System("LLM returned JSON but Description was empty. Try different keywords.");
+
+                            edata.DraftDescription = desc.Trim();
+                            edata.DraftDistant = distant.Trim();
+                        }
+                        catch (Exception exJson)
+                        {
+                            Console.WriteLine($"[LLM][WARN] Failed to parse JSON from LM output: {exJson.Message}");
+                            Console.WriteLine($"[LLM][WARN] Raw LM output: {raw}");
+                            return MessageHandler.System("LLM returned output that could not be parsed as JSON. Try different keywords or try again later.");
+                        }
+                    }
+
+                    // save draft to pending and move to confirm
+                    pa.Data = edata;
+                    pa.Step = "GenerateDescriptionConfirm";
+
+                    var preview = $"Preview - Description:\n{edata.DraftDescription}\n\nDistantDescription:\n{edata.DraftDistant}\n\nType 'confirm' to save, 'edit' to enter new keywords, or 'cancel'.";
+                    return MessageHandler.System(preview);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[LLM] Generation failed: {ex.Message}");
+                    return MessageHandler.System($"LLM generation failed: {ex.Message}");
+                }
+            }
+
+            // Confirmation step: save or re-edit or cancel
+            if (pa.Step == "GenerateDescriptionConfirm")
+            {
+                var edata = pa.Data as EditRoomPendingData;
+                string draftDesc = edata?.DraftDescription ?? "";
+                string draftDistant = edata?.DraftDistant ?? "";
+
+                var cmd = (input ?? "").Trim().ToLowerInvariant();
+                if (cmd == "confirm")
+                {
+                    if (string.IsNullOrWhiteSpace(draftDesc))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("No draft description available to save.");
+                    }
+
+                    room.Description = draftDesc;
+                    room.DistantDescription = draftDistant;
+                    room.IsDirty = true;
+                    _world.SaveDirtyRooms(_db);
+
+                    // Broadcast updated room payloads to occupants
+                    foreach (var p in room.Players)
+                    {
+                        p.PendingMessageQueue.Add(MessageHandler.Room(
+                            room,
+                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                            room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                            _world));
+                    }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Generated description saved and broadcast to room.");
+                }
+                else if (cmd == "edit")
+                {
+                    pa.Step = "CollectKeywords";
+                    return MessageHandler.System("Enter comma-separated keywords to guide the AI (or 'none' to skip). Type 'EndEdit' to cancel.");
+                }
+                else if (cmd == "cancel" || cmd == "endedit")
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Generation cancelled.");
+                }
+                else
+                {
+                    return MessageHandler.System("Invalid option. Type 'confirm' to save, 'edit' to re-enter keywords, or 'cancel'.");
+                }
+            }
+
+            return null;
+        }
+
         public Message? HandleEditExit(Player player, string command)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
@@ -393,6 +679,56 @@ namespace MudServer
                 int newId = MudPersistence.NpcPersistence.InsertNpc(_db, newNpc);
                 newNpc.NpcID = newId;
 
+                // Diagnostic: when environment var set, dump DB row + in-memory values to help debug missing fields
+                try
+                {
+                    var diag = (Environment.GetEnvironmentVariable("NPC_CREATE_DIAG") ?? "").Trim();
+                    if (diag == "1")
+                    {
+                        try
+                        {
+                            Console.WriteLine($"[NPC-DIAG] Created Npc in-memory snapshot: NpcID={newNpc.NpcID} TemplateID='{newNpc.TemplateID}' Name='{newNpc.Name}' RoomID={newNpc.CurrentRoomID}");
+                            try { Console.WriteLine($"[NPC-DIAG] In-memory Flags: {System.Text.Json.JsonSerializer.Serialize(newNpc.Flags ?? new System.Collections.Generic.List<string>())}"); } catch { }
+                            try { Console.WriteLine($"[NPC-DIAG] In-memory AiBehaviors (legacy strings): {System.Text.Json.JsonSerializer.Serialize(newNpc.AiBehaviors ?? new System.Collections.Generic.List<string>())}"); } catch { }
+                            try { Console.WriteLine($"[NPC-DIAG] Template AiBehaviorConfigs: {System.Text.Json.JsonSerializer.Serialize(newNpc.Template?.AiBehaviorConfigs ?? new System.Collections.Generic.List<NpcTemplate.AiBehaviorConfig>())}"); } catch { }
+                            try { Console.WriteLine($"[NPC-DIAG] Template.Flags: {System.Text.Json.JsonSerializer.Serialize(newNpc.Template?.Flags ?? new System.Collections.Generic.List<string>())}"); } catch { }
+
+                            using var cmd = _db.CreateCommand();
+                            cmd.CommandText = "SELECT * FROM Npc WHERE NpcID = @id;";
+                            cmd.Parameters.AddWithValue("@id", newNpc.NpcID);
+                            using var rdr = cmd.ExecuteReader();
+                            if (rdr.Read())
+                            {
+                                var cols = new System.Text.StringBuilder();
+                                cols.AppendLine($"[NPC-DIAG] DB row for NpcID={newNpc.NpcID}:");
+                                for (int i = 0; i < rdr.FieldCount; i++)
+                                {
+                                    try
+                                    {
+                                        var name = rdr.GetName(i);
+                                        object val = rdr.IsDBNull(i) ? "(null)" : rdr.GetValue(i);
+                                        cols.AppendLine($"  {name} = {val}");
+                                    }
+                                    catch (Exception exCol)
+                                    {
+                                        cols.AppendLine($"  (col {i}) read error: {exCol.Message}");
+                                    }
+                                }
+                                Console.WriteLine(cols.ToString());
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[NPC-DIAG] No DB row found for newly inserted NpcID={newNpc.NpcID}.");
+                            }
+                        }
+                        catch (Exception exDiag)
+                        {
+                            Console.WriteLine($"[NPC-DIAG][ERROR] Diagnostic read failed: {exDiag.Message}");
+                        }
+                    }
+                }
+                catch { /* best-effort only; do not block creation */ }
+
                 // Ensure world list contains it
                 if (!_world.Npcs.Any(n => n.NpcID == newNpc.NpcID))
                 {
@@ -436,7 +772,7 @@ namespace MudServer
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
                         room.Npcs.Select(n => n.DisplayName).ToList(),
-                        room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
+                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                         _world));
                 }
 
@@ -461,7 +797,7 @@ namespace MudServer
                 Console.WriteLine($"[NPC] Failed to create NPC from template {templateId}: {ex}");
                 return MessageHandler.System($"Failed to create NPC: {ex.Message}");
             }
-        }
+        }//end HandleCreateNpc
 
         public Message? AddItem(Player player, string itemTemplateId, int quantity = 1)
         {
@@ -1338,14 +1674,18 @@ namespace MudServer
                     }
                     if (input == "2" || input.Equals("Description", StringComparison.OrdinalIgnoreCase))
                     {
+                        // Show current description to make editing easier, then prompt for new value.
                         pa.Step = "EditDescription";
-                        return MessageHandler.System("Enter new description for this room:");
+                        var current = string.IsNullOrWhiteSpace(room?.Description) ? "(no current description)" : room.Description;
+                        return MessageHandler.System($"Current description is:\n{current}\n\nEnter new description for this room:");
                     }
                     // NEW: allow editing distant description
                     if (input == "3" || input.Equals("DistantDescription", StringComparison.OrdinalIgnoreCase))
                     {
+                        // Show current distant description to make editing easier, then prompt for new value.
                         pa.Step = "EditDistantDescription";
-                        return MessageHandler.System("Enter new distant description for this room:");
+                        var currentD = string.IsNullOrWhiteSpace(room?.DistantDescription) ? "(no current distant description)" : room.DistantDescription;
+                        return MessageHandler.System($"Current distant description is:\n{currentD}\n\nEnter new distant description for this room:");
                     }
 
                     // NEW: LLM generation option
@@ -1353,8 +1693,11 @@ namespace MudServer
                         input.Equals("Generate Description", StringComparison.OrdinalIgnoreCase) ||
                         input.Equals("Generate Description from Prompt", StringComparison.OrdinalIgnoreCase))
                     {
-                        pa.Step = "GenerateDescriptionPrompt";
-                        return MessageHandler.System("Enter Prompt:");
+                        // Transition to collecting operator keywords for AI generation
+                        pa.Step = "CollectKeywords";
+                        // Store room id for reference in pa.Data
+                        pa.Data = new Dictionary<string, object> { { "RoomID", room?.RoomID ?? 0 } };
+                        return MessageHandler.System("Enter comma-separated keywords to guide the AI (or type 'none' to skip). Type 'EndEdit' to cancel.");
                     }
 
                     return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, GenerateDescription, 1, 2, 3, 4, or EndEdit.");
@@ -1378,32 +1721,74 @@ namespace MudServer
                     return MessageHandler.System("Room description updated.");
                 }
 
-                // handle generate-from-prompt flow
-                if (pa.Step == "GenerateDescriptionPrompt")
+                /// handle generate-from-prompt flow - NEW: CollectKeywords -> GenerateDescriptionPreview -> GenerateDescriptionConfirm
+                if (pa.Step == "CollectKeywords")
                 {
-                    var prompt = input;
-                    player.PendingAction = null!; // consume the pending action
+                    // input contains comma-separated keywords (or 'none')
+                    var keywordsRaw = (input ?? "").Trim();
+                    string[] keywordArray;
+                    if (string.Equals(keywordsRaw, "none", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(keywordsRaw))
+                        keywordArray = new string[0];
+                    else
+                    {
+                        keywordArray = keywordsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(s => s.Trim()).Where(s => !string.IsNullOrWhiteSpace(s)).Take(12).ToArray();
+                    }
 
+                    // save into pa.Data dictionary
+                    try
+                    {
+                        if (!(pa.Data is Dictionary<string, object> dict)) dict = new Dictionary<string, object>();
+                        dict["Keywords"] = keywordArray;
+                        pa.Data = dict;
+                    }
+                    catch { pa.Data = new Dictionary<string, object> { { "Keywords", keywordArray } }; }
+
+                    // Build structured payload for LLM
                     var lmUrl = Environment.GetEnvironmentVariable("LMSTUDIO_URL") ?? "http://127.0.0.1:8000/";
                     var lmModel = Environment.GetEnvironmentVariable("LMSTUDIO_MODEL") ?? "default";
-
-                    // Build a system message to ensure context/rules are enforced by the model.
-                    // Allow override via LMSTUDIO_SYSTEM_PROMPT env var.
                     var systemPrompt = Environment.GetEnvironmentVariable("LMSTUDIO_SYSTEM_PROMPT") ??
-                        "You are a concise immersive worldbuilding assistant. Follow all provided context rules. Produce a single-room description suitable for a text-based MUD. Do not mention model or system internals. Use present-tense evocative language, keep output under 100 words, avoid using descriptive words like heat and sun, and avoid lists or markup.";
+                        "You are a concise immersive worldbuilding assistant for a text MUD. Produce exactly one JSON object with keys 'Description' and 'DistantDescription'. Do not include any extra text. Use neutral, evocative language; no markup; avoid profanity. Description should be 60-800 characters. DistantDescription should be one or two brief sentences.";
 
                     try
                     {
-                        using var lmClient = new MudServer.Integrations.LmStudioClient(lmUrl);
-                        using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
+                        // Assemble exits info
+                        var exitsList = new List<string>();
+                        try
+                        {
+                            if (room != null && room.Exits != null)
+                            {
+                                foreach (var ex in room.Exits)
+                                {
+                                    // toRoomName best-effort
+                                    var toRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == ex.ToRoomID);
+                                    var toName = toRoom?.Name ?? "";
+                                    var dirWord = Movement.DirectionDisplayName(ex.Direction);
+                                    var label = ex.DiscoverKeyword ?? "";
+                                    // e.g. north: the gate -> Gatehouse
+                                    var piece = $"{dirWord}:{(string.IsNullOrWhiteSpace(label) ? ex.Direction : label)}->{toName}";
+                                    exitsList.Add(piece);
+                                }
+                            }
+                        }
+                        catch { /* best-effort */ }
 
-                        // Prefer chat/completions endpoint so we can provide a system role (context/instruction) first.
+                        var userBuilder = new System.Text.StringBuilder();
+                        userBuilder.AppendLine($"Title: {room?.Name ?? "Unknown"}");
+                        userBuilder.AppendLine($"Exits: {string.Join(", ", exitsList)}");
+                        if (keywordArray.Length > 0) userBuilder.AppendLine($"Keywords: {string.Join(", ", keywordArray)}");
+                        userBuilder.AppendLine($"ExistingDescription: {room?.Description ?? ""}");
+                        userBuilder.AppendLine();
+                        userBuilder.AppendLine("Produce a JSON object exactly like: {\"Description\":\"<full text>\",\"DistantDescription\":\"<short text>\"} with Description and DistantDescription only.");
+
+                        using var lmClient = new MudServer.Integrations.LmStudioClient(lmUrl);
+                        using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(25));
+
                         var messages = new List<(string role, string content)>
-        {
-            ("system", systemPrompt),
-            // Provide minimal room context to help the model (room name + existing description if any)
-            ("user", $"Room: {room?.Name ?? "Unknown"}\nExisting description: {room?.Description ?? ""}\nPrompt: {prompt}\n\nGenerate a refined room description based on the Prompt and the Existing description. Keep it immersive and focused on sensory details.")
-        };
+                {
+                    ("system", systemPrompt),
+                    ("user", userBuilder.ToString())
+                };
 
                         using var respDoc = lmClient.CreateChatCompletionAsync(lmModel, messages, temperature: 0.7, ct: cts.Token)
                                                    .GetAwaiter().GetResult();
@@ -1441,49 +1826,130 @@ namespace MudServer
                                 else if (outNode.ValueKind == System.Text.Json.JsonValueKind.Array && outNode.GetArrayLength() > 0)
                                     generated = string.Join("\n", outNode.EnumerateArray().Select(e => e.GetString() ?? ""));
                             }
-
-                            if (string.IsNullOrWhiteSpace(generated))
-                                generated = root.ToString();
                         }
                         catch (Exception exParse)
                         {
-                            Console.WriteLine($"[LLM][WARN] Failed to parse LM response: {exParse.Message}");
+                            Console.WriteLine($"[LLM][WARN] Failed to parse LM response container: {exParse.Message}");
                             generated = "";
                         }
 
                         generated = (generated ?? "").Trim();
                         if (string.IsNullOrWhiteSpace(generated))
                         {
-                            return MessageHandler.System("LLM returned empty description. Try a different prompt.");
+                            return MessageHandler.System("LLM returned empty description. Try different keywords or try again later.");
                         }
 
+                        // Attempt to extract JSON object from generated string
+                        string jsonText = generated;
                         try
                         {
-                            room.Description = generated;
-                            room.IsDirty = true;
-                            _world.SaveDirtyRooms(_db);
+                            // If output contains surrounding text, find first { and last } and parse substring
+                            int firstIdx = jsonText.IndexOf('{');
+                            int lastIdx = jsonText.LastIndexOf('}');
+                            if (firstIdx >= 0 && lastIdx > firstIdx)
+                                jsonText = jsonText.Substring(firstIdx, lastIdx - firstIdx + 1);
 
-                            foreach (var p in room.Players)
+                            using var jd = JsonDocument.Parse(jsonText);
+                            var root = jd.RootElement;
+
+                            string desc = "";
+                            string distant = "";
+
+                            if (root.TryGetProperty("Description", out var d) && d.ValueKind == JsonValueKind.String)
+                                desc = d.GetString() ?? "";
+                            if (root.TryGetProperty("DistantDescription", out var dd) && dd.ValueKind == JsonValueKind.String)
+                                distant = dd.GetString() ?? "";
+
+                            if (string.IsNullOrWhiteSpace(desc))
                             {
-                                p.PendingMessageQueue.Add(MessageHandler.Room(
-                                    room,
-                                    room.Npcs.Select(n => n.DisplayName).ToList(),
-                                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-                                    _world));
+                                return MessageHandler.System("LLM returned JSON but Description was empty. Try different keywords.");
                             }
 
-                            return MessageHandler.System("Generated description saved.");
+                            // store draft in pa.Data
+                            if (!(pa.Data is Dictionary<string, object> dct)) dct = new Dictionary<string, object>();
+                            dct["DraftDescription"] = desc.Trim();
+                            dct["DraftDistant"] = distant.Trim();
+                            dct["Keywords"] = keywordArray;
+                            pa.Data = dct;
+                            pa.Step = "GenerateDescriptionConfirm";
+
+                            // Present preview and prompt for confirmation
+                            var preview = $"Preview - Description:\n{desc}\n\nDistantDescription:\n{distant}\n\nType 'confirm' to save, 'edit' to enter new keywords, or 'cancel'.";
+                            return MessageHandler.System(preview);
                         }
-                        catch (Exception exSave)
+                        catch (Exception exJson)
                         {
-                            Console.WriteLine($"[LLM][ERROR] Failed to save generated description: {exSave.Message}");
-                            return MessageHandler.System("Failed to save generated description due to a server error.");
+                            Console.WriteLine($"[LLM][WARN] Failed to parse JSON from LM output: {exJson.Message}");
+                            Console.WriteLine($"[LLM][WARN] Raw LM output: {generated}");
+                            return MessageHandler.System("LLM returned output that could not be parsed as JSON. Try different keywords or try again later.");
                         }
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"[LLM] Generation failed: {ex.Message}");
                         return MessageHandler.System($"LLM generation failed: {ex.Message}");
+                    }
+                }
+
+                if (pa.Step == "GenerateDescriptionConfirm")
+                {
+                    // Expecting confirm / edit / cancel
+                    var dct = pa.Data as Dictionary<string, object>;
+                    string draftDesc = dct != null && dct.TryGetValue("DraftDescription", out var ddObj) ? (ddObj as string ?? "") : "";
+                    string draftDistant = dct != null && dct.TryGetValue("DraftDistant", out var drObj) ? (drObj as string ?? "") : "";
+
+                    var cmd = (input ?? "").Trim().ToLowerInvariant();
+                    if (cmd == "confirm")
+                    {
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(draftDesc))
+                            {
+                                room.Description = draftDesc;
+                                room.DistantDescription = draftDistant;
+                                room.IsDirty = true;
+                                _world.SaveDirtyRooms(_db);
+
+                                // Broadcast updated room payloads to occupants
+                                foreach (var p in room.Players)
+                                {
+                                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                                        room,
+                                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                        _world));
+                                }
+
+                                player.PendingAction = null!;
+                                return MessageHandler.System("Generated description saved and broadcast to room.");
+                            }
+                            else
+                            {
+                                player.PendingAction = null!;
+                                return MessageHandler.System("No draft description available to save.");
+                            }
+                        }
+                        catch (Exception exSave)
+                        {
+                            Console.WriteLine($"[LLM][ERROR] Failed to save generated description: {exSave.Message}");
+                            player.PendingAction = null!;
+                            return MessageHandler.System("Failed to save generated description due to a server error.");
+                        }
+                    }
+                    else if (cmd == "edit")
+                    {
+                        // allow operator to re-enter keywords
+                        pa.Step = "CollectKeywords";
+                        return MessageHandler.System("Enter comma-separated keywords to guide the AI (or 'none' to skip). Type 'EndEdit' to cancel.");
+                    }
+                    else if (cmd == "cancel" || cmd == "endedit")
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Generation cancelled.");
+                    }
+                    else
+                    {
+                        return MessageHandler.System("Invalid option. Type 'confirm' to save, 'edit' to re-enter keywords, or 'cancel'.");
                     }
                 }
 
@@ -1764,6 +2230,16 @@ namespace MudServer
 
             return null;
         } // end HandlePendingAction
+
+        // Typed pending data for EditRoom -> AI generation flow.
+        // Keeps strongly-typed fields instead of using an unstructured Dictionary.
+        private class EditRoomPendingData
+        {
+            public int RoomID { get; set; } = 0;
+            public string[] Keywords { get; set; } = Array.Empty<string>();
+            public string DraftDescription { get; set; } = "";
+            public string DraftDistant { get; set; } = "";
+        } // end EditRoomPendingData
 
         private static bool IsValidDirection(string dir)
         {

@@ -64,5 +64,6 @@
   "Debuffs": [],
   "Buffs": [],
   "Hunger": 0,
-  "VisualTrait": ""
+  "VisualTrait": "",
+  "VisualTraitType": "EvilHumanoid"
 }

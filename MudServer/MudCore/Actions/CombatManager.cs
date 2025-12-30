@@ -195,102 +195,116 @@ namespace MudServer
 
         public static void Tick(World world, SqliteConnection conn)
         {
-            if (_activeByRoom.Count == 0) return;
-
-            var endedStates = new List<int>();
-
-            foreach (var kvp in _activeByRoom.ToList())
+            try
             {
-                var roomId = kvp.Key;
-                var state = kvp.Value;
-                if (!state.Active) { endedStates.Add(roomId); continue; }
+                if (_activeByRoom.Count == 0) return;
 
-                var room = state.Room;
-                if (room == null || room.RoomID != roomId)
+                var endedStates = new List<int>();
+
+                // Iterate a snapshot of active states so removals during processing won't break enumeration.
+                foreach (var kvp in _activeByRoom.ToList())
                 {
-                    endedStates.Add(roomId);
-                    continue;
+                    var roomId = kvp.Key;
+                    var state = kvp.Value;
+
+                    try
+                    {
+                        if (!state.Active)
+                        {
+                            endedStates.Add(roomId);
+                            continue;
+                        }
+
+                        var room = state.Room;
+                        if (room == null || room.RoomID != roomId)
+                        {
+                            endedStates.Add(roomId);
+                            continue;
+                        }
+
+                        // Prune moved or dead participants
+                        PruneParticipants(state, world);
+
+                        if (!state.Active || state.TeamA.Members.Count == 0 || state.TeamB.Members.Count == 0)
+                        {
+                            EndState(state, "Team empty / disengage");
+                            endedStates.Add(roomId);
+                            continue;
+                        }
+
+                        // Refresh effective stats each tick
+                        RefreshEffectiveStats(state);
+
+                        // CHANGED: sum as double, then cast to int where needed
+                        double skillASum = state.TeamA.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);
+                        double skillBSum = state.TeamB.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);
+
+                        if (skillASum <= 0 && skillBSum <= 0)
+                        {
+                            EndState(state, "No skill / all incapacitated");
+                            endedStates.Add(roomId);
+                            continue;
+                        }
+
+                        int skillA = Math.Max(0, (int)Math.Round(skillASum));
+                        int skillB = Math.Max(0, (int)Math.Round(skillBSum));
+
+                        int minSkill = Math.Max(1, Math.Min(skillA > 0 ? skillA : int.MaxValue, skillB > 0 ? skillB : int.MaxValue));
+                        int baseA = skillA > 0 ? Math.Max(1, (int)Math.Round((double)skillA / minSkill)) : 0;
+                        int baseB = skillB > 0 ? Math.Max(1, (int)Math.Round((double)skillB / minSkill)) : 0;
+
+                        // Attacker availability & global cap
+                        int aliveA = state.TeamA.Members.Count(m => m.Alive);
+                        int aliveB = state.TeamB.Members.Count(m => m.Alive);
+                        baseA = Math.Min(baseA, aliveA);
+                        baseB = Math.Min(baseB, aliveB);
+                        baseA = Math.Min(baseA, GLOBAL_TEAM_CAP);
+                        baseB = Math.Min(baseB, GLOBAL_TEAM_CAP);
+
+                        // Slot capacity constraints vs defenders
+                        int capacityA = ComputeTotalSlotCapacity(state.TeamB.Members.Where(m => m.Alive), state.TeamA.Members.Where(m => m.Alive));
+                        int capacityB = ComputeTotalSlotCapacity(state.TeamA.Members.Where(m => m.Alive), state.TeamB.Members.Where(m => m.Alive));
+                        int finalA = Math.Min(baseA, capacityA);
+                        int finalB = Math.Min(baseB, capacityB);
+
+                        if (DebugCombat)
+                        {
+                            Console.WriteLine($"[COMBAT] Tick State={state.Id} Room={roomId} SkillA={skillA} SkillB={skillB} baseA={baseA} baseB={baseB} capA={capacityA} capB={capacityB} finalA={finalA} finalB={finalB}");
+                        }
+
+                        // Execute attacks for Team A then Team B (ordering could alternate later)
+                        var usedAttackersA = new HashSet<object>();
+                        var usedAttackersB = new HashSet<object>();
+                        var defenderSlotsUsed = new Dictionary<object, int>();
+
+                        ExecuteTeamAttacks(state, state.TeamA, state.TeamB, finalA, usedAttackersA, defenderSlotsUsed, world, conn);
+                        ExecuteTeamAttacks(state, state.TeamB, state.TeamA, finalB, usedAttackersB, defenderSlotsUsed, world, conn);
+
+                        // Clean up (dead participants removal)
+                        PruneParticipants(state, world);
+
+                        // If one team gone -> end
+                        if (state.TeamA.Members.Count(m => m.Alive) == 0 || state.TeamB.Members.Count(m => m.Alive) == 0)
+                        {
+                            EndState(state, "Team eliminated");
+                            endedStates.Add(roomId);
+                        }
+                    }
+                    catch (Exception exState)
+                    {
+                        // Include full exception text and helpful context
+                        Console.WriteLine($"[COMBAT][LOOP][EX] While processing RoomID={kvp.Key} StateId={(kvp.Value?.Id.ToString() ?? "null")}: {exState}");
+                    }
                 }
 
-                // Prune moved or dead participants
-                PruneParticipants(state, world);
-
-                if (!state.Active || state.TeamA.Members.Count == 0 || state.TeamB.Members.Count == 0)
-                {
-                    EndState(state, "Team empty / disengage");
-                    endedStates.Add(roomId);
-                    continue;
-                }
-
-                // Refresh effective stats each tick
-                RefreshEffectiveStats(state);
-
-                // NOTE: Per-tick effects processing was relocated to the global GameLoop to ensure
-                // effects (spells, items, poison, regen) tick regardless of combat state.
-                // CombatManager must not apply effect tick damage/heal/removals to avoid duplicate
-                // application. The removed block below was replaced by a marker per CONTRIBUTING.md.
-                //CODE REMOVED - 2025-12-16 12:00:00 // 'foreach (var part in state.AllParticipants().ToList()) { var outcome = Effects.TickEffects(part.Entity); ... }'
-                // Rationale: Effects.TickEffects remains pure; the GameLoop is the single authoritative applier/persister.
-
-
-                // CHANGED: sum as double, then cast to int where needed
-                double skillASum = state.TeamA.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);
-                double skillBSum = state.TeamB.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);
-
-                if (skillASum <= 0 && skillBSum <= 0)
-                {
-                    EndState(state, "No skill / all incapacitated");
-                    endedStates.Add(roomId);
-                    continue;
-                }
-
-                int skillA = Math.Max(0, (int)Math.Round(skillASum));
-                int skillB = Math.Max(0, (int)Math.Round(skillBSum));
-
-                int minSkill = Math.Max(1, Math.Min(skillA > 0 ? skillA : int.MaxValue, skillB > 0 ? skillB : int.MaxValue));
-                int baseA = skillA > 0 ? Math.Max(1, (int)Math.Round((double)skillA / minSkill)) : 0;
-                int baseB = skillB > 0 ? Math.Max(1, (int)Math.Round((double)skillB / minSkill)) : 0;
-
-                // Attacker availability & global cap
-                int aliveA = state.TeamA.Members.Count(m => m.Alive);
-                int aliveB = state.TeamB.Members.Count(m => m.Alive);
-                baseA = Math.Min(baseA, aliveA);
-                baseB = Math.Min(baseB, aliveB);
-                baseA = Math.Min(baseA, GLOBAL_TEAM_CAP);
-                baseB = Math.Min(baseB, GLOBAL_TEAM_CAP);
-
-                // Slot capacity constraints vs defenders
-                int capacityA = ComputeTotalSlotCapacity(state.TeamB.Members.Where(m => m.Alive), state.TeamA.Members.Where(m => m.Alive));
-                int capacityB = ComputeTotalSlotCapacity(state.TeamA.Members.Where(m => m.Alive), state.TeamB.Members.Where(m => m.Alive));
-                int finalA = Math.Min(baseA, capacityA);
-                int finalB = Math.Min(baseB, capacityB);
-
-                if (DebugCombat)
-                {
-                    Console.WriteLine($"[COMBAT] Tick State={state.Id} Room={roomId} SkillA={skillA} SkillB={skillB} baseA={baseA} baseB={baseB} capA={capacityA} capB={capacityB} finalA={finalA} finalB={finalB}");
-                }
-
-                // Execute attacks for Team A then Team B (ordering could alternate later)
-                var usedAttackersA = new HashSet<object>();
-                var usedAttackersB = new HashSet<object>();
-                var defenderSlotsUsed = new Dictionary<object, int>();
-
-                ExecuteTeamAttacks(state, state.TeamA, state.TeamB, finalA, usedAttackersA, defenderSlotsUsed, world, conn);
-                ExecuteTeamAttacks(state, state.TeamB, state.TeamA, finalB, usedAttackersB, defenderSlotsUsed, world, conn);
-
-                // Clean up (dead participants removal)
-                PruneParticipants(state, world);
-
-                // If one team gone -> end
-                if (state.TeamA.Members.Count(m => m.Alive) == 0 || state.TeamB.Members.Count(m => m.Alive) == 0)
-                {
-                    EndState(state, "Team eliminated");
-                    endedStates.Add(roomId);
-                }
+                foreach (var r in endedStates)
+                    _activeByRoom.Remove(r);
             }
-
-            foreach (var r in endedStates)
-                _activeByRoom.Remove(r);
+            catch (Exception ex)
+            {
+                // Top-level tick exception (should be rare). Log full details.
+                Console.WriteLine($"[COMBAT][TICK][FATAL] Exception in CombatManager.Tick: {ex}");
+            }
         }
 
         private static void ExecuteTeamAttacks(
@@ -315,204 +329,264 @@ namespace MudServer
 
             foreach (var attacker in orderedAttackers)
             {
-                if (performed >= budget) break;
-                if (usedAttackers.Contains(attacker.Entity)) continue;
-
-                var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
-                if (defender == null) break;
-
-                // Calculate damage and whether it was a critical
-                var (dmg, isCrit) = Combat.CalculateDamage(attacker.Entity, defender.Entity);
-
-                if (!attacker.IsPlayer && attacker.AsNpc != null)
+                try
                 {
-                    try { if (conn != null) NpcPersistence.UpdateNpc(conn, attacker.AsNpc); } catch { }
-                }
-                if (!defender.IsPlayer && defender.AsNpc != null)
-                {
-                    try { if (conn != null) NpcPersistence.UpdateNpc(conn, defender.AsNpc); } catch { }
-                }
-                if (attacker.IsPlayer && attacker.AsPlayer != null)
-                {
-                    try { if (conn != null) PlayerPersistence.SavePlayer(conn, attacker.AsPlayer); } catch { }
-                }
-                if (defender.IsPlayer && defender.AsPlayer != null)
-                {
-                    try { if (conn != null) PlayerPersistence.SavePlayer(conn, defender.AsPlayer); } catch { }
-                }
+                    if (performed >= budget) break;
+                    if (usedAttackers.Contains(attacker.Entity)) continue;
 
-                // Record last hitter for defender
-                defender.LastHitByEntity = attacker.Entity;
+                    var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
+                    if (defender == null) break;
 
-                // Replace attacker/defender/others texts and send loops
-                var defName = defender.DisplayName;
-                var atkName = attacker.DisplayName;
-                var defCurr = defender.CurrentHealth;
-                var defMax = defender.MaxHealth;
+                    // Calculate damage and whether it was a critical
+                    var (dmg, isCrit) = Combat.CalculateDamage(attacker.Entity, defender.Entity);
 
-                Combat.Messaging.Attack(state.Room,
-                    attacker.AsPlayer,
-                    atkName,
-                    defName,
-                    dmg,
-                    defCurr,
-                    defMax,
-                    defender.AsPlayer);
+                    // Persist transient actor state where appropriate (best-effort; writer queue preferable in hot paths)
+                    try
+                    {
+                        if (!attacker.IsPlayer && attacker.AsNpc != null)
+                        {
+                            // persisted updates for NPCs are done via writer queue elsewhere; keep lightweight here
+                            if (conn != null) NpcPersistence.UpdateNpc(conn, attacker.AsNpc);
+                        }
+                        if (!defender.IsPlayer && defender.AsNpc != null)
+                        {
+                            if (conn != null) NpcPersistence.UpdateNpc(conn, defender.AsNpc);
+                        }
+                        if (attacker.IsPlayer && attacker.AsPlayer != null)
+                        {
+                            if (conn != null) PlayerPersistence.SavePlayer(conn, attacker.AsPlayer);
+                        }
+                        if (defender.IsPlayer && defender.AsPlayer != null)
+                        {
+                            if (conn != null) PlayerPersistence.SavePlayer(conn, defender.AsPlayer);
+                        }
+                    }
+                    catch (Exception exPersist)
+                    {
+                        Console.WriteLine($"[COMBAT] Lightweight persist failed for participants: {exPersist}");
+                    }
 
-                // CRITICAL: notify players when a critical occurred
-                if (isCrit)
-                {
+                    // Record last hitter for defender
+                    defender.LastHitByEntity = attacker.Entity;
+
+                    // Replace attacker/defender/others texts and send loops
+                    var defName = defender.DisplayName;
+                    var atkName = attacker.DisplayName;
+                    var defCurr = defender.CurrentHealth;
+                    var defMax = defender.MaxHealth;
+
+                    Combat.Messaging.Attack(state.Room,
+                        attacker.AsPlayer,
+                        atkName,
+                        defName,
+                        dmg,
+                        defCurr,
+                        defMax,
+                        defender.AsPlayer);
+
+                    // CRITICAL: notify players when a critical occurred
+                    if (isCrit)
+                    {
+                        try
+                        {
+                            if (attacker.IsPlayer && attacker.AsPlayer != null)
+                            {
+                                foreach (var p in state.Room.Players)
+                                {
+                                    if (p == attacker.AsPlayer)
+                                        MessageHandler.SendSystem(p, "You score a critical hit!");
+                                    else
+                                        MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on {defender.DisplayName}!");
+                                }
+                            }
+                            else
+                            {
+                                // NPC attacker
+                                foreach (var p in state.Room.Players)
+                                {
+                                    if (defender.IsPlayer && defender.AsPlayer != null && p == defender.AsPlayer)
+                                        MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on you!");
+                                    else
+                                        MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on {defender.DisplayName}!");
+                                }
+                            }
+                        }
+                        catch { /* best-effort only */ }
+                    }
+
+                    // Ensure any affected player(s) receive an authoritative player_update (health + xp)
                     try
                     {
                         if (attacker.IsPlayer && attacker.AsPlayer != null)
                         {
-                            foreach (var p in state.Room.Players)
-                            {
-                                if (p == attacker.AsPlayer)
-                                    MessageHandler.SendSystem(p, "You score a critical hit!");
-                                else
-                                    MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on {defender.DisplayName}!");
-                            }
+                            if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, attacker.AsPlayer);
+                            MessageHandler.EnqueuePlayerUpdate(attacker.AsPlayer);
                         }
-                        else
+
+                        if (defender.IsPlayer && defender.AsPlayer != null)
                         {
-                            // NPC attacker
-                            foreach (var p in state.Room.Players)
-                            {
-                                if (defender.IsPlayer && defender.AsPlayer != null && p == defender.AsPlayer)
-                                    MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on you!");
-                                else
-                                    MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on {defender.DisplayName}!");
-                            }
+                            if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, defender.AsPlayer);
+                            MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer);
                         }
                     }
-                    catch { /* best-effort only */ }
-                }
+                    catch { /* best-effort */ }
 
-                // Ensure any affected player(s) receive an authoritative player_update (health + xp)
-                if (attacker.IsPlayer && attacker.AsPlayer != null)
-                {
-                    try { if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, attacker.AsPlayer); } catch { }
-                    try { MessageHandler.EnqueuePlayerUpdate(attacker.AsPlayer); } catch { }
-                }
-
-                if (defender.IsPlayer && defender.AsPlayer != null)
-                {
-                    try { if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, defender.AsPlayer); } catch { }
-                    try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
-                }
-
-
-
-                if (DebugCombat)
-                {
-                    Console.WriteLine($"[COMBAT] Attack State={state.Id} {attacker.DisplayName} -> {defender.DisplayName} dmg={Math.Round(dmg,2)} hp={defender.CurrentHealth}/{defender.MaxHealth}");
-                }
-
-                // Apply hit-trigger effects on critical hits
-                if (isCrit)
-                {
-                    try
+                    if (DebugCombat)
                     {
-                        var effectTokens = Effects.EvaluateHitTriggers(attacker.Entity, true);
-                        if (effectTokens != null && effectTokens.Count > 0)
+                        Console.WriteLine($"[COMBAT] Attack State={state.Id} {attacker.DisplayName} -> {defender.DisplayName} dmg={Math.Round(dmg, 2)} hp={defender.CurrentHealth}/{defender.MaxHealth}");
+                    }
+
+                    // Apply hit-trigger effects on critical hits (unchanged behavior, best-effort persistence)
+                    if (isCrit)
+                    {
+                        try
                         {
-                            foreach (var token in effectTokens)
+                            var effectTokens = Effects.EvaluateHitTriggers(attacker.Entity, true);
+                            if (effectTokens != null && effectTokens.Count > 0)
+                            {
+                                foreach (var token in effectTokens)
+                                {
+                                    try
+                                    {
+                                        var (added, needsPersist) = Effects.AddDebuff(defender.Entity, token);
+                                        if (added)
+                                        {
+                                            var (ename, _, _) = Effects.ParseEffectToken(token);
+                                            foreach (var p in state.Room.Players)
+                                            {
+                                                if (attacker.IsPlayer && attacker.AsPlayer != null && p == attacker.AsPlayer)
+                                                    MessageHandler.SendSystem(p, $"Your critical hit afflicted {defender.DisplayName} with {ename}.");
+                                                else
+                                                    MessageHandler.SendSystem(p, $"{attacker.DisplayName}'s critical hit afflicted {defender.DisplayName} with {ename}.");
+                                            }
+
+                                            // Persist the change best-effort via DbWriteQueue when available
+                                            try
+                                            {
+                                                if (conn != null)
+                                                {
+                                                    if (defender.IsPlayer && defender.AsPlayer != null)
+                                                        PlayerPersistence.SavePlayer(conn, defender.AsPlayer);
+                                                    else if (!defender.IsPlayer && defender.AsNpc != null)
+                                                        NpcPersistence.UpdateNpc(conn, defender.AsNpc);
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"[COMBAT] Failed to persist effect '{token}' for defender: {ex.Message}");
+                                            }
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"[COMBAT] Failed to apply effect token '{token}' to {defender?.DisplayName}: {ex.Message}");
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[COMBAT] EvaluateHitTriggers failed: {ex.Message}");
+                        }
+                    }
+
+                    // CALL-FOR-HELP (best-effort)
+                    try { TryCallForHelp(state, attacker, defender, defenders, world, conn); } catch (Exception ex) { Console.WriteLine($"[COMBAT] TryCallForHelp failed: {ex}"); }
+
+                    usedAttackers.Add(attacker.Entity);
+                    performed++;
+
+                    // Death handling (NPC) with CS award distribution
+                    if (!defender.IsPlayer && defender.AsNpc != null && defender.AsNpc.Health <= 0)
+                    {
+                        if (DebugCombat) Console.WriteLine($"[COMBAT] Death NPC {defender.DisplayName}");
+
+                        // Build contributors robustly from the actual team in the CombatState (not the local attackers snapshot)
+                        var winningTeam = state.GetTeamOf(attacker.Entity) ?? attackers;
+                        var winners = winningTeam.Members
+                            .Where(m => m.IsPlayer && m.AsPlayer != null && m.Alive && m.AsPlayer.CurrentRoom == state.Room)
+                            .Select(m => m.AsPlayer!)
+                            .ToList();
+
+                        // Fallback: ensure at least the immediate attacker is credited if no contributors found
+                        if (winners.Count == 0 && attacker.IsPlayer && attacker.AsPlayer != null && attacker.Alive)
+                            winners.Add(attacker.AsPlayer);
+
+                        if (DebugCombat) Console.WriteLine($"[COMBAT] Contributors for death: {string.Join(", ", winners.Select(p => p?.Name ?? "<null>"))}");
+
+                        // Route to central handler
+                        try
+                        {
+                            Combat.HandleNpcDeath(attacker.AsPlayer ?? state.Room.Players.FirstOrDefault(), defender.AsNpc, world, conn, winners);
+                        }
+                        catch (Exception exHandle)
+                        {
+                            Console.WriteLine($"[COMBAT] HandleNpcDeath failed for NpcID={defender.AsNpc?.NpcID}: {exHandle}");
+                        }
+
+                        // Best-effort: remove NPC from defender list and from its room, then persist deletion via canonical API
+                        try
+                        {
+                            // remove from in-memory combat team
+                            defenders.Members.Remove(defender);
+
+                            // remove from NPC's room list (if present)
+                            var deadNpc = defender.AsNpc;
+                            if (deadNpc != null)
                             {
                                 try
                                 {
-                                    var (added, needsPersist) = Effects.AddDebuff(defender.Entity, token);
-                                    if (added)
-                                    {
-                                        var (ename, _, _) = Effects.ParseEffectToken(token);
-                                        foreach (var p in state.Room.Players)
-                                        {
-                                            if (attacker.IsPlayer && attacker.AsPlayer != null && p == attacker.AsPlayer)
-                                                MessageHandler.SendSystem(p, $"Your critical hit afflicted {defender.DisplayName} with {ename}.");
-                                            else
-                                                MessageHandler.SendSystem(p, $"{attacker.DisplayName}'s critical hit afflicted {defender.DisplayName} with {ename}.");
-                                        }
+                                    var rm = deadNpc.CurrentRoom;
+                                    if (rm != null && rm.Npcs.Contains(deadNpc))
+                                        rm.Npcs.Remove(deadNpc);
+                                }
+                                catch (Exception exRm)
+                                {
+                                    Console.WriteLine($"[COMBAT] Failed to remove dead NpcID={deadNpc.NpcID} from room list: {exRm}");
+                                }
 
-                                        // Persist the change (persist temporary and permanent effects so they survive restarts)
-                                        try
-                                        {
-                                            if (conn != null)
-                                            {
-                                                if (defender.IsPlayer && defender.AsPlayer != null)
-                                                    PlayerPersistence.SavePlayer(conn, defender.AsPlayer);
-                                                else if (!defender.IsPlayer && defender.AsNpc != null)
-                                                    NpcPersistence.UpdateNpc(conn, defender.AsNpc);
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            Console.WriteLine($"[COMBAT] Failed to persist effect '{token}' for defender: {ex.Message}");
-                                        }
+                                // Persist deletion via NpcPersistence.DeleteNpc (which prefers DbWriteQueue)
+                                try
+                                {
+                                    if (conn != null && deadNpc.NpcID > 0)
+                                    {
+                                        NpcPersistence.DeleteNpc(conn, deadNpc.NpcID);
+                                        Console.WriteLine($"[NpcPersistence] Deleted NPC NpcID={deadNpc.NpcID} from DB (combat).");
                                     }
                                 }
-                                catch (Exception ex)
+                                catch (Exception exDb)
                                 {
-                                    Console.WriteLine($"[COMBAT] Failed to apply effect token '{token}' to {defender?.DisplayName}: {ex.Message}");
+                                    Console.WriteLine($"[NpcPersistence][ERROR] Failed to delete NpcID={deadNpc?.NpcID} via NpcPersistence: {exDb}");
                                 }
                             }
                         }
+                        catch (Exception exCleanup)
+                        {
+                            Console.WriteLine($"[COMBAT] Post-death cleanup failed for defender {defender.DisplayName}: {exCleanup}");
+                        }
+
+                        break;
                     }
-                    catch (Exception ex)
+
+                    // Player KO handling
+                    if (defender.IsPlayer && defender.AsPlayer != null && defender.AsPlayer.Health <= 0)
                     {
-                        Console.WriteLine($"[COMBAT] EvaluateHitTriggers failed: {ex.Message}");
+                        try
+                        {
+                            Combat.Messaging.PlayerKo(defender.AsPlayer, attacker.DisplayName);
+                            if (DebugCombat) Console.WriteLine($"[COMBAT] Player KO {defender.DisplayName}");
+                            defenders.Members.Remove(defender);
+                        }
+                        catch (Exception exKo)
+                        {
+                            Console.WriteLine($"[COMBAT] Player KO handling failed for {defender.DisplayName}: {exKo}");
+                        }
+                        break;
                     }
                 }
-
-                // ---------------------------
-                // CALL-FOR-HELP : extracted to helper for readability and correctness
-                // - Only attempt when defender is an NPC and still alive after being hit.
-                // - Search same room + adjacent exits (one-hop) for matching template/name tokens.
-                // - Move responders runtime-only and have them immediately attack the player's side.
-                // ---------------------------
-                try
+                catch (Exception exAtt)
                 {
-                    TryCallForHelp(state, attacker, defender, defenders, world, conn);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[COMBAT] TryCallForHelp failed: {ex.Message}");
-                }
-
-                usedAttackers.Add(attacker.Entity);
-                performed++;
-
-                // Death handling (NPC) with CS award distribution
-                if (!defender.IsPlayer && defender.AsNpc != null && defender.AsNpc.Health <= 0)
-                {
-                    if (DebugCombat) Console.WriteLine($"[COMBAT] Death NPC {defender.DisplayName}");
-
-                    // Build contributors robustly from the actual team in the CombatState (not the local attackers snapshot)
-                    var winningTeam = state.GetTeamOf(attacker.Entity) ?? attackers;
-                    var winners = winningTeam.Members
-                        .Where(m => m.IsPlayer && m.AsPlayer != null && m.Alive && m.AsPlayer.CurrentRoom == state.Room)
-                        .Select(m => m.AsPlayer!)
-                        .ToList();
-
-                    // Fallback: ensure at least the immediate attacker is credited if no contributors found
-                    if (winners.Count == 0 && attacker.IsPlayer && attacker.AsPlayer != null && attacker.Alive)
-                        winners.Add(attacker.AsPlayer);
-
-                    if (DebugCombat) Console.WriteLine($"[COMBAT] Contributors for death: {string.Join(", ", winners.Select(p => p?.Name ?? "<null>"))}");
-
-                    // Route to central Combat.HandleNpcDeath with contributors and the 'world' parameter
-                    Combat.HandleNpcDeath(attacker.AsPlayer ?? state.Room.Players.FirstOrDefault(), defender.AsNpc, world, conn, winners);
-
-                    defenders.Members.Remove(defender);
-                    break;
-                }
-
-                // Player KO handling
-                if (defender.IsPlayer && defender.AsPlayer != null && defender.AsPlayer.Health <= 0)
-                {
-                    Combat.Messaging.PlayerKo(defender.AsPlayer, attacker.DisplayName);
-                    if (DebugCombat) Console.WriteLine($"[COMBAT] Player KO {defender.DisplayName}");
-                    defenders.Members.Remove(defender);
-                    break;
+                    Console.WriteLine($"[COMBAT][ATTACK][EX] While processing attacker {(attacker?.DisplayName ?? "<null>")}: {exAtt}");
                 }
             }
         }

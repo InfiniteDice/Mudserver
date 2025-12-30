@@ -1,0 +1,15 @@
+{
+  "Id": "feather_bird",
+  "Name": "Bird Feather",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 2,
+  "ShortDesc": "A feather from a bird",
+  "LongDesc": "A bird feather, you can likely make something from this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "true"
+}

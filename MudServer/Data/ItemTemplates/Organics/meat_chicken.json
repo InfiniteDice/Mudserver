@@ -1,0 +1,14 @@
+{
+  "Id": "meat_chicken",
+  "Name": "Chicken Meat",
+  "ItemCategory": "Food",
+  "Weight": 0.2,
+  "Value": 3,
+  "ShortDesc": "Some raw meat from a chicken",
+  "LongDesc": "A portion of meat from a chicken, I bet you could cook this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "false"
+}

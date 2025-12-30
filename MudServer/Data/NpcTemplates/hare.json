@@ -16,7 +16,7 @@
   "CurrentAiTask": null,
   "HealthMax": 5,
   "Health": 5,
-  "Flags": [ "Herbivore" ],
+  "Flags": ["Herbivore" ],
   "Level": 1,
   "Mass": 1.0,
   "EffMass": 1.0,
@@ -55,5 +55,6 @@
   "Debuffs": [],
   "Buffs": [],
   "Hunger": 1,
-  "VisualTrait": ""
+  "VisualTrait": "",
+  "VisualTraitType": "Animal"
 }

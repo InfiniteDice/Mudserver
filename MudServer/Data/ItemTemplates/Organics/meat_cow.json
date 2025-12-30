@@ -1,0 +1,14 @@
+{
+  "Id": "meat_cow",
+  "Name": "Cow Meat",
+  "ItemCategory": "Food",
+  "Weight": 2.0,
+  "Value": 12,
+  "ShortDesc": "Some raw meat from a cow",
+  "LongDesc": "A portion of meat from a cow, I bet you could cook this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "false"
+}

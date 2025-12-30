@@ -1,0 +1,14 @@
+{
+  "Id": "milk_raw",
+  "Name": "Raw Milk",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 2,
+  "ShortDesc": "It's raw milk",
+  "LongDesc": "This is a cup of milk, straight from the cow.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" ],
+  "Material": "Organic",
+  "Stackable": "false"
+}

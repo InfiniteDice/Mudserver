@@ -11,6 +11,7 @@ namespace MudCore.Templates
     {
         private readonly Dictionary<string, NpcTemplate> _byId = new(StringComparer.OrdinalIgnoreCase);
 
+        
         public void LoadTemplates(string relativeFolder)
         {
             var baseDir = AppContext.BaseDirectory;
@@ -59,9 +60,41 @@ namespace MudCore.Templates
                 try
                 {
                     var json = File.ReadAllText(file);
+
+                    // Deserialize into the current NpcTemplate shape (legacy AiBehaviors as strings preserved)
                     var tmpl = JsonSerializer.Deserialize<NpcTemplate>(json, options);
                     if (tmpl == null || string.IsNullOrWhiteSpace(tmpl.Id))
                         continue;
+
+                    // Post-process: if JSON contains AiBehaviors as an array of objects, deserialize into AiBehaviorConfig list.
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(json);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("AiBehaviors", out var abNode) && abNode.ValueKind == JsonValueKind.Array)
+                        {
+                            // Detect whether elements are objects (structured) or strings (legacy).
+                            bool elementsAreObjects = abNode.EnumerateArray().Any(e => e.ValueKind == JsonValueKind.Object);
+                            if (elementsAreObjects)
+                            {
+                                try
+                                {
+                                    var configs = JsonSerializer.Deserialize<List<NpcTemplate.AiBehaviorConfig>>(abNode.GetRawText(), options);
+                                    if (configs != null)
+                                        tmpl.AiBehaviorConfigs = configs;
+                                }
+                                catch (Exception exc)
+                                {
+                                    Console.WriteLine($"[NpcTemplateManager] Failed to parse structured AiBehaviors in {Path.GetFileName(file)}: {exc.Message}");
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception exDoc)
+                    {
+                        // best-effort: do not fail template load if post-parse fails
+                        Console.WriteLine($"[NpcTemplateManager] Post-parse AiBehaviors check failed for {Path.GetFileName(file)}: {exDoc.Message}");
+                    }
 
                     _byId[tmpl.Id] = tmpl;
                 }

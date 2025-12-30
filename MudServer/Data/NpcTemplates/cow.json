@@ -1,0 +1,81 @@
+{
+  "Id": "cow",
+  "Name": "Cow",
+  "Alignment": "Neutral",
+  "Description": "A cow, these are a source of milk. You'll need a liquid container.",
+  "IdleActions": [
+    "chews the cud",
+    "Moooooooo!",
+    "whips it's tail'",
+    "looks for another patch of grass"
+  ],
+  "WanderChance": 0.03,
+  "WanderAreas": [],
+  "AiBehaviors": [
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "Night",
+      "Chance": 0.3,
+      "Location": "Npc",
+      "CreatedPerChance": 2,
+      "Max": 6,
+      "ItemTemplate": "milk_raw",
+      "RequiresItem": "None"
+    },
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "Morning",
+      "Chance": 0.3,
+      "Location": "Npc",
+      "CreatedPerChance": 2,
+      "Max": 6,
+      "ItemTemplate": "milk_raw",
+      "RequiresItem": "None"
+    }
+  ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 100,
+  "Health": 100,
+  "Flags": ["Herbivore","MaxMilk40"],
+  "Level": 1,
+  "Mass": 600.0,
+  "EffMass": 600.0,
+  "SizeEnum": 5,
+  "CombatSkill": 45.0,
+  "EffCombatSkill": 45.0,
+  "BaseDmgDice": 2.15,
+  "EffDmgDice": 2.15,
+  "BaseArmorClass": 12.0,
+  "EffArmorClass": 12.0,
+  "IsHumanoid": false,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.70,
+  "DropCountMin": 1,
+  "DropCountMax": 4,
+  "DropPool": [
+    {
+      "TemplateId": "meat_cow",
+      "Weight": 60,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 6,
+      "Stackable": false,
+      "Notes": "Consumable"
+    },
+    {
+      "TemplateId": "hide_cow",
+      "Weight": 40,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 3,
+      "Stackable": true,
+      "Notes": "spell/potion component"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 1,
+  "VisualTrait": "",
+  "VisualTraitType": "Animal"
+}

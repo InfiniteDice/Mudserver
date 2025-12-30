@@ -131,6 +131,24 @@ namespace MudCore.World
             return "Evening";
         }
 
+        /// Helper: returns true when the clock's current period descriptor equals the provided periodName.
+        /// Matching is case-insensitive and expects the standard period labels used by GetPeriodDescriptor:
+        /// "Midnight","Dawn","Noon","Dusk","Night","Morning","Afternoon","Evening".
+        /// </summary>
+        public bool IsInPeriod(string periodName)
+        {
+            if (string.IsNullOrWhiteSpace(periodName)) return false;
+            try
+            {
+                var cur = GetPeriodDescriptor();
+                return string.Equals(cur, periodName.Trim(), StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         /// <summary>
         /// Returns display date like "5th day of June, Year 345"
         /// </summary>

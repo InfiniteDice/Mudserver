@@ -1,0 +1,14 @@
+{
+  "Id": "grain_wheat",
+  "Name": "Wheat Grain",
+  "ItemCategory": "Food",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "Grains of wheat",
+  "LongDesc": "Some grains of wheat, I bet you could make something with this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "true"
+}

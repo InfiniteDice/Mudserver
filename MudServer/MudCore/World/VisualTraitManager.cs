@@ -152,18 +152,20 @@ public static class VisualTraitManager
         return _traits[r.Next(_traits.Count)];
     }
 
-    // Returns a random trait for a specific category (e.g. "humanoid" or "creature").
+    // Returns a random trait for a specific category (e.g. "Animal" or "GeneralHumanoid", etc).
     // Falls back to combined pool if the category is not found or empty.
     public static string? GetRandomTrait(string category, Random? rng = null)
     {
         if (string.IsNullOrWhiteSpace(category)) return GetRandomTrait(rng);
 
-        if (_categorizedTraits.TryGetValue(category.Trim(), out var list) && list.Count > 0)
+        var key = category.Trim();
+        if (_categorizedTraits.TryGetValue(key, out var list) && list.Count > 0)
         {
             var r = rng ?? Random.Shared;
             return list[r.Next(list.Count)];
         }
 
-        return GetRandomTrait(rng);
+        // Do NOT fall back to the combined pool — if category not present, return null (no trait assigned).
+        return null;
     }
 } // end VisualTraitManager

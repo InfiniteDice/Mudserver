@@ -30,14 +30,15 @@ branches), a single CASE block, or — when changes touch multiple such blocks �
 (field/property/method signature), include the whole declaration. This ensures deterministic, machine-applicable patches.
 
 2) Provide explicit, machine-findable replacement instructions
-- For each changed 'unit' include a one-line search-start and search-end marker in plain text so the patch can be applied with two simple text searches.
+- For each changed 'unit' include a 4 word search-start and a 4 word search-end marker in plain text so the patch can be applied with two simple text searches.
 - Format (required):
-  - Search start keyword: "REPLACE FROM: <exact search string>"
-  - Search end keyword:   "REPLACE TO:   <exact search string>"
-- The search strings must be literal substrings that exist in the target file. Prefer the actual method signature for the start string and a closing brace line or a unique following comment for the end string.
+  - Search start keyword: "REPLACE FROM: <exact search string of 4 words>"
+  - Search end keyword:   "REPLACE TO:   <exact search string of 4 words>"
+- The search strings must be literal substrings that exist in the target file. Prefer the actual method signature for the start string.
 - Example:
   REPLACE FROM: "public static Message TransferFromContainer(MudCore.World.World world, SqliteConnection conn, Player player, Item container, Item item, int quantity = 1)"
   REPLACE TO:   "} // end TransferFromContainer"
+- Do not provide the entire pre-existing method or class. Only provide the exact search strings and the full replacement block.
 
 3) Include short explicit apply instructions for humans
 - After the code block include exact steps (3–4 lines) describing how to apply the patch in Visual Studio 2022, e.g.:

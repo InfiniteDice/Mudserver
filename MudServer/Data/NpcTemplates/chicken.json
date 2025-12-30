@@ -1,0 +1,71 @@
+{
+  "Id": "chicken",
+  "Name": "Chicken",
+  "Alignment": "Neutral",
+  "Description": "A chicken, these can lay eggs once in a while. cluck cluck.",
+  "IdleActions": [
+    "pecks at the ground expectedly",
+    "cluck cluck cluck!",
+    "flaps it's wings and does a short hop",
+    "looks at you with a sideward glance"
+  ],
+  "WanderChance": 0.03,
+  "WanderAreas": [],
+  "AiBehaviors": [
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "Morning",
+      "Chance": 0.5,
+      "Location": "Room",
+      "CreatedPerChance": 1,
+      "Max": 1,
+      "ItemTemplate": "egg_chicken",
+      "RequiresItem": "None"
+    }
+  ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 5,
+  "Health": 5,
+  "Flags": ["Herbivore"],
+  "Level": 1,
+  "Mass": 1.0,
+  "EffMass": 1.0,
+  "SizeEnum": 2,
+  "CombatSkill": 55.0,
+  "EffCombatSkill": 55.0,
+  "BaseDmgDice": 1.15,
+  "EffDmgDice": 1.15,
+  "BaseArmorClass": 8.0,
+  "EffArmorClass": 8.0,
+  "IsHumanoid": false,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.50,
+  "DropCountMin": 1,
+  "DropCountMax": 1,
+  "DropPool": [
+    {
+      "TemplateId": "meat_chicken",
+      "Weight": 90,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "Consumable"
+    },
+    {
+      "TemplateId": "feather_bird",
+      "Weight": 10,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": true,
+      "Notes": "spell/potion component"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 1,
+  "VisualTrait": "",
+  "VisualTraitType": "Animal"
+}

@@ -200,24 +200,55 @@ namespace MudServer.MudUtils
                 var descMatMatches = matches.Where(it =>
                     candidateDescriptorSets[it].Any(tok => inputTokens.Contains(tok))
                     || candidateMaterialSets[it].Any(tok => inputTokens.Contains(tok))).ToList();
+
                 if (descMatMatches.Count == 1)
                 {
                     res.Winner = descMatMatches[0];
                     res.Reason = "Disambiguated by descriptor/material explicit match";
                     return res;
                 }
+
                 if (descMatMatches.Count > 1)
-                    matches = descMatMatches;
+                {
+                    // Score remaining descriptor/material matches by strength (descriptor weighted higher)
+                    var scored = descMatMatches.Select(it =>
+                    {
+                        int descMatchCount = candidateDescriptorSets[it].Count(tok => inputTokens.Contains(tok));
+                        int matMatchCount = candidateMaterialSets[it].Count(tok => inputTokens.Contains(tok));
+                        int score = descMatchCount * 10 + matMatchCount; // descriptor preferred
+                        return (Item: it, Score: score);
+                    }).ToList();
+
+                    var bestScore = scored.Max(s => s.Score);
+                    var bestCandidates = scored.Where(s => s.Score == bestScore).Select(s => s.Item).ToList();
+
+                    if (bestCandidates.Count == 1)
+                    {
+                        res.Winner = bestCandidates[0];
+                        res.Reason = "Disambiguated by strongest descriptor/material match";
+                        return res;
+                    }
+
+                    // Narrow matches to the best-scored subset for further tie-breaking
+                    matches = bestCandidates;
+                }
             }
 
             // Prefer items located in the room (not in player's inventory / not equipped)
             if (player != null)
             {
-                var roomMatch = matches.FirstOrDefault(it => !IsInInventory(player, it) && !IsEquipped(player, it));
-                if (roomMatch != null)
+                var roomCandidates = matches.Where(it => !IsInInventory(player, it) && !IsEquipped(player, it)).ToList();
+                if (roomCandidates.Count == 1)
                 {
-                    res.Winner = roomMatch;
+                    res.Winner = roomCandidates[0];
                     res.Reason = "Multiple matches — preferred room item";
+                    return res;
+                }
+                if (roomCandidates.Count > 1)
+                {
+                    // deterministic: pick the first room item encountered (stable based on room.Inventory order)
+                    res.Winner = roomCandidates.First();
+                    res.Reason = "Multiple matches — preferred first room item (stable order)";
                     return res;
                 }
 

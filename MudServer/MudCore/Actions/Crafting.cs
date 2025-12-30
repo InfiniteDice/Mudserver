@@ -33,7 +33,7 @@ namespace MudServer.MudCore.Actions
         // Stored as HashSet for fast lookup; exposed as IReadOnlyCollection to discourage mutation.
         private static readonly HashSet<string> _allowedMetals = new(StringComparer.OrdinalIgnoreCase)
         {
-            "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","aluminium","cobalt","titanium"
+            "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","cobalt","titanium"
         };
 
         private static readonly HashSet<string> _allowedWoods = new(StringComparer.OrdinalIgnoreCase)

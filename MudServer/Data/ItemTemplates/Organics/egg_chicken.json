@@ -1,0 +1,14 @@
+{
+  "Id": "egg_chicken",
+  "Name": "Chicken Egg",
+  "ItemCategory": "Food",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "A chicken egg",
+  "LongDesc": "A chicken egg, I bet you could eat this, or use it to make something.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": ["Heal"],
+  "Material": "Organic",
+  "Stackable": "true"
+}

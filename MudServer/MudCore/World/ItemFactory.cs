@@ -198,5 +198,73 @@ namespace MudCore.World
 
             return item;
         } // end ItemFactory.CreateItem
+
+        // Helper: attempt to resolve friendly display name for a template id.
+        // Returns true when a template was found and displayName set; otherwise returns false and displayName is the templateId fallback.
+        public bool TryGetTemplateDisplayName(string templateId, out string displayName)
+        {
+            displayName = templateId ?? "";
+            if (string.IsNullOrWhiteSpace(templateId)) return false;
+
+            try
+            {
+                if (_templateManager != null)
+                {
+                    // The local ItemTemplateManager implementation exposes a public Templates dictionary.
+                    // Use that dictionary directly since TryGet may not exist on this class.
+                    var dict = _templateManager.Templates;
+                    if (dict != null && dict.TryGetValue(templateId, out var tmpl))
+                    {
+                        if (!string.IsNullOrWhiteSpace(tmpl.Name))
+                        {
+                            displayName = tmpl.Name;
+                            return true;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(tmpl.Id))
+                        {
+                            displayName = tmpl.Id;
+                            return true;
+                        }
+                    }
+
+                    // Fallback: try calling Get(...) which will throw if missing; capture and ignore.
+                    try
+                    {
+                        var tmpl2 = _template_manager_get_fallback(templateId);
+                        if (tmpl2 != null)
+                        {
+                            displayName = !string.IsNullOrWhiteSpace(tmpl2.Name) ? tmpl2.Name :
+                                          (!string.IsNullOrWhiteSpace(tmpl2.Id) ? tmpl2.Id : templateId);
+                            return true;
+                        }
+                    }
+                    catch
+                    {
+                        // ignore fallback errors
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort only
+            }
+
+            return false;
+        }
+
+        // Small private helper to call _templateManager.Get without changing existing public API usage.
+        private ItemTemplate? _template_manager_get_fallback(string templateId)
+        {
+            try
+            {
+                return _templateManager.Get(templateId);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
     }
 }

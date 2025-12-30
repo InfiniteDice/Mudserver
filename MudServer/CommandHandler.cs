@@ -206,6 +206,294 @@ namespace MudServer
                 return KeyLocks.UnlockContainer(_dbConnection, player, container, key);
             }//End UNLOCK
 
+
+
+            // NEW: MILK command - "milk <target> with <container>"
+            // - Container must be in player's inventory (no longer required to be held).
+            // - Container matching uses descriptor/name/material-aware ItemParser over player's inventory.
+            // - Target must be an NPC in the current room with a MaxMilk{n} flag (e.g. "MaxMilk40").
+            // - Target must have at least one "milk_raw" in its inventory (sum of quantities).
+            // - Attempt to transfer one unit of milk into the specified container per command invocation.
+            // - Uses the writer queue to adjust NPC inventory and create milk-in-container row atomically.
+            // - Respects container capacity (Capacity flag, parsed by InventoryManager.ParseCapacity).
+            if (command.StartsWith("milk ", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2) return MessageHandler.System("Usage: milk <target> with <container>");
+                var payload = parts[1].Trim();
+                if (string.IsNullOrWhiteSpace(payload)) return MessageHandler.System("Usage: milk <target> with <container>");
+
+                // Expect form: "<target> with <container>"
+                int idxWith = payload.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                if (idxWith < 0) return MessageHandler.System("Usage: milk <target> with <container>");
+
+                var targetExpr = payload.Substring(0, idxWith).Trim();
+                var containerExpr = payload.Substring(idxWith + " with ".Length).Trim();
+
+                if (string.IsNullOrWhiteSpace(targetExpr) || string.IsNullOrWhiteSpace(containerExpr))
+                    return MessageHandler.System("Usage: milk <target> with <container>");
+
+                var room = player.CurrentRoom;
+                if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                // Resolve the container from the player's inventory using ItemParser (descriptor/material/name aware)
+                Item? heldContainer = null;
+                try
+                {
+                    var opts = new ItemParserOptions
+                    {
+                        IncludeDescriptorTokens = true,
+                        IncludeMaterialTokens = true,
+                        AllowStartsWith = true
+                    };
+                    var pres = ItemParser.ResolveForInventoryCommand(player, containerExpr, opts);
+                    if (pres?.Winner != null) heldContainer = pres.Winner;
+                }
+                catch { /* best-effort */ }
+
+                // Container must be in player's inventory and be a Container that holds liquids
+                bool okContainer = false;
+                if (heldContainer != null)
+                {
+                    bool isContainerCat = string.Equals(heldContainer.ItemCategory ?? "", "Container", StringComparison.OrdinalIgnoreCase);
+                    bool holdsLiquid = (heldContainer.Flags != null && heldContainer.Flags.Any(f => string.Equals(f, "HoldsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                       || (!string.IsNullOrEmpty(heldContainer.FlagsJson) && heldContainer.FlagsJson.IndexOf("\"HoldsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    // Removed held requirement: only require the item is a container and supports liquids and is in the player's inventory.
+                    if (isContainerCat && holdsLiquid && (player.Inventory?.Any(i => i != null && i.ItemID == heldContainer.ItemID) ?? false))
+                        okContainer = true;
+                }
+
+                if (!okContainer)
+                    return MessageHandler.System("You must have a container for liquid to milk!");
+
+                // Resolve NPC target in the room (reuse NpcTargeting)
+                var npcMatches = NpcTargeting.FindMatches(room, targetExpr);
+                if (npcMatches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                if (npcMatches.Count > 1)
+                {
+                    var list = string.Join(", ", npcMatches.Select(m => m.DisplayName));
+                    return MessageHandler.System($"Multiple matches: {list}");
+                }
+                var targetNpc = npcMatches[0];
+
+                // Target must have MaxMilk{n} flag (required). Check runtime flags, FlagsJson, instance template flags, then world template manager.
+                int? maxMilk = null;
+                try
+                {
+                    // 1) Runtime flags on the instance
+                    if (targetNpc.Flags != null)
+                    {
+                        foreach (var f in targetNpc.Flags)
+                        {
+                            if (string.IsNullOrWhiteSpace(f)) continue;
+                            if (f.StartsWith("MaxMilk", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var tail = f.Substring("MaxMilk".Length).Trim();
+                                if (int.TryParse(tail, out var v) && v >= 0) { maxMilk = v; break; }
+                            }
+                        }
+                    }
+
+                    // 2) FlagsJson on the instance (best-effort parse)
+                    if (!maxMilk.HasValue && !string.IsNullOrEmpty(targetNpc.FlagsJson))
+                    {
+                        var idx = targetNpc.FlagsJson.IndexOf("MaxMilk", StringComparison.OrdinalIgnoreCase);
+                        if (idx >= 0)
+                        {
+                            int start = idx + "MaxMilk".Length;
+                            int end = start;
+                            while (end < targetNpc.FlagsJson.Length && char.IsDigit(targetNpc.FlagsJson[end])) end++;
+                            if (end > start)
+                            {
+                                var numStr = targetNpc.FlagsJson.Substring(start, end - start);
+                                if (int.TryParse(numStr, out var v2) && v2 >= 0) maxMilk = v2;
+                            }
+                        }
+                    }
+
+                    // 3) Instance's Template flags (designer-set)
+                    if (!maxMilk.HasValue && targetNpc.Template?.Flags != null)
+                    {
+                        foreach (var f in targetNpc.Template.Flags)
+                        {
+                            if (string.IsNullOrWhiteSpace(f)) continue;
+                            if (f.StartsWith("MaxMilk", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var tail = f.Substring("MaxMilk".Length).Trim();
+                                if (int.TryParse(tail, out var v) && v >= 0) { maxMilk = v; break; }
+                            }
+                        }
+                    }
+
+                    // 4) World TemplateManager lookup (covers case where npc.Template is null but template exists in manager)
+                    if (!maxMilk.HasValue && !string.IsNullOrWhiteSpace(targetNpc.TemplateID) && _world?.TemplateManager != null)
+                    {
+                        try
+                        {
+                            if (_world.TemplateManager.TryGet(targetNpc.TemplateID, out var tmplFromMgr) && tmplFromMgr?.Flags != null)
+                            {
+                                foreach (var f in tmplFromMgr.Flags)
+                                {
+                                    if (string.IsNullOrWhiteSpace(f)) continue;
+                                    if (f.StartsWith("MaxMilk", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        var tail = f.Substring("MaxMilk".Length).Trim();
+                                        if (int.TryParse(tail, out var v3) && v3 >= 0) { maxMilk = v3; break; }
+                                    }
+                                }
+                            }
+                        }
+                        catch { /* best-effort */ }
+                    }
+                }
+                catch { maxMilk = null; }
+
+                if (!maxMilk.HasValue)
+                    return MessageHandler.System($"{targetNpc.DisplayName} cannot be milked.");
+
+                // Count milk_raw in NPC inventory
+                int npcMilkCount = 0;
+                try
+                {
+                    npcMilkCount = targetNpc.Inventory?.Where(i => i != null && string.Equals(i.TemplateID, "milk_raw", StringComparison.OrdinalIgnoreCase))
+                                                      .Sum(i => Math.Max(1, i.Quantity)) ?? 0;
+                }
+                catch { npcMilkCount = 0; }
+
+                if (npcMilkCount <= 0) return MessageHandler.System($"{targetNpc.DisplayName} has no milk to give.");
+                if (npcMilkCount >= maxMilk.Value) return MessageHandler.System($"{targetNpc.DisplayName} is not producing more milk right now.");
+
+                // Check container capacity (weight-based) before attempting transfer
+                double? cap = InventoryManager.ParseCapacity(heldContainer);
+                if (cap.HasValue)
+                {
+                    double usedWeight = 0.0;
+                    try
+                    {
+                        using var cmd = _dbConnection.CreateCommand();
+                        cmd.CommandText = @"SELECT SUM(COALESCE(Weight,0.0) * COALESCE(Quantity,1)) FROM Item
+                    WHERE OwnerType = 'Item' AND OwnerID = @cid;";
+                        cmd.Parameters.AddWithValue("@cid", heldContainer.ItemID);
+                        var obj = cmd.ExecuteScalar();
+                        if (!(obj == null || obj is DBNull))
+                            usedWeight = Convert.ToDouble(obj);
+                    }
+                    catch { usedWeight = 0.0; }
+
+                    double milkWeight = 0.0;
+                    try
+                    {
+                        if (_world?.ItemFactory != null)
+                        {
+                            var proto = _world.ItemFactory.CreateItem("milk_raw", "Room", room.RoomID, room.RoomID, 1);
+                            if (proto != null) milkWeight = proto.Weight;
+                        }
+                    }
+                    catch { milkWeight = 0.0; }
+
+                    if (usedWeight + milkWeight > cap.Value)
+                        return MessageHandler.System($"{heldContainer.Name} is too full to hold more milk.");
+                }
+
+                // Perform DB transaction: decrement one milk from NPC inventory and create milk item inside container.
+                try
+                {
+                    var result = DbWriteQueue.Instance.RunWriteAndWait<Message>((wConn, wTx) =>
+                    {
+                        // Find an NPC-owned milk row in DB
+                        using var sel = wConn.CreateCommand();
+                        sel.Transaction = wTx;
+                        sel.CommandText = @"SELECT ItemID, Quantity FROM Item
+                    WHERE OwnerType = 'NPC' AND OwnerID = @nid AND TemplateID = @tmpl
+                    ORDER BY ItemID LIMIT 1;";
+                        sel.Parameters.AddWithValue("@nid", targetNpc.NpcID);
+                        sel.Parameters.AddWithValue("@tmpl", "milk_raw");
+
+                        int? sourceItemId = null;
+                        int sourceQty = 0;
+                        using var rdr = sel.ExecuteReader();
+                        if (rdr.Read())
+                        {
+                            sourceItemId = rdr.IsDBNull(0) ? (int?)null : rdr.GetInt32(0);
+                            sourceQty = rdr.IsDBNull(1) ? 1 : rdr.GetInt32(1);
+                        }
+                        rdr.Close();
+
+                        if (!sourceItemId.HasValue)
+                            return MessageHandler.System($"{targetNpc.DisplayName} has no milk to give.");
+
+                        if (sourceQty > 1)
+                        {
+                            using var upd = wConn.CreateCommand();
+                            upd.Transaction = wTx;
+                            upd.CommandText = "UPDATE Item SET Quantity = @q WHERE ItemID = @id;";
+                            upd.Parameters.AddWithValue("@q", sourceQty - 1);
+                            upd.Parameters.AddWithValue("@id", sourceItemId.Value);
+                            upd.ExecuteNonQuery();
+                        }
+                        else
+                        {
+                            using var del = wConn.CreateCommand();
+                            del.Transaction = wTx;
+                            del.CommandText = "DELETE FROM Item WHERE ItemID = @id;";
+                            del.Parameters.AddWithValue("@id", sourceItemId.Value);
+                            del.ExecuteNonQuery();
+                        }
+
+                        if (_world?.ItemFactory == null)
+                            return MessageHandler.System("Server cannot create items right now.");
+
+                        var newMilk = _world.ItemFactory.CreateItem("milk_raw", "Item", heldContainer.ItemID, room.RoomID, 1);
+                        newMilk.OwnerType = "Item";
+                        newMilk.OwnerID = heldContainer.ItemID;
+                        newMilk.RoomID = room.RoomID;
+
+                        ItemPersistence.SaveItem(wConn, newMilk, wTx);
+
+                        // Update in-memory NPC inventory (best-effort)
+                        try
+                        {
+                            var inMemSrc = targetNpc.Inventory?.FirstOrDefault(i => i != null && i.ItemID == sourceItemId.Value)
+                                          ?? targetNpc.Inventory?.FirstOrDefault(i => i != null && string.Equals(i.TemplateID, "milk_raw", StringComparison.OrdinalIgnoreCase));
+                            if (inMemSrc != null)
+                            {
+                                if (inMemSrc.Quantity > 1) inMemSrc.Quantity -= 1;
+                                else targetNpc.Inventory.Remove(inMemSrc);
+                            }
+                        }
+                        catch { /* best-effort */ }
+
+                        // Best-effort: notify player and update room payload
+                        try
+                        {
+                            if (room != null)
+                            {
+                                room.IsDirty = true;
+                                foreach (var p in room.Players)
+                                {
+                                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                                        room,
+                                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                        _world));
+                                }
+                            }
+                        }
+                        catch { /* best-effort */ }
+
+                        return MessageHandler.System($"You milk {targetNpc.DisplayName} and collect some milk into {heldContainer.Name}.");
+                    }, timeout: TimeSpan.FromSeconds(10));
+
+                    return result;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[MILK] Failed to milk {targetExpr}: {ex}");
+                    return MessageHandler.System("Failed to milk due to a server error.");
+                }
+            }//END MILK
+
             // Inspect container (accept "inspect" usage or "inspect <container>")
             if (command.StartsWith("inspect", StringComparison.OrdinalIgnoreCase))
             {
@@ -223,7 +511,9 @@ namespace MudServer
                 {
                     IncludeDescriptorTokens = true,
                     IncludeMaterialTokens = true,
-                    AllowStartsWith = true
+                    AllowStartsWith = true,
+                    PreferInventoryOnTie = false,
+                    PreferEquippedOnTie = false
                 };
 
                 Item? container = null;
@@ -244,24 +534,14 @@ namespace MudServer
                 }
                 else if (presAny != null && presAny.Candidates != null && presAny.Candidates.Count > 0)
                 {
-                    // Disambiguate tie: prefer an inventory match if exactly one inventory candidate exists.
-                    var invMatches = new List<Item>();
-                    if (player?.Inventory != null)
+                    // No automatic preference: if exactly one candidate exists (across room+inventory), choose it.
+                    if (presAny.Candidates.Count == 1)
                     {
-                        foreach (var c in presAny.Candidates)
-                        {
-                            if (player.Inventory.Any(inv => ReferenceEquals(inv, c) || inv.ItemID == c.ItemID))
-                                invMatches.Add(c);
-                        }
-                    }
-
-                    if (invMatches.Count == 1)
-                    {
-                        container = invMatches[0];
+                        container = presAny.Candidates[0];
                     }
                     else
                     {
-                        // No single inventory preference -> present ambiguous list (preserve current UX)
+                        // Ambiguous: present the candidate list; do NOT attempt a legacy fallback.
                         var list = string.Join(", ", presAny.Candidates.Select(i => i.Name));
                         return MessageHandler.System($"Multiple items match: {list}");
                     }

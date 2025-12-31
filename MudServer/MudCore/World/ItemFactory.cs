@@ -130,6 +130,28 @@ namespace MudCore.World
             // Start with a copy of template flags (runtime list)
             var flags = template.Flags != null ? new List<string>(template.Flags) : new List<string>();
 
+            // Convert any StartsBuriedN -> BuriedN at creation time so spawned items persist correctly.
+            try
+            {
+                var original = flags.ToList();
+                foreach (var f in original)
+                {
+                    if (string.IsNullOrWhiteSpace(f)) continue;
+                    if (f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var num = f.Substring("StartsBuried".Length).Trim();
+                        if (int.TryParse(num, out var pct))
+                        {
+                            try { flags.Remove(f); } catch { }
+                            var buriedFlag = $"Buried{pct}";
+                            if (!flags.Any(ff => string.Equals(ff, buriedFlag, StringComparison.OrdinalIgnoreCase)))
+                                flags.Add(buriedFlag);
+                        }
+                    }
+                }
+            }
+            catch { /* best-effort conversion; do not fail creation */ }
+
             // Determine if template is stackable from template.Stackable or Flags marker.
             bool templateStackable = false;
             if (!string.IsNullOrWhiteSpace(template.Stackable))
@@ -195,6 +217,14 @@ namespace MudCore.World
             {
                 // Non-fatal; descriptor assignment should not prevent item creation.
             }
+
+            // Ensure FlagsJson is stable and sorted for deterministic DB merges
+            try
+            {
+                var sorted = (item.Flags ?? new List<string>()).OrderBy(s => s ?? string.Empty, StringComparer.OrdinalIgnoreCase).ToList();
+                item.FlagsJson = JsonSerializer.Serialize(sorted);
+            }
+            catch { /* best-effort */ }
 
             return item;
         } // end ItemFactory.CreateItem

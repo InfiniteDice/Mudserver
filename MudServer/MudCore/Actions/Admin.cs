@@ -2267,6 +2267,93 @@ namespace MudServer
             };
         }
 
+        public Message? HandleNpcCounts(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null) return MessageHandler.System("World unavailable.");
+
+            // Parse optional scope tokens from command: "npccounts", optionally followed by "room <id>" or "area <id>"
+            string payload = (command ?? "").Trim();
+            if (payload.StartsWith("npccounts", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring("npccounts".Length).Trim();
+
+            int? roomFilter = null;
+            int? areaFilter = null;
+
+            try
+            {
+                var toks = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < toks.Length; i++)
+                {
+                    var t = toks[i].Trim().ToLowerInvariant();
+                    if (t == "room" && i + 1 < toks.Length && int.TryParse(toks[i + 1], out var rid))
+                    {
+                        roomFilter = rid;
+                        i++;
+                        continue;
+                    }
+                    if (t == "area" && i + 1 < toks.Length && int.TryParse(toks[i + 1], out var aid))
+                    {
+                        areaFilter = aid;
+                        i++;
+                        continue;
+                    }
+                }
+            }
+            catch { /* best-effort parsing */ }
+
+            IEnumerable<Npc> candidates = _world.Npcs ?? Enumerable.Empty<Npc>();
+
+            if (roomFilter.HasValue)
+            {
+                candidates = candidates.Where(n => n != null && n.CurrentRoom != null && n.CurrentRoom.RoomID == roomFilter.Value);
+            }
+            else if (areaFilter.HasValue)
+            {
+                candidates = candidates.Where(n => n != null && (n.CurrentAreaID == areaFilter.Value || (n.CurrentRoom != null && n.CurrentRoom.AreaID == areaFilter.Value)));
+            }
+
+            var grouped = candidates
+                .GroupBy(n => (n.Template?.Id ?? n.TemplateID ?? n.Name ?? "Unknown"), StringComparer.OrdinalIgnoreCase)
+                .Select(g =>
+                {
+                    var sample = g.FirstOrDefault();
+                    string displayName = sample?.Template?.Name ?? sample?.Name ?? g.Key;
+                    return new { TemplateId = g.Key, DisplayName = displayName, Count = g.Count() };
+                })
+                .OrderByDescending(x => x.Count)
+                .ThenBy(x => x.DisplayName)
+                .ToList();
+
+            if (grouped.Count == 0)
+            {
+                string scopeText = roomFilter.HasValue ? $"room {roomFilter.Value}" : (areaFilter.HasValue ? $"area {areaFilter.Value}" : "world");
+                return MessageHandler.System($"No NPCs found in {scopeText}.");
+            }
+
+            var lines = new List<string>();
+            int total = grouped.Sum(g => g.Count);
+            string scopeLabel = roomFilter.HasValue ? $"room {roomFilter.Value}" : (areaFilter.HasValue ? $"area {areaFilter.Value}" : "world");
+            lines.Add($"NPC counts for {scopeLabel} — total {total}:");
+
+            foreach (var g in grouped)
+            {
+                lines.Add($"{g.Count}x {g.DisplayName} ({g.TemplateId})");
+            }
+
+            // Limit output to reasonable size (safety)
+            const int maxLines = 500;
+            if (lines.Count > maxLines)
+            {
+                var head = lines.Take(maxLines).ToList();
+                head.Add($"... {lines.Count - maxLines} more (narrow scope with 'room <id>' or 'area <id>').");
+                return MessageHandler.System(string.Join("\n", head));
+            }
+
+            return MessageHandler.System(string.Join("\n", lines));
+        }
+
         private static string OppositeDirection(string dir) => dir.ToUpper() switch
         {
             "N" => "S",
@@ -2283,3 +2370,4 @@ namespace MudServer
         };
     }
 }
+

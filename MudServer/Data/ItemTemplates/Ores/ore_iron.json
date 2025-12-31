@@ -8,7 +8,7 @@
   "LongDesc": "A lump of iron ore, this iron ore can be smelted into 1 bar or 10 bits.",
   "WearLoc": "",
   "HandLoc": 0,
-  "Flags": [],
+  "Flags": ["StartsBuried40"],
   "BaseACBonus": 0.0,
   "Material": "Iron",
   "Stackable": "false"

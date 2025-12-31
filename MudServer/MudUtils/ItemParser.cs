@@ -27,6 +27,10 @@ namespace MudServer.MudUtils
         // Callers that don't want descriptor/material matching can set these to false.
         public bool IncludeDescriptorTokens { get; set; } = true;
         public bool IncludeMaterialTokens { get; set; } = true;
+
+        // NEW: when true, include items marked Buried* in room candidate lists.
+        // Default false: buried items are invisible to normal item resolution.
+        public bool IncludeBuried { get; set; } = false;
     }
 
     public sealed class ItemResolutionResult
@@ -43,7 +47,7 @@ namespace MudServer.MudUtils
         public static ItemResolutionResult Resolve(Player player, string input, ItemSearchScope scope, ItemParserOptions? options = null)
         {
             var opts = options ?? new ItemParserOptions();
-            var candidates = EnumerateCandidates(player, scope).ToList();
+            var candidates = EnumerateCandidates(player, scope, opts).ToList();
             return ResolveCandidates(candidates, player, input, opts);
         }
 
@@ -283,7 +287,7 @@ namespace MudServer.MudUtils
             return res;
         } // end ResolveCandidates
 
-        private static IEnumerable<Item> EnumerateCandidates(Player player, ItemSearchScope scope)
+        private static IEnumerable<Item> EnumerateCandidates(Player player, ItemSearchScope scope, ItemParserOptions opts)
         {
             if (player == null) yield break;
             var room = player.CurrentRoom;
@@ -291,7 +295,22 @@ namespace MudServer.MudUtils
             switch (scope)
             {
                 case ItemSearchScope.RoomItems:
-                    if (room?.Inventory != null) foreach (var it in room.Inventory) if (it != null) yield return it;
+                    if (room?.Inventory != null)
+                    {
+                        foreach (var it in room.Inventory)
+                        {
+                            if (it == null) continue;
+                            // By default exclude buried items (flags starting with "Buried"), unless caller opted in.
+                            try
+                            {
+                                if (!opts.IncludeBuried && it.Flags != null && it.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase)))
+                                    continue;
+                            }
+                            catch { /* best-effort */ }
+
+                            yield return it;
+                        }
+                    }
                     break;
                 case ItemSearchScope.PlayerInventory:
                     if (player.Inventory != null) foreach (var it in player.Inventory) if (it != null) yield return it;
@@ -300,7 +319,20 @@ namespace MudServer.MudUtils
                     foreach (var it in EnumerateEquipped(player)) if (it != null) yield return it;
                     break;
                 case ItemSearchScope.Any:
-                    if (room?.Inventory != null) foreach (var it in room.Inventory) if (it != null) yield return it;
+                    if (room?.Inventory != null)
+                    {
+                        foreach (var it in room.Inventory)
+                        {
+                            if (it == null) continue;
+                            try
+                            {
+                                if (!opts.IncludeBuried && it.Flags != null && it.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase)))
+                                    continue;
+                            }
+                            catch { /* best-effort */ }
+                            yield return it;
+                        }
+                    }
                     if (player.Inventory != null) foreach (var it in player.Inventory) if (it != null) yield return it;
                     foreach (var it in EnumerateEquipped(player)) if (it != null) yield return it;
                     break;

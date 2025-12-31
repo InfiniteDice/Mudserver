@@ -79,6 +79,9 @@ namespace MudServer
             if (attacker?.CurrentRoom == null || defender?.CurrentRoom == null || attacker.CurrentRoom != defender.CurrentRoom)
                 return MessageHandler.System("Target is not in your room.");
 
+            // If player was digging/mining, starting an attack interrupts it immediately.
+            try { MudServer.MudCore.Actions.DigManager.CancelPending(attacker); } catch { /* best-effort */ }
+
             var room = attacker.CurrentRoom;
             if (!_activeByRoom.TryGetValue(room.RoomID, out var state))
             {
@@ -337,6 +340,16 @@ namespace MudServer
                     var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
                     if (defender == null) break;
 
+                    // If the defender is a player, cancel any pending dig/mining action (they get interrupted by incoming attacks).
+                    try
+                    {
+                        if (defender.IsPlayer && defender.AsPlayer != null)
+                        {
+                            MudServer.MudCore.Actions.DigManager.CancelPending(defender.AsPlayer);
+                        }
+                    }
+                    catch { /* best-effort */ }
+
                     // Calculate damage and whether it was a critical
                     var (dmg, isCrit) = Combat.CalculateDamage(attacker.Entity, defender.Entity);
 
@@ -508,16 +521,20 @@ namespace MudServer
                             .Select(m => m.AsPlayer!)
                             .ToList();
 
-                        // Fallback: ensure at least the immediate attacker is credited if no contributors found
+                        // Fallback: ensure at least the immediate attacker is credited if it's a player
                         if (winners.Count == 0 && attacker.IsPlayer && attacker.AsPlayer != null && attacker.Alive)
                             winners.Add(attacker.AsPlayer);
 
                         if (DebugCombat) Console.WriteLine($"[COMBAT] Contributors for death: {string.Join(", ", winners.Select(p => p?.Name ?? "<null>"))}");
 
-                        // Route to central handler
+                        // If no player contributors found, do not attribute the kill to a random/player in-room.
+                        // Pass null contributors so central handler knows this was an NPC-only kill and should NOT award XP/CS.
+                        Player? killerPlayer = winners.Count > 0 ? winners.First() : null;
+                        IEnumerable<Player>? contributors = winners.Count > 0 ? winners : null;
+
                         try
                         {
-                            Combat.HandleNpcDeath(attacker.AsPlayer ?? state.Room.Players.FirstOrDefault(), defender.AsNpc, world, conn, winners);
+                            Combat.HandleNpcDeath(killerPlayer, defender.AsNpc, world, conn, contributors);
                         }
                         catch (Exception exHandle)
                         {
@@ -589,7 +606,7 @@ namespace MudServer
                     Console.WriteLine($"[COMBAT][ATTACK][EX] While processing attacker {(attacker?.DisplayName ?? "<null>")}: {exAtt}");
                 }
             }
-        }
+        }//end ExecuteTeamAttacks
 
         private static CombatParticipant? SelectDefender(
             CombatParticipant attacker,

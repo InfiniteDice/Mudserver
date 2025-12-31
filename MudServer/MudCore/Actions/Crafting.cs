@@ -33,8 +33,69 @@ namespace MudServer.MudCore.Actions
         // Stored as HashSet for fast lookup; exposed as IReadOnlyCollection to discourage mutation.
         private static readonly HashSet<string> _allowedMetals = new(StringComparer.OrdinalIgnoreCase)
         {
-            "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","aluminum","cobalt","titanium"
+            "iron","copper","tin","bronze","silver","gold","lead","zinc","brass","nickel","platinum","steel","meteoric","electrum","mithril"
         };
+
+        // Expose a read-only view
+        public static IReadOnlyCollection<string> AllowedMetals => _allowedMetals.ToList().AsReadOnly();
+
+        // Internal mapping: material -> wear multiplier
+        // Multiplier multiplies the base condition loss:
+        //   - values < 1.0 => item loses condition more slowly
+        //   - values > 1.0 => item loses condition faster
+        // Example: Mithril is extremely durable (0.05) so nearly no wear; Iron is baseline (1.0).
+        // Tweak these numbers to tune balance.
+        private static readonly Dictionary<string, double> _metalWearMultiplier = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // baseline / typical industrial metals
+            { "Iron",     1.00 }, // baseline
+            { "Steel",    0.85 }, // slightly better than iron
+            { "Bronze",   1.10 },
+            { "Copper",   1.20 },
+            { "Tin",      1.50 },
+            { "Brass",    1.15 },
+
+            // precious / softer metals — wear faster
+            { "Silver",   1.30 },
+            { "Gold",     1.40 },
+
+            // harder / exotic metals — wear slower
+            { "Nickel",   0.95 },
+            { "Platinum", 0.75 },
+            { "Mithril",  0.01 }  // nearly immune to wear (designer-tunable)
+        };
+
+        // Optional: expose a read-only hardness view (higher = harder / more durable).
+        // Hardness is the inverse concept of wear multiplier for convenience.
+        // Consumers may prefer one or the other; Combat should use GetMetalWearMultiplier(...) for direct wear scaling.
+        private static readonly Dictionary<string, double> _metalHardnessScore = _metalWearMultiplier
+            .ToDictionary(kv => kv.Key, kv => 1.0 / Math.Max(0.0001, kv.Value), StringComparer.OrdinalIgnoreCase);
+
+        // Public API: get wear multiplier for a material (defaults to 1.0).
+        // Combat should multiply computed per-hit condition loss by this multiplier.
+        public static double GetMetalWearMultiplier(string? metal)
+        {
+            if (string.IsNullOrWhiteSpace(metal)) return 1.0;
+            if (_metalWearMultiplier.TryGetValue(metal.Trim(), out var m)) return m;
+            // Try common normalization: strip spaces/case
+            var key = metal.Trim();
+            if (_metalWearMultiplier.TryGetValue(key, out m)) return m;
+            return 1.0;
+        }
+
+        // Public API: try-get hardness score (higher = more durable). Returns true if known.
+        public static bool TryGetMetalHardness(string? metal, out double hardness)
+        {
+            hardness = 0.0;
+            if (string.IsNullOrWhiteSpace(metal)) return false;
+            return _metalHardnessScore.TryGetValue(metal.Trim(), out hardness);
+        }
+
+        // Convenience: return a snapshot of the table so callers can show designers the values.
+        public static IReadOnlyDictionary<string, double> GetAllMetalWearMultipliers()
+        {
+            return new Dictionary<string, double>(_metalWearMultiplier, StringComparer.OrdinalIgnoreCase);
+        }
 
         private static readonly HashSet<string> _allowedWoods = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -52,7 +113,7 @@ namespace MudServer.MudCore.Actions
         };
 
         // Exposed read-only accessors (other code should read these, not mutate)
-        public static IReadOnlyCollection<string> AllowedMetals => _allowedMetals;
+        
         public static IReadOnlyCollection<string> AllowedWoods => _allowedWoods;
         public static IReadOnlyCollection<string> AllowedCloths => _allowedCloths;
         public static IReadOnlyCollection<string> AllowedStones => _allowedStones;
@@ -69,8 +130,8 @@ namespace MudServer.MudCore.Actions
             if (room.Flags == null || !room.Flags.Any(f => string.Equals(f, "Forge", StringComparison.OrdinalIgnoreCase)))
                 return MessageHandler.System("You need a forge to do that!");
 
-            // Allowed metals / materials are now resolved from MaterialRegistry so other systems can reuse them.
-            var allowedMetals = AllowedMetals;
+            // Use internal case-insensitive hashset so material tokens from templates (e.g. "Iron") match.
+            var allowedMetals = _allowedMetals;
 
             // Accept singular or plural source/dest tokens (bit/bits, ore/ores, bar/bars)
             var m = Regex.Match(args.Trim(), @"^\s*(\w+)\s+(bits?|ores?|bars?)\s+to\s+(bars?|bits?)\s*$", RegexOptions.IgnoreCase);
@@ -240,9 +301,9 @@ namespace MudServer.MudCore.Actions
                         }
                         catch { /* best-effort */ }
 
-                        // Material check — require material on approved list
+                        // Material check — require material on approved list (case-insensitive HashSet)
                         var material = (found.Material ?? "").Trim();
-                        if (string.IsNullOrEmpty(material) || !allowedMetals.Contains(material))
+                        if (string.IsNullOrEmpty(material) || !_allowedMetals.Contains(material))
                             return MessageHandler.System($"You cannot smelt {found.Name}: material '{material}' is not supported for smelting.");
 
                         // Compute total weight to convert (weight * quantity)

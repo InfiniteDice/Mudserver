@@ -626,6 +626,95 @@ namespace MudServer
                 }
             }
 
+            // NEW: npccounts admin command
+            if (command.StartsWith("npccounts", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                try
+                {
+                    return _adminService.HandleNpcCounts(player, command);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][NPCCOUNTS] {ex}");
+                    return MessageHandler.System("Failed to run npccounts due to a server error.");
+                }
+            }
+
+            // NEW: dig / dig with <tool> requiring a target: "dig <item> with <tool>"
+            if (command.StartsWith("dig", StringComparison.OrdinalIgnoreCase))
+            {
+                var idxWith = command.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                if (idxWith < 0)
+                    return MessageHandler.System("Usage: dig <item> with <tool>");
+
+                var before = command.Substring(3, idxWith - 3).Trim(); // after 'dig' up to ' with '
+                var tool = command.Substring(idxWith + " with ".Length).Trim();
+
+                if (string.IsNullOrWhiteSpace(before) || string.IsNullOrWhiteSpace(tool))
+                    return MessageHandler.System("Usage: dig <item> with <tool>");
+
+                try
+                {
+                    return MudServer.MudCore.Actions.DigManager.StartDigging(player, "dig", before, tool, _world, _dbConnection);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][DIG] {ex}");
+                    return MessageHandler.System("Failed to start digging due to a server error.");
+                }
+            }
+
+            // NEW: mine / mine with <tool> requiring a target: "mine <item> with <tool>"
+            if (command.StartsWith("mine", StringComparison.OrdinalIgnoreCase))
+            {
+                var idxWith = command.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                if (idxWith < 0)
+                    return MessageHandler.System("Usage: mine <item> with <tool>");
+
+                var before = command.Substring(4, idxWith - 4).Trim(); // after 'mine' up to ' with '
+                var tool = command.Substring(idxWith + " with ".Length).Trim();
+
+                if (string.IsNullOrWhiteSpace(before) || string.IsNullOrWhiteSpace(tool))
+                    return MessageHandler.System("Usage: mine <item> with <tool>");
+
+                try
+                {
+                    return MudServer.MudCore.Actions.DigManager.StartDigging(player, "mine", before, tool, _world, _dbConnection);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][MINE] {ex}");
+                    return MessageHandler.System("Failed to start mining due to a server error.");
+                }
+            }
+
+            // NEW: prospect / prospect with <tool> (15s, non-blocking)
+            if (command.StartsWith("prospect", StringComparison.OrdinalIgnoreCase))
+            {
+                string tool = "";
+                var idxWith = command.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                if (idxWith >= 0)
+                {
+                    tool = command.Substring(idxWith + " with ".Length).Trim();
+                }
+                else
+                {
+                    var toks = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                    if (toks.Length > 1) tool = toks[1].Trim();
+                }
+
+                try
+                {
+                    return MudServer.MudCore.Actions.ProspectManager.StartProspecting(player, tool, _world, _dbConnection);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][PROSPECT] {ex}");
+                    return MessageHandler.System("Failed to run prospect due to a server error.");
+                }
+            }
+
             // --- COOK command: cook <container> (delegates logic to Cooking service) ---
             if (command.StartsWith("cook ", StringComparison.OrdinalIgnoreCase))
             {
@@ -1501,20 +1590,46 @@ namespace MudServer
             if (string.IsNullOrWhiteSpace(containerName))
                 return MessageHandler.System("Usage: put <n?> <item> in <container> (use 'in' or 'into' for multi-word containers).");
 
-            // Resolve container using parser first (search player's inventory + room). Fallback to InventoryManager.FindContainer.
+            // Resolve container using parser first (search player's inventory + room).
+            // Strategy:
+            //  1) Try conservative parser (no descriptor tokens) to avoid accidental ambiguous matches.
+            //  2) If nothing found, try permissive parser (descriptor/material tokens enabled) to match cases like "embroidered".
+            //  3) Fallback to legacy InventoryManager.FindContainer.
             Item? container = null;
             try
             {
-                var optsContainer = new ItemParserOptions
+                var optsConservative = new ItemParserOptions
                 {
-                    IncludeDescriptorTokens = false, // be conservative for container lookup
+                    IncludeDescriptorTokens = false,
                     IncludeMaterialTokens = false,
                     AllowStartsWith = true
                 };
-                var pres = ItemParser.ResolveForAny(player, containerName, optsContainer);
-                if (pres.Winner != null) container = pres.Winner;
+                var pres = ItemParser.ResolveForAny(player, containerName, optsConservative);
+                if (pres?.Winner != null) container = pres.Winner;
             }
             catch { /* best-effort */ }
+
+            // Permissive fallback: match descriptor/material tokens (addresses cases like "embroidered")
+            if (container == null)
+            {
+                try
+                {
+                    var optsPermissive = new ItemParserOptions
+                    {
+                        IncludeDescriptorTokens = true,
+                        IncludeMaterialTokens = true,
+                        AllowStartsWith = true,
+                        PreferInventoryOnTie = true
+                    };
+                    var pres2 = ItemParser.ResolveForAny(player, containerName, optsPermissive);
+                    if (pres2?.Winner != null)
+                    {
+                        container = pres2.Winner;
+                        Console.WriteLine($"[PUT][DIAG] Permissive parser matched container '{container?.Name}' (descriptor/material tokens).");
+                    }
+                }
+                catch { /* best-effort */ }
+            }
 
             if (container == null) container = InventoryManager.FindContainer(player, containerName);
 

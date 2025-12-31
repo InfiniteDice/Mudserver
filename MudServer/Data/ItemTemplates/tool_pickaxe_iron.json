@@ -1,0 +1,14 @@
+{
+  "Id": "tool_pickaxe_iron",
+  "Name": "Iron Pickaxe",
+  "ItemCategory": "Handheld",
+  "Weight": 2.4,
+  "Value": 20,
+  "ShortDesc": "A simple pickaxe",
+  "LongDesc": "An iron pickaxe, you need to hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 2,
+  "Flags": [],
+  "Material": "Iron",
+  "DmgDiceMult": 3.0
+}

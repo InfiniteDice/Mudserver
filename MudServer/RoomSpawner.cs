@@ -130,8 +130,7 @@ namespace MudServer
                         // Ensure hydrated defaults (redundant but safe)
                         npc.ApplyTemplateDefaults();
 
-                        // CRITICAL FIX: explicitly ensure new spawn has description from template when missing.
-                        // Some pathways left Description blank; copy it from template to guarantee new spawns have it.
+                        // CRITICAL Fix: explicitly ensure new spawn has description from template when missing.
                         try
                         {
                             if (string.IsNullOrWhiteSpace(npc.Description) && npc.Template != null && !string.IsNullOrWhiteSpace(npc.Template.Description))
@@ -261,6 +260,57 @@ namespace MudServer
                                 item.RoomID = room.RoomID;
                                 item.OwnerAreaID = room.AreaID;
 
+                                // --- NEW: convert StartsBuriedN (template) into persistent BuriedN flag on created item ---
+                                try
+                                {
+                                    if (item.Flags == null)
+                                        item.Flags = new List<string>();
+
+                                    // If FlagsJson contains StartsBuried... (factory may populate Flags or FlagsJson)
+                                    // normalize FlagsJson into Flags if necessary
+                                    if ((item.Flags == null || item.Flags.Count == 0) && !string.IsNullOrEmpty(item.FlagsJson))
+                                    {
+                                        try
+                                        {
+                                            var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string>>(item.FlagsJson);
+                                            if (parsed != null && parsed.Count > 0)
+                                                item.Flags = parsed;
+                                        }
+                                        catch { /* ignore parse errors */ }
+                                    }
+
+                                    var existingFlags = item.Flags.ToList();
+                                    foreach (var f in existingFlags)
+                                    {
+                                        if (string.IsNullOrWhiteSpace(f)) continue;
+                                        if (f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            var num = f.Substring("StartsBuried".Length).Trim();
+                                            if (int.TryParse(num, out var pct))
+                                            {
+                                                // remove template-time marker and add persistent BuriedN
+                                                try { item.Flags.Remove(f); } catch { }
+                                                var buriedFlag = $"Buried{pct}";
+                                                if (!item.Flags.Any(ff => string.Equals(ff, buriedFlag, StringComparison.OrdinalIgnoreCase)))
+                                                    item.Flags.Add(buriedFlag);
+                                            }
+                                        }
+                                    }
+
+                                    // ensure FlagsJson updated deterministically before saving
+                                    try
+                                    {
+                                        var sorted = (item.Flags ?? new List<string>()).OrderBy(s => s ?? string.Empty, StringComparer.OrdinalIgnoreCase).ToList();
+                                        item.FlagsJson = System.Text.Json.JsonSerializer.Serialize(sorted);
+                                    }
+                                    catch { /* best-effort */ }
+                                }
+                                catch (Exception exFlag)
+                                {
+                                    Console.WriteLine($"[Spawner][WARN] Failed to convert StartsBuried flag for spawned item '{item.Name}': {exFlag.Message}");
+                                }
+                                // --- end buried conversion ---
+
                                 // Ensure descriptor assigned for spawned items
                                 try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
@@ -306,16 +356,26 @@ namespace MudServer
 
                                 foreach (var p in room.Players)
                                 {
+                                    // Always enqueue the room payload (it filters buried items automatically).
                                     p.PendingMessageQueue.Add(MessageHandler.Room(
                                         room,
                                         room.Npcs.Select(n => n.DisplayName).ToList(),
                                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                         world));
 
-                                    var text = string.IsNullOrEmpty(room.SpawnMessage)
-                                        ? $"{item.Name} appears."
-                                        : room.SpawnMessage;
-                                    MessageHandler.SendSystem(p, text);
+                                    // Only announce explicit spawn message when the item is NOT buried.
+                                    try
+                                    {
+                                        bool isBuried = item.Flags != null && item.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase));
+                                        if (!isBuried)
+                                        {
+                                            var text = string.IsNullOrEmpty(room.SpawnMessage)
+                                                ? $"{item.Name} appears."
+                                                : room.SpawnMessage;
+                                            MessageHandler.SendSystem(p, text);
+                                        }
+                                    }
+                                    catch { /* best-effort */ }
                                 }
 
                                 if (useVerboseLogging) Console.WriteLine($"[Spawner] Item '{proto.Name}' spawned in room {room.RoomID} (qty added={spawnQty}, newTotal={room.Inventory.FirstOrDefault(i => i.TemplateID == templateId && string.Equals(i.FlagsJson ?? "[]", protoFlagsJson, StringComparison.Ordinal))?.Quantity}).");
@@ -342,6 +402,53 @@ namespace MudServer
                                     item.RoomID = room.RoomID;
                                     item.OwnerAreaID = room.AreaID;
 
+                                    // --- NEW: convert StartsBuriedN -> BuriedN on non-stackable item
+                                    try
+                                    {
+                                        if (item.Flags == null)
+                                            item.Flags = new List<string>();
+
+                                        if ((item.Flags == null || item.Flags.Count == 0) && !string.IsNullOrEmpty(item.FlagsJson))
+                                        {
+                                            try
+                                            {
+                                                var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string>>(item.FlagsJson);
+                                                if (parsed != null && parsed.Count > 0)
+                                                    item.Flags = parsed;
+                                            }
+                                            catch { /* ignore parse errors */ }
+                                        }
+
+                                        var existingFlags = item.Flags.ToList();
+                                        foreach (var f in existingFlags)
+                                        {
+                                            if (string.IsNullOrWhiteSpace(f)) continue;
+                                            if (f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                var num = f.Substring("StartsBuried".Length).Trim();
+                                                if (int.TryParse(num, out var pct))
+                                                {
+                                                    try { item.Flags.Remove(f); } catch { }
+                                                    var buriedFlag = $"Buried{pct}";
+                                                    if (!item.Flags.Any(ff => string.Equals(ff, buriedFlag, StringComparison.OrdinalIgnoreCase)))
+                                                        item.Flags.Add(buriedFlag);
+                                                }
+                                            }
+                                        }
+
+                                        try
+                                        {
+                                            var sorted = (item.Flags ?? new List<string>()).OrderBy(s => s ?? string.Empty, StringComparer.OrdinalIgnoreCase).ToList();
+                                            item.FlagsJson = System.Text.Json.JsonSerializer.Serialize(sorted);
+                                        }
+                                        catch { /* best-effort */ }
+                                    }
+                                    catch (Exception exFlag)
+                                    {
+                                        Console.WriteLine($"[Spawner][WARN] Failed to convert StartsBuried flag for spawned item '{item.Name}': {exFlag.Message}");
+                                    }
+                                    // --- end buried conversion ---
+
                                     // Ensure descriptor assigned for spawned items
                                     try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
@@ -356,7 +463,7 @@ namespace MudServer
                                     room.Inventory.Add(item);
                                     room.IsDirty = true;
 
-                                    // Notify players incrementally
+                                    // Notify players incrementally: enqueue room payload (it filters buried items)
                                     foreach (var p in room.Players)
                                     {
                                         p.PendingMessageQueue.Add(MessageHandler.Room(
@@ -365,10 +472,19 @@ namespace MudServer
                                             room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                             world));
 
-                                        var text = string.IsNullOrEmpty(room.SpawnMessage)
-                                            ? $"{item.Name} appears."
-                                            : room.SpawnMessage;
-                                        MessageHandler.SendSystem(p, text);
+                                        // Only announce spawn if not buried
+                                        try
+                                        {
+                                            bool isBuried = item.Flags != null && item.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase));
+                                            if (!isBuried)
+                                            {
+                                                var text = string.IsNullOrEmpty(room.SpawnMessage)
+                                                    ? $"{item.Name} appears."
+                                                    : room.SpawnMessage;
+                                                MessageHandler.SendSystem(p, text);
+                                            }
+                                        }
+                                        catch { /* best-effort */ }
                                     }
 
                                     if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Spawned non-stack item '{item.Name}' ItemID={item.ItemID} in Room {room.RoomID}.");

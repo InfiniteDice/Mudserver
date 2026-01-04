@@ -7,10 +7,12 @@ namespace MudCore.World
     public class NpcFactory
     {
         private readonly NpcTemplateManager _templateManager;
+        private readonly World _world;
 
-        public NpcFactory(NpcTemplateManager templateManager)
+        public NpcFactory(NpcTemplateManager templateManager, World world)
         {
             _templateManager = templateManager;
+            _world = world;
         }
 
         public Npc CreateNpc(string templateId, Room room)
@@ -126,6 +128,20 @@ namespace MudCore.World
             if (npc.WanderAreas == null || npc.WanderAreas.Count == 0)
             {
                 npc.WanderAreas = new System.Collections.Generic.List<int> { room.AreaID };
+            }
+
+            // Register ItemTrader if configured on this NPC template
+            try
+            {
+                var trader = MudServer.MudCore.AI.ItemTrader.CreateIfConfigured(npc, _world);
+                if (trader != null)
+                {
+                    MudServer.MudCore.AI.ItemTraderManager.Register(npc, trader);
+                }
+            }
+            catch (Exception exReg)
+            {
+                Console.WriteLine($"[NpcFactory] Failed to create/register ItemTrader for NPC '{npc.Name}': {exReg.Message}");
             }
 
             room.Npcs.Add(npc);

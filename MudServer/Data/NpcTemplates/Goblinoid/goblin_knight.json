@@ -1,0 +1,69 @@
+{
+  "Id": "goblin_knight",
+  "Name": "Goblin Knight",
+  "Alignment": "Neutral",
+  "Description": "A goblin decked out in armor, ready for combat stands here.",
+  "IdleActions": [
+    "eyes you up and down",
+    "holds his sword out towards you",
+    "howls and jeers",
+    "bangs his sword on his breastplate"
+  ],
+  "WanderChance": 0.02,
+  "WanderAreas": [],
+  "AiBehaviors": [ "Patrol", "Guard" ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 50,
+  "Health": 50,
+  "Flags": [ "CallHelp:Goblin", "SlashHit25T" ],
+  "Level": 3,
+  "Mass": 35.0,
+  "EffMass": 35.0,
+  "SizeEnum": 3,
+  "CombatSkill": 62.0,
+  "EffCombatSkill": 62.0,
+  "BaseDmgDice": 2.5,
+  "EffDmgDice": 2.5,
+  "BaseArmorClass": 12.0,
+  "EffArmorClass": 12.0,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.60,
+  "DropCountMin": 1,
+  "DropCountMax": 2,
+  "DropPool": [
+    {
+      "TemplateId": "coin_copper",
+      "Weight": 60,
+      "Chance": 0.80,
+      "Min": 3,
+      "Max": 12,
+      "Stackable": false,
+      "Notes": "Copper coins — high weight, high chance"
+    },
+    {
+      "TemplateId": "cup",
+      "Weight": 15,
+      "Chance": 0.60,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "Tin cup uncommon — lower chance even if selected"
+    },
+    {
+      "TemplateId": "coin_silver",
+      "Weight": 25,
+      "Chance": 0.50,
+      "Min": 1,
+      "Max": 3,
+      "Stackable": true,
+      "Notes": "Silver Coins"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 0,
+  "VisualTrait": "",
+  "VisualTraitType": "EvilHumanoid"
+}

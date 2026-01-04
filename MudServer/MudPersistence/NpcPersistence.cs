@@ -706,6 +706,133 @@ namespace MudPersistence
                         }
                     }
 
+                    // NEW: Parse Sleep: flag into runtime fields (SleepRoomId, SleepStartPeriod, SleepEndPeriod).
+                    // Expected format: Sleep:<roomId>:<startPeriod>:<endPeriod>
+                    try
+                    {
+                        // defaults
+                        npc.SleepRoomId = -1;
+                        npc.SleepStartPeriod = "Midnight";
+                        npc.SleepEndPeriod = "Dawn";
+                        npc.IsSleeping = false;
+                        npc.SleepBlockedAtRoomId = null;
+
+                        if (npc.Flags != null)
+                        {
+                            string sleepFlag = null!;
+                            foreach (var f in npc.Flags)
+                            {
+                                try
+                                {
+                                    if (string.IsNullOrWhiteSpace(f)) continue;
+                                    if (f.StartsWith("Sleep:", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        sleepFlag = f;
+                                        break;
+                                    }
+                                }
+                                catch { /* best-effort */ }
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(sleepFlag))
+                            {
+                                // split and trim parts
+                                var parts = sleepFlag.Split(':');
+                                if (parts.Length >= 2)
+                                {
+                                    if (int.TryParse(parts[1].Trim(), out var rid))
+                                        npc.SleepRoomId = Math.Max(0, rid);
+                                }
+                                if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]))
+                                {
+                                    try { npc.SleepStartPeriod = parts[2].Trim(); } catch { npc.SleepStartPeriod = "Midnight"; }
+                                }
+                                if (parts.Length >= 4 && !string.IsNullOrWhiteSpace(parts[3]))
+                                {
+                                    try { npc.SleepEndPeriod = parts[3].Trim(); } catch { npc.SleepEndPeriod = "Dawn"; }
+                                }
+                            }
+
+                            // Hydrate IsSleeping transient marker if Flags contains explicit "Sleeping"
+                            try
+                            {
+                                bool sleepingFound = false;
+                                foreach (var f in npc.Flags)
+                                {
+                                    if (string.IsNullOrWhiteSpace(f)) continue;
+                                    if (string.Equals(f, "Sleeping", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        sleepingFound = true;
+                                        break;
+                                    }
+                                }
+                                npc.IsSleeping = sleepingFound;
+                            }
+                            catch { npc.IsSleeping = false; }
+                        }
+                    }
+                    catch (Exception exSleep)
+                    {
+                        Console.WriteLine($"[NpcPersistence][WARN] Failed to parse Sleep flag for NpcID={npc.NpcID}: {exSleep.Message}");
+                        // keep defaults on failure
+                        npc.SleepRoomId = -1;
+                        npc.SleepStartPeriod = "Midnight";
+                        npc.SleepEndPeriod = "Dawn";
+                        npc.IsSleeping = false;
+                        npc.SleepBlockedAtRoomId = null;
+                    }
+
+                    // NEW: Parse Move: flag into runtime fields (MoveRoomId, MovePeriod).
+                    // Expected format: Move:<roomId>:<TimePeriod>
+                    try
+                    {
+                        // defaults
+                        npc.MoveRoomId = 0;
+                        npc.MovePeriod = "";
+                        npc.IsOnMove = false;
+                        npc.MoveBlockedAtRoomId = null;
+
+                        if (npc.Flags != null)
+                        {
+                            string moveFlag = null!;
+                            foreach (var f in npc.Flags)
+                            {
+                                try
+                                {
+                                    if (string.IsNullOrWhiteSpace(f)) continue;
+                                    if (f.StartsWith("Move:", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        moveFlag = f;
+                                        break;
+                                    }
+                                }
+                                catch { /* best-effort */ }
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(moveFlag))
+                            {
+                                var parts = moveFlag.Split(':');
+                                if (parts.Length >= 2)
+                                {
+                                    if (int.TryParse(parts[1].Trim(), out var rid))
+                                        npc.MoveRoomId = Math.Max(0, rid);
+                                }
+                                if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]))
+                                {
+                                    try { npc.MovePeriod = parts[2].Trim(); } catch { npc.MovePeriod = ""; }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception exMove)
+                    {
+                        Console.WriteLine($"[NpcPersistence][WARN] Failed to parse Move flag for NpcID={npc.NpcID}: {exMove.Message}");
+                        npc.MoveRoomId = 0;
+                        npc.MovePeriod = "";
+                        npc.IsOnMove = false;
+                        npc.MoveBlockedAtRoomId = null;
+                    }
+
                     npc.Description = Has("Description") ? GetString(rdr, "Description", "") : npc.Description;
 
                     npc.CurrentRoom = world.Rooms.Find(r => r.RoomID == npc.CurrentRoomID);
@@ -757,6 +884,20 @@ namespace MudPersistence
                     if (npc.CurrentRoom != null)
                         npc.CurrentRoom.Npcs.Add(npc);
                     npcs.Add(npc);
+
+                    // Register ItemTrader if template includes behavior config (best-effort)
+                    try
+                    {
+                        var trader = MudServer.MudCore.AI.ItemTrader.CreateIfConfigured(npc, world);
+                        if (trader != null)
+                        {
+                            MudServer.MudCore.AI.ItemTraderManager.Register(npc, trader);
+                        }
+                    }
+                    catch (Exception exReg)
+                    {
+                        Console.WriteLine($"[NpcPersistence] Failed to create/register ItemTrader for NpcID={npc.NpcID}: {exReg.Message}");
+                    }
                 }
                 catch (Exception ex)
                 {

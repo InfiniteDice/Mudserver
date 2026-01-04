@@ -338,293 +338,13 @@ namespace MudServer
                 "2) Description\n" +
                 "3) DistantDescription\n" +
                 "4) Generate Description from Prompt\n" +
+                "5) SetRoomFlag\n" +
                 "Type the option name/number, or type EndEdit to finish."
             );
         }
 
-        // HandleEditRoomPending: processes pending steps for EditRoom flows (Name/Description/Distant + AI generation).
-        // This method assumes pa.Command == "EditRoom" and returns a non-null Message if it consumes/handles the pending input.
-        public Message? HandleEditRoomPending(Player player, PendingAction pa, string input)
-        {
-            if (!player.IsAdmin)
-            {
-                player.PendingAction = null!;
-                return MessageHandler.System("Permission denied. Admins only.");
-            }
-
-            var room = player.CurrentRoom;
-            if (room == null)
-            {
-                player.PendingAction = null!;
-                return MessageHandler.System("You are not inside a valid room.");
-            }
-
-            // Cancel/finish
-            if (!string.IsNullOrEmpty(input) && input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase))
-            {
-                player.PendingAction = null!;
-                return MessageHandler.System("Room editing ended.");
-            }
-
-            // Selection menu
-            if (pa.Step == "SelectField")
-            {
-                if (input == "1" || input.Equals("Name", StringComparison.OrdinalIgnoreCase))
-                {
-                    pa.Step = "EditName";
-                    return MessageHandler.System("Enter new name for this room:");
-                }
-                if (input == "2" || input.Equals("Description", StringComparison.OrdinalIgnoreCase))
-                {
-                    pa.Step = "EditDescription";
-                    return MessageHandler.System("Enter new description for this room:");
-                }
-                if (input == "3" || input.Equals("DistantDescription", StringComparison.OrdinalIgnoreCase))
-                {
-                    pa.Step = "EditDistantDescription";
-                    return MessageHandler.System("Enter new distant description for this room:");
-                }
-                if (input == "4" || input.Equals("GenerateDescription", StringComparison.OrdinalIgnoreCase) ||
-                    input.Equals("Generate Description", StringComparison.OrdinalIgnoreCase) ||
-                    input.Equals("Generate Description from Prompt", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Initialize typed pending data if missing
-                    var edata = pa.Data as EditRoomPendingData ?? new EditRoomPendingData { RoomID = room.RoomID };
-                    pa.Data = edata;
-                    pa.Step = "CollectKeywords";
-                    return MessageHandler.System("Enter comma-separated keywords to guide the AI (or type 'none' to skip). Type 'EndEdit' to cancel.");
-                }
-
-                return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, GenerateDescription, 1, 2, 3, 4, or EndEdit.");
-            }
-
-            // Simple text edits
-            if (pa.Step == "EditName")
-            {
-                room.Name = input ?? "";
-                room.IsDirty = true;
-                _world.SaveDirtyRooms(_db);
-                player.PendingAction = null!;
-                return MessageHandler.System($"Room name updated to '{room.Name}'.");
-            }
-
-            if (pa.Step == "EditDescription")
-            {
-                room.Description = input ?? "";
-                room.IsDirty = true;
-                _world.SaveDirtyRooms(_db);
-                player.PendingAction = null!;
-                return MessageHandler.System("Room description updated.");
-            }
-
-            if (pa.Step == "EditDistantDescription")
-            {
-                room.DistantDescription = input ?? "";
-                room.IsDirty = true;
-                _world.SaveDirtyRooms(_db);
-                player.PendingAction = null!;
-                return MessageHandler.System("Room distant description updated.");
-            }
-
-            // AI generation flow: CollectKeywords -> GenerateDescriptionConfirm
-            if (pa.Step == "CollectKeywords")
-            {
-                var edata = pa.Data as EditRoomPendingData ?? new EditRoomPendingData { RoomID = room.RoomID };
-
-                var keywordsRaw = (input ?? "").Trim();
-                if (string.Equals(keywordsRaw, "none", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(keywordsRaw))
-                    edata.Keywords = Array.Empty<string>();
-                else
-                    edata.Keywords = keywordsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                                                .Select(s => s.Trim())
-                                                .Where(s => !string.IsNullOrWhiteSpace(s))
-                                                .Take(12)
-                                                .ToArray();
-
-                pa.Data = edata;
-
-                // Build user payload for the model
-                var exitsList = new List<string>();
-                try
-                {
-                    if (room.Exits != null)
-                    {
-                        foreach (var ex in room.Exits)
-                        {
-                            var toRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == ex.ToRoomID);
-                            var toName = toRoom?.Name ?? "";
-                            var dirWord = Movement.DirectionDisplayName(ex.Direction);
-                            var label = string.IsNullOrWhiteSpace(ex.DiscoverKeyword) ? ex.Direction : ex.DiscoverKeyword;
-                            exitsList.Add($"{dirWord}: {label} -> {toName}");
-                        }
-                    }
-                }
-                catch { /* best-effort */ }
-
-                var sb = new System.Text.StringBuilder();
-                sb.AppendLine($"Title: {room.Name}");
-                if (exitsList.Count > 0) sb.AppendLine($"Exits: {string.Join(", ", exitsList)}");
-                if (edata.Keywords != null && edata.Keywords.Length > 0) sb.AppendLine($"Keywords: {string.Join(", ", edata.Keywords)}");
-                sb.AppendLine($"ExistingDescription: {room.Description ?? ""}");
-                sb.AppendLine();
-                sb.AppendLine("Produce a JSON object exactly like: {\"Description\":\"<full text>\",\"DistantDescription\":\"<short text>\"} with Description and DistantDescription only.");
-
-                var lmUrl = Environment.GetEnvironmentVariable("LMSTUDIO_URL") ?? "http://127.0.0.1:8000/";
-                var lmModel = Environment.GetEnvironmentVariable("LMSTUDIO_MODEL") ?? "default";
-                var systemPrompt = Environment.GetEnvironmentVariable("LMSTUDIO_SYSTEM_PROMPT") ??
-                    "You are a concise immersive worldbuilding assistant for a text MUD. Use only information provided in the structured user payload (title, exits, keywords, existingDescription). Do NOT invent objects, plants, buildings, or people not present in the inputs. If information is not provided, be vague. Produce exactly one JSON object with keys 'Description' and 'DistantDescription'. Do not include any extra text. Use neutral, evocative language; no markup. Description should be 60-300 characters. DistantDescription should be one or two brief sentences.";
-
-                try
-                {
-                    using var lmClient = new MudServer.Integrations.LmStudioClient(lmUrl);
-                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(25));
-
-                    // Prefer using the wrapper if available
-                    try
-                    {
-                        var (generatedDesc, generatedDistant) = lmClient.GenerateRoomDescriptionsAsync(
-                            lmModel,
-                            systemPrompt,
-                            sb.ToString(),
-                            maxDescriptionChars: 4000,
-                            maxDistantChars: 500,
-                            temperature: 0.7,
-                            ct: cts.Token).GetAwaiter().GetResult();
-
-                        edata.DraftDescription = generatedDesc ?? "";
-                        edata.DraftDistant = generatedDistant ?? "";
-                    }
-                    catch (Exception wrapperEx)
-                    {
-                        // Fallback: call chat completion directly and attempt to extract JSON if wrapper not supported
-                        var messages = new List<(string role, string content)>
-                {
-                    ("system", systemPrompt),
-                    ("user", sb.ToString())
-                };
-                        using var respDoc = lmClient.CreateChatCompletionAsync(lmModel, messages, temperature: 0.7, ct: cts.Token)
-                                                   .GetAwaiter().GetResult();
-
-                        string raw = "";
-                        try
-                        {
-                            var root = respDoc.RootElement;
-                            if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
-                            {
-                                var first = choices[0];
-                                if (first.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.Object && msg.TryGetProperty("content", out var content))
-                                    raw = content.GetString() ?? "";
-                                else if (first.TryGetProperty("text", out var textProp))
-                                    raw = textProp.GetString() ?? "";
-                            }
-                            if (string.IsNullOrWhiteSpace(raw) && root.TryGetProperty("output_text", out var outText) && outText.ValueKind == JsonValueKind.String)
-                                raw = outText.GetString() ?? "";
-                            if (string.IsNullOrWhiteSpace(raw) && root.TryGetProperty("output", out var outNode))
-                            {
-                                if (outNode.ValueKind == JsonValueKind.String) raw = outNode.GetString() ?? "";
-                                else if (outNode.ValueKind == JsonValueKind.Array && outNode.GetArrayLength() > 0)
-                                    raw = string.Join("\n", outNode.EnumerateArray().Select(e => e.GetString() ?? ""));
-                            }
-                        }
-                        catch { raw = ""; }
-
-                        raw = (raw ?? "").Trim();
-                        if (string.IsNullOrWhiteSpace(raw))
-                            return MessageHandler.System("LLM returned empty description. Try different keywords or try again later.");
-
-                        // Extract JSON substring
-                        int firstIdx = raw.IndexOf('{');
-                        int lastIdx = raw.LastIndexOf('}');
-                        if (firstIdx >= 0 && lastIdx > firstIdx)
-                            raw = raw.Substring(firstIdx, lastIdx - firstIdx + 1);
-
-                        try
-                        {
-                            using var jd = JsonDocument.Parse(raw);
-                            var root = jd.RootElement;
-                            string desc = root.TryGetProperty("Description", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() ?? "" : "";
-                            string distant = root.TryGetProperty("DistantDescription", out var dd) && dd.ValueKind == JsonValueKind.String ? dd.GetString() ?? "" : "";
-
-                            if (string.IsNullOrWhiteSpace(desc))
-                                return MessageHandler.System("LLM returned JSON but Description was empty. Try different keywords.");
-
-                            edata.DraftDescription = desc.Trim();
-                            edata.DraftDistant = distant.Trim();
-                        }
-                        catch (Exception exJson)
-                        {
-                            Console.WriteLine($"[LLM][WARN] Failed to parse JSON from LM output: {exJson.Message}");
-                            Console.WriteLine($"[LLM][WARN] Raw LM output: {raw}");
-                            return MessageHandler.System("LLM returned output that could not be parsed as JSON. Try different keywords or try again later.");
-                        }
-                    }
-
-                    // save draft to pending and move to confirm
-                    pa.Data = edata;
-                    pa.Step = "GenerateDescriptionConfirm";
-
-                    var preview = $"Preview - Description:\n{edata.DraftDescription}\n\nDistantDescription:\n{edata.DraftDistant}\n\nType 'confirm' to save, 'edit' to enter new keywords, or 'cancel'.";
-                    return MessageHandler.System(preview);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[LLM] Generation failed: {ex.Message}");
-                    return MessageHandler.System($"LLM generation failed: {ex.Message}");
-                }
-            }
-
-            // Confirmation step: save or re-edit or cancel
-            if (pa.Step == "GenerateDescriptionConfirm")
-            {
-                var edata = pa.Data as EditRoomPendingData;
-                string draftDesc = edata?.DraftDescription ?? "";
-                string draftDistant = edata?.DraftDistant ?? "";
-
-                var cmd = (input ?? "").Trim().ToLowerInvariant();
-                if (cmd == "confirm")
-                {
-                    if (string.IsNullOrWhiteSpace(draftDesc))
-                    {
-                        player.PendingAction = null!;
-                        return MessageHandler.System("No draft description available to save.");
-                    }
-
-                    room.Description = draftDesc;
-                    room.DistantDescription = draftDistant;
-                    room.IsDirty = true;
-                    _world.SaveDirtyRooms(_db);
-
-                    // Broadcast updated room payloads to occupants
-                    foreach (var p in room.Players)
-                    {
-                        p.PendingMessageQueue.Add(MessageHandler.Room(
-                            room,
-                            room.Npcs.Select(n => n.DisplayName).ToList(),
-                            room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-                            _world));
-                    }
-
-                    player.PendingAction = null!;
-                    return MessageHandler.System("Generated description saved and broadcast to room.");
-                }
-                else if (cmd == "edit")
-                {
-                    pa.Step = "CollectKeywords";
-                    return MessageHandler.System("Enter comma-separated keywords to guide the AI (or 'none' to skip). Type 'EndEdit' to cancel.");
-                }
-                else if (cmd == "cancel" || cmd == "endedit")
-                {
-                    player.PendingAction = null!;
-                    return MessageHandler.System("Generation cancelled.");
-                }
-                else
-                {
-                    return MessageHandler.System("Invalid option. Type 'confirm' to save, 'edit' to re-enter keywords, or 'cancel'.");
-                }
-            }
-
-            return null;
-        }
+        // HandleEditRoomPending: processes removed as redundant.
+        
 
         public Message? HandleEditExit(Player player, string command)
         {
@@ -657,13 +377,15 @@ namespace MudServer
                     exitName = match.Direction;
             }
 
+            // Added option 2: CreateExitToRoom (link this room to a pre-existing room by id).
             return MessageHandler.System(
                 $"Editing exit: {exitName}\n" +
                 "Choose a field to edit:\n" +
                 "1) HasDoor\n" +
+                "2) CreateExitToRoom (link an exit from this room to an existing RoomID)\n" +
                 "Type the option name/number, or type EndEdit to finish."
             );
-        }
+        }//END HandleEditExit
 
         public Message? HandleCreateNpc(Player player, string templateId)
         {
@@ -678,6 +400,21 @@ namespace MudServer
                 // Persist the NPC and assign NpcID
                 int newId = MudPersistence.NpcPersistence.InsertNpc(_db, newNpc);
                 newNpc.NpcID = newId;
+
+                // Persist initial TraderState for traders (if any) so Flags column contains TraderState on creation.
+                try
+                {
+                    try
+                    {
+                        if (MudServer.MudCore.AI.ItemTraderManager.TryGet(newNpc, out var traderInstance))
+                        {
+                            try { traderInstance.PersistState(_db); }
+                            catch (Exception exPers) { Console.WriteLine($"[ADMIN] Failed to persist TraderState for NpcID={newNpc.NpcID}: {exPers.Message}"); }
+                        }
+                    }
+                    catch { /* best-effort */ }
+                }
+                catch { /* best-effort */ }
 
                 // Diagnostic: when environment var set, dump DB row + in-memory values to help debug missing fields
                 try
@@ -797,7 +534,7 @@ namespace MudServer
                 Console.WriteLine($"[NPC] Failed to create NPC from template {templateId}: {ex}");
                 return MessageHandler.System($"Failed to create NPC: {ex.Message}");
             }
-        }//end HandleCreateNpc
+        } //end HandleCreateNpc
 
         public Message? AddItem(Player player, string itemTemplateId, int quantity = 1)
         {
@@ -1350,9 +1087,181 @@ namespace MudServer
                         return MessageHandler.System("Set HasDoor: type 't' for true or 'f' for false.");
                     }
 
-                    return MessageHandler.System("Invalid option. Type '1' or 'HasDoor', or 'EndEdit'.");
+                    // New option: create an exit to an existing room
+                    if (input == "2" || input.Equals("CreateExitToRoom", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Ask admin for the direction to create (allow any valid direction)
+                        pa.Step = "CreateExitToRoom_Dir";
+                        return MessageHandler.System("Enter exit direction to create (N, S, E, W, NE, NW, SE, SW, UP, DOWN):");
+                    }
+
+                    return MessageHandler.System("Invalid option. Type '1' or 'HasDoor' or '2' or 'CreateExitToRoom', or 'EndEdit'.");
                 }
 
+                // --- CreateExitToRoom: Step 1 = direction ---
+                if (pa.Step == "CreateExitToRoom_Dir")
+                {
+                    var dirInput = (input ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(dirInput))
+                        return MessageHandler.System("Enter a direction (N, S, E, W, NE, NW, SE, SW, UP, DOWN).");
+
+                    if (!IsValidDirection(dirInput))
+                        return MessageHandler.System("Invalid direction. Use one of: N, S, E, W, NE, NW, SE, SW, UP, DOWN.");
+
+                    // store new direction normalized in pa.Data
+                    var dict = pa.Data as Dictionary<string, object> ?? new Dictionary<string, object>();
+                    dict["NewDir"] = NormalizeDirection(dirInput);
+                    pa.Data = dict;
+
+                    pa.Step = "CreateExitToRoom_RoomId";
+                    // Added abort hint so admin can back out if they don't remember the RoomID.
+                    return MessageHandler.System("Enter RoomID (integer) to link this exit to (or type 'EndEdit' to cancel):");
+                }
+
+                // --- CreateExitToRoom: Step 2 = room id ---
+                if (pa.Step == "CreateExitToRoom_RoomId")
+                {
+                    var dict = pa.Data as Dictionary<string, object> ?? new Dictionary<string, object>();
+                    if (!dict.TryGetValue("NewDir", out var ndObj) || ndObj == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Internal error: missing direction. Restart edit and try again.");
+                    }
+
+                    string newDir = ndObj.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(newDir))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Internal error: invalid direction stored. Restart edit and try again.");
+                    }
+
+                    if (!int.TryParse((input ?? "").Trim(), out var targetRoomId))
+                        return MessageHandler.System("Invalid RoomID. Enter an integer RoomID.");
+
+                    // Validate target room exists
+                    var targetRoom = _world.Rooms.FirstOrDefault(r => r != null && r.RoomID == targetRoomId);
+                    if (targetRoom == null)
+                        return MessageHandler.System($"RoomID {targetRoomId} not found.");
+
+                    // Perform DB upsert for both sides (src -> target, and reverse target -> src) within writer
+                    try
+                    {
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((conn, tx) =>
+                        {
+                            // Helper: upsert by RoomID+ToRoomID (preserve metadata)
+                            void UpsertExit(int rRoomId, string dir, int toRoomId)
+                            {
+                                using var upd = conn.CreateCommand();
+                                upd.Transaction = tx;
+                                upd.CommandText = @"
+                                    UPDATE RoomExit
+                                    SET Direction = @dir,
+                                        IsHidden = @hidden,
+                                        DiscoverKeyword = @keyword,
+                                        DoorId = @doorId
+                                    WHERE RoomID = @rid AND ToRoomID = @toRid;";
+                                upd.Parameters.AddWithValue("@rid", rRoomId);
+                                upd.Parameters.AddWithValue("@dir", dir ?? "");
+                                upd.Parameters.AddWithValue("@toRid", toRoomId);
+                                upd.Parameters.AddWithValue("@hidden", 0);
+                                upd.Parameters.AddWithValue("@keyword", "");
+                                upd.Parameters.AddWithValue("@doorId", 0);
+
+                                var affected = upd.ExecuteNonQuery();
+                                if (affected == 0)
+                                {
+                                    using var ins = conn.CreateCommand();
+                                    ins.Transaction = tx;
+                                    ins.CommandText = @"
+                                        INSERT INTO RoomExit (RoomID, Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId)
+                                        VALUES (@rid, @dir, @toRid, 0, '', 0);";
+                                    ins.Parameters.AddWithValue("@rid", rRoomId);
+                                    ins.Parameters.AddWithValue("@dir", dir ?? "");
+                                    ins.Parameters.AddWithValue("@toRid", toRoomId);
+                                    ins.ExecuteNonQuery();
+                                }
+                            }
+
+                            // Upsert target->src first (reverse), using opposite direction
+                            var opp = OppositeDirection(newDir);
+                            UpsertExit(targetRoomId, opp, room.RoomID);
+
+                            // Upsert src->target using provided newDir
+                            UpsertExit(room.RoomID, newDir, targetRoomId);
+
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(8));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditExit][CreateExitToRoom] DB write failed: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to create exit due to a server error.");
+                    }
+
+                    // Update in-memory exits (avoid duplicates)
+                    try
+                    {
+                        // Add src -> target
+                        if (!room.Exits.Any(x => x.ToRoomID == targetRoomId && string.Equals(NormalizeDirection(x.Direction), NormalizeDirection(newDir), StringComparison.OrdinalIgnoreCase)))
+                        {
+                            room.Exits.Add(new Room.RoomExit(newDir, targetRoomId));
+                            room.IsDirty = true;
+                        }
+
+                        // Add reverse exit in target room
+                        var reverseDir = OppositeDirection(newDir);
+                        if (!targetRoom.Exits.Any(x => x.ToRoomID == room.RoomID && string.Equals(NormalizeDirection(x.Direction), NormalizeDirection(reverseDir), StringComparison.OrdinalIgnoreCase)))
+                        {
+                            targetRoom.Exits.Add(new Room.RoomExit(reverseDir, room.RoomID));
+                            targetRoom.IsDirty = true;
+                        }
+
+                        // Persist both rooms' exits to DB via RoomPersistence (best-effort)
+                        try
+                        {
+                            RoomPersistence.SaveRoomExits(_db, targetRoom);
+                        }
+                        catch { /* best-effort */ }
+                        try
+                        {
+                            RoomPersistence.SaveRoomExits(_db, room);
+                        }
+                        catch { /* best-effort */ }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditExit][CreateExitToRoom] In-memory update failed: {ex.Message}");
+                    }
+
+                    // Broadcast updated room(s)
+                    try
+                    {
+                        foreach (var p in room.Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(
+                                room,
+                                room.Npcs.Select(n => n.DisplayName).ToList(),
+                                room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world, _db));
+                        }
+
+                        foreach (var p in targetRoom.Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(
+                                targetRoom,
+                                targetRoom.Npcs.Select(n => n.DisplayName).ToList(),
+                                targetRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world, _db));
+                        }
+                    }
+                    catch { /* best-effort */ }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Created exit '{newDir}' linking Room {room.RoomID} -> Room {targetRoomId} (reverse '{OppositeDirection(newDir)}' also created).");
+                }
+
+                // --- EditHasDoor preserved unchanged (existing logic) ---
                 if (pa.Step == "EditHasDoor")
                 {
                     var v = input?.Trim().ToLowerInvariant();
@@ -1369,19 +1278,14 @@ namespace MudServer
                         return MessageHandler.System($"No exit found for direction '{pa.Direction}'.");
                     }
 
-                    // Transition from boolean HasDoor -> DoorId nullable:
-                    // - true: create a new Doors row (closed by default) if one not already linked and assign DoorId
-                    // - false: unlink DoorId (set to null). Do NOT delete Doors rows automatically.
                     try
                     {
                         if (newVal)
                         {
                             if (!exit.DoorId.HasValue)
                             {
-                                // Enqueue an atomic writer job to create Doors row and upsert both mirrored RoomExit rows.
                                 int newDoorId = DbWriteQueue.Instance.RunWriteAndWait<int>((conn, tx) =>
                                 {
-                                    // Insert Door
                                     using var ins = conn.CreateCommand();
                                     ins.Transaction = tx;
                                     ins.CommandText = "INSERT INTO Doors (IsOpen, DoorType, Flags) VALUES (0, NULL, NULL);";
@@ -1393,7 +1297,6 @@ namespace MudServer
                                     var vobj = last.ExecuteScalar();
                                     var createdId = Convert.ToInt32(vobj);
 
-                                    // Helper upsert by RoomID+ToRoomID (deterministic)
                                     void UpsertExitInternal(int rRoomId, string dir, int toRoomId, int doorIdVal, bool isHidden, string? keyword)
                                     {
                                         using var upd = conn.CreateCommand();
@@ -1430,7 +1333,6 @@ namespace MudServer
                                         }
                                     }
 
-                                    // Attempt to find mate exit in-memory to determine its metadata (direction/isHidden/keyword)
                                     var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
                                     Room.RoomExit? mateExit = null;
                                     if (mateRoom != null && mateRoom.Exits != null)
@@ -1442,19 +1344,16 @@ namespace MudServer
                                             ?? mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == room.RoomID);
                                     }
 
-                                    // Upsert mate side first (if exists) using its in-memory values; otherwise still upsert with best-effort placeholders
                                     if (mateExit != null && mateRoom != null)
                                     {
                                         UpsertExitInternal(mateRoom.RoomID, mateExit.Direction, room.RoomID, createdId, mateExit.IsHidden, mateExit.DiscoverKeyword);
                                     }
 
-                                    // Upsert original side using current in-memory exit metadata
                                     UpsertExitInternal(room.RoomID, exit.Direction, exit.ToRoomID, createdId, exit.IsHidden, exit.DiscoverKeyword);
 
                                     return createdId;
-                                }, timeout: TimeSpan.FromSeconds(5)); // short timeout for interactive admin
+                                }, timeout: TimeSpan.FromSeconds(5));
 
-                                // Apply newDoorId to in-memory model (avoid stomping if concurrent)
                                 exit.DoorId = newDoorId;
                                 exit.DoorIsOpen = false;
                                 room.IsDirty = true;
@@ -1484,18 +1383,15 @@ namespace MudServer
                         }
                         else
                         {
-                            // unlink only: if this exit had a DoorId, clear it and also clear mate exit if it referenced the same DoorId.
                             int? oldDoor = exit.DoorId;
                             exit.DoorId = null;
 
                             if (oldDoor.HasValue)
                             {
-                                // Enqueue an atomic job to clear DoorId = 0 on both mirrored rows, but only when they currently reference the same DoorId.
                                 DbWriteQueue.Instance.RunWriteAndWait<object?>((conn, tx) =>
                                 {
                                     try
                                     {
-                                        // Find mate room and mate exit in-memory to get RoomIDs
                                         var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
                                         Room.RoomExit? mateExit = null;
                                         if (mateRoom != null && mateRoom.Exits != null)
@@ -1539,7 +1435,6 @@ namespace MudServer
                                     return (object?)null;
                                 }, timeout: TimeSpan.FromSeconds(5));
 
-                                // Also clear mate in-memory if it referenced the same door
                                 try
                                 {
                                     var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
@@ -1564,14 +1459,11 @@ namespace MudServer
                             }
                         }
 
-                        // Mark dirty and persist via RoomPersistence to keep other exit metadata consistent.
                         room.IsDirty = true;
-                        _world.SaveDirtyRooms(_db); // Persist any other dirty rooms in world (safe)
+                        _world.SaveDirtyRooms(_db);
 
-                        // Persist both rooms' exits via RoomPersistence so SaveRoomExits has canonical state to write.
                         try
                         {
-                            // Persist mateRoom first if present so both sides are synchronized in DB and cache.
                             var mateRoomForSave = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
                             if (mateRoomForSave != null)
                                 RoomPersistence.SaveRoomExits(_db, mateRoomForSave);
@@ -1590,7 +1482,6 @@ namespace MudServer
                         return MessageHandler.System("Failed to save exit changes due to a server error.");
                     }
 
-                    // Broadcast updated room to occupants (and mate room if modified)
                     try
                     {
                         foreach (var p in room.Players)
@@ -1602,7 +1493,6 @@ namespace MudServer
                                 _world, _db));
                         }
 
-                        // notify mate room players if mate exit exists and was modified
                         try
                         {
                             var mateRoomNotify = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
@@ -1627,7 +1517,7 @@ namespace MudServer
                 }
 
                 return null;
-            }
+            }//End EditExit
 
             // --- Kill pending action ---
             if (pa.Command == "Kill")
@@ -1700,7 +1590,14 @@ namespace MudServer
                         return MessageHandler.System("Enter comma-separated keywords to guide the AI (or type 'none' to skip). Type 'EndEdit' to cancel.");
                     }
 
-                    return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, GenerateDescription, 1, 2, 3, 4, or EndEdit.");
+                    // NEW: SetRoomFlag option (accept '5' or 'SetRoomFlag')
+                    if (input == "5" || input.Equals("SetRoomFlag", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "SetRoomFlag";
+                        return MessageHandler.System("Enter the flag string you would like to set for this room:");
+                    }
+
+                    return MessageHandler.System("Invalid option. Type Name, Description, DistantDescription, GenerateDescription, SetRoomFlag, 1, 2, 3, 4, 5, or EndEdit.");
                 }
 
                 if (pa.Step == "EditName")
@@ -1785,10 +1682,10 @@ namespace MudServer
                         using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(25));
 
                         var messages = new List<(string role, string content)>
-                {
-                    ("system", systemPrompt),
-                    ("user", userBuilder.ToString())
-                };
+        {
+            ("system", systemPrompt),
+            ("user", userBuilder.ToString())
+        };
 
                         using var respDoc = lmClient.CreateChatCompletionAsync(lmModel, messages, temperature: 0.7, ct: cts.Token)
                                                    .GetAwaiter().GetResult();
@@ -1938,7 +1835,6 @@ namespace MudServer
                     }
                     else if (cmd == "edit")
                     {
-                        // allow operator to re-enter keywords
                         pa.Step = "CollectKeywords";
                         return MessageHandler.System("Enter comma-separated keywords to guide the AI (or 'none' to skip). Type 'EndEdit' to cancel.");
                     }
@@ -1963,8 +1859,85 @@ namespace MudServer
                     return MessageHandler.System("Room distant description updated.");
                 }
 
+                // NEW: SetRoomFlag step (handles input after selecting option 5)
+                if (pa.Step == "SetRoomFlag")
+                {
+                    var flag = (input ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(flag))
+                    {
+                        return MessageHandler.System("Enter the flag string you would like to set for this room:");
+                    }
+
+                    try
+                    {
+                        // Ensure flags list exists, avoid duplicates (case-insensitive)
+                        try
+                        {
+                            if (room.Flags == null) room.Flags = new List<string>();
+                        }
+                        catch { /* best-effort */ }
+
+                        bool already = false;
+                        try
+                        {
+                            already = room.Flags.Any(f => string.Equals(f, flag, StringComparison.OrdinalIgnoreCase));
+                        }
+                        catch { already = false; }
+
+                        if (!already)
+                        {
+                            try
+                            {
+                                room.Flags.Add(flag);
+                            }
+                            catch
+                            {
+                                // fallback: reassign new list
+                                var tmp = new List<string>(room.Flags ?? new List<string>()) { flag };
+                                room.Flags = tmp;
+                            }
+                        }
+
+                        // Update FlagsJson if present on Room (best-effort)
+                        try
+                        {
+                            var fj = JsonSerializer.Serialize(room.Flags ?? new List<string>());
+                            var prop = room.GetType().GetProperty("FlagsJson");
+                            if (prop != null && prop.CanWrite)
+                                prop.SetValue(room, fj);
+                        }
+                        catch { /* best-effort */ }
+
+                        room.IsDirty = true;
+                        _world.SaveDirtyRooms(_db);
+
+                        // Broadcast updated room to occupants so clients refresh immediately
+                        try
+                        {
+                            foreach (var p in room.Players)
+                            {
+                                p.PendingMessageQueue.Add(MessageHandler.Room(
+                                    room,
+                                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                                    room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                    _world));
+                            }
+                        }
+                        catch { /* best-effort */ }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"Flag '{flag}' added to room.");
+                    }
+                    catch (Exception ex)
+                    {
+                        player.PendingAction = null!;
+                        Console.WriteLine($"[ADMIN][SetRoomFlag] Failed to set flag: {ex.Message}");
+                        return MessageHandler.System("Failed to set room flag due to a server error.");
+                    }
+                }
+
                 return null;
-            }
+            }//End EditRoom
 
             // CreateArea pending action
             if (pa.Command == "CreateArea")

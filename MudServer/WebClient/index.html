@@ -74,6 +74,8 @@
                             <th>Weight</th>
                             <th>Condition</th>
                             <th>Category</th>
+                            <th>Descriptor</th>
+                            <th>Material</th>
                             <th>Short Description</th>
                             <th>Status</th>
                         </tr>
@@ -92,8 +94,7 @@
         </div>
     </div>
 
-    <script>
-        const host = location.hostname || 'localhost';
+    <script>const host = location.hostname || 'localhost';
         const port = 9250;
         const ws = new WebSocket(`ws://${host}:${port}`);
 
@@ -170,12 +171,17 @@
 
                 const displayName = qty > 1 ? `${qty} x ${escapeHtml(it.name)}` : escapeHtml(it.name);
 
+                const descriptor = escapeHtml(it.descriptor || '');
+                const material = escapeHtml(it.material || '');
+
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                           <td>${displayName}</td>
                           <td>${escapeHtml(String(it.weight ?? ''))}</td>
                           <td>${escapeHtml(String(it.condition ?? ''))}</td>
                           <td>${escapeHtml(it.itemCategory ?? '')}</td>
+                          <td>${descriptor}</td>
+                          <td>${material}</td>
                           <td>${escapeHtml(it.shortDesc ?? '')}</td>
                           <td>${escapeHtml(status)}</td>
                         `;
@@ -296,7 +302,19 @@
                         .join(' ');
 
                     if (npcsEl) {
-                        npcsEl.innerHTML = (msg.npcs || []).map(n => `<span class="badge">${n}</span>`).join(' ');
+                        // Render badges for each npc name (escape for safety)
+                        npcsEl.innerHTML = (msg.npcs || []).map(n => `<span class="badge">${escapeHtml(n)}</span>`).join(' ');
+
+                        // Post-process badges: wrap only the literal "(asleep)" token so we can style it without changing the name color.
+                        try {
+                            Array.from(npcsEl.querySelectorAll('.badge')).forEach(b => {
+                                const inner = b.innerHTML;
+                                if (inner && inner.indexOf('(asleep)') !== -1) {
+                                    // replace all occurrences of "(asleep)" with a styled span
+                                    b.innerHTML = inner.replace(/\(asleep\)/g, '<span class="state-asleep">(asleep)</span>');
+                                }
+                            });
+                        } catch { /* best-effort */ }
                     }
 
                     if (playersEl) {
@@ -466,10 +484,8 @@
             if (e.key === 'Escape' && invModal.style.display === 'flex') closeInventory();
         });
 
-        invModal.style.display = 'none';
-    </script>
-    <script>
-        // Client-side critical-hit formatter and renderer.
+        invModal.style.display = 'none';</script>
+    <script>// Client-side critical-hit formatter and renderer.
         (function () {
             function escapeHtml(str) {
                 if (str == null) return "";
@@ -514,7 +530,6 @@
                     console.error('renderSystemMessage error', e);
                 }
             };
-        })();
-    </script>
+        })();</script>
 </body>
 </html>

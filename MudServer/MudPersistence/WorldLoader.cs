@@ -42,7 +42,8 @@ namespace MudPersistence
 
                 if (Directory.Exists(npcTemplateDir))
                 {
-                    foreach (var file in Directory.EnumerateFiles(npcTemplateDir, "*.json", SearchOption.TopDirectoryOnly))
+                    // NOTE: changed to search subdirectories so templates organized into subfolders are discovered.
+                    foreach (var file in Directory.EnumerateFiles(npcTemplateDir, "*.json", SearchOption.AllDirectories))
                     {
                         try
                         {
@@ -268,7 +269,7 @@ namespace MudPersistence
                 Console.WriteLine("[WORLD][WARN] TemplateManager is null; NPC template-based features will fail until initialized.");
 
             return world;
-        }
+        }//End LoadFromDatabase
 
         private static World LoadWorld(SqliteConnection conn)
         {

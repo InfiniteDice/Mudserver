@@ -85,6 +85,11 @@ namespace MudPersistence
             if (Has("Debuffs")) wanted.Add("Debuffs");
             if (Has("Experience")) wanted.Add("Experience");
 
+            // NEW: SkillPoints and ArcanePower fields (if present)
+            if (Has("SkillPoints")) wanted.Add("SkillPoints");
+            if (Has("ArcanePower")) wanted.Add("ArcanePower");
+            if (Has("MaxArcanePower")) wanted.Add("MaxArcanePower");
+
             // NEW: Flags column support
             if (Has("Flags")) wanted.Add("Flags");
 
@@ -126,6 +131,18 @@ namespace MudPersistence
                                 case "Experience":
                                     player.Experience = rdr.GetInt32(ordinal);
                                     break;
+
+                                // NEW: skill/arcane fields
+                                case "SkillPoints":
+                                    player.SkillPoints = rdr.GetInt32(ordinal);
+                                    break;
+                                case "ArcanePower":
+                                    player.ArcanePower = rdr.GetInt32(ordinal);
+                                    break;
+                                case "MaxArcanePower":
+                                    player.MaxArcanePower = rdr.GetInt32(ordinal);
+                                    break;
+
                                 case "Flags":
                                     try
                                     {
@@ -207,6 +224,12 @@ namespace MudPersistence
             if (Has("Buffs")) colAssignments.Add("Buffs = @Buffs");
             if (Has("Debuffs")) colAssignments.Add("Debuffs = @Debuffs");
             if (Has("Experience")) colAssignments.Add("Experience = @Experience");
+
+            // NEW: SkillPoints and Arcane fields
+            if (Has("SkillPoints")) colAssignments.Add("SkillPoints = @SkillPoints");
+            if (Has("ArcanePower")) colAssignments.Add("ArcanePower = @ArcanePower");
+            if (Has("MaxArcanePower")) colAssignments.Add("MaxArcanePower = @MaxArcanePower");
+
             if (Has("Flags")) colAssignments.Add("Flags = @Flags");
 
             var sql = $"UPDATE Player SET {string.Join(", ", colAssignments)} WHERE PlayerID = @pid;";
@@ -255,6 +278,23 @@ namespace MudPersistence
             }
 
             cmd.Parameters.AddWithValue("@Experience", expToSave);
+
+            // NEW: SkillPoints / Arcane params
+            try
+            {
+                if (Has("SkillPoints"))
+                    cmd.Parameters.AddWithValue("@SkillPoints", player.SkillPoints);
+                if (Has("ArcanePower"))
+                    cmd.Parameters.AddWithValue("@ArcanePower", player.ArcanePower);
+                if (Has("MaxArcanePower"))
+                    cmd.Parameters.AddWithValue("@MaxArcanePower", player.MaxArcanePower);
+            }
+            catch
+            {
+                if (Has("SkillPoints")) cmd.Parameters.AddWithValue("@SkillPoints", 0);
+                if (Has("ArcanePower")) cmd.Parameters.AddWithValue("@ArcanePower", 0);
+                if (Has("MaxArcanePower")) cmd.Parameters.AddWithValue("@MaxArcanePower", 0);
+            }
 
             // NEW: Flags parameter (serialize deterministically)
             try

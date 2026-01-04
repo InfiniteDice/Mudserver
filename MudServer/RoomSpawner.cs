@@ -56,7 +56,9 @@ namespace MudServer
                 {
                     if (!room.IsSpawner)
                         continue;
-                    if (room.SpawnTemplateList == null || room.SpawnTemplateList.Count == 0)
+
+                    // Defensive: treat a spawn list that is null or contains only empty/whitespace entries as empty.
+                    if (room.SpawnTemplateList == null || !room.SpawnTemplateList.Any(s => !string.IsNullOrWhiteSpace(s)))
                     {
                         Console.WriteLine($"[Spawner][WARN] Room {room.RoomID} has empty SpawnTemplateList.");
                         continue;
@@ -75,7 +77,15 @@ namespace MudServer
                     //DEPRECATED// Previously we attempted spawn every tick once delay elapsed.
                     // New: consume the window immediately to allow exactly one attempt per delay period.
                     room.LastSpawnTime = now;
-                    RoomPersistence.SaveRoom(conn, room);
+                    try
+                    {
+                        RoomPersistence.SaveRoom(conn, room);
+                    }
+                    catch (Exception exSave)
+                    {
+                        // Log but do not rethrow — a DB hiccup here should not crash the loop.
+                        Console.WriteLine($"[Spawner][WARN] Failed to persist LastSpawnTime for Room {room.RoomID}: {exSave.Message}");
+                    }
 
                     if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} check: Type={room.SpawnType}, Chance={room.SpawnChance}, DelayMin={room.SpawnDelayMinutes}, ElapsedMin={elapsedMinutes:F1}, Templates=[{string.Join(',', room.SpawnTemplateList)}]");
 
@@ -87,24 +97,117 @@ namespace MudServer
                     }
 
                     // Select template entry (may include ':' quantity suffix) up-front.
-                    var rawEntry = room.SpawnTemplateList[_rng.Next(room.SpawnTemplateList.Count)];
-                    string templateId = rawEntry;
+                    // NEW: support optional per-template trailing weight token, e.g. "goblin70" or "goblin_assassin20".
+                    // Also preserve existing quantity suffix form "templateId:qty".
+                    string selectedRaw = null!;
+                    string templateId = null!;
                     int requestedQty = 1;
 
-                    if (!string.IsNullOrWhiteSpace(rawEntry) && rawEntry.Contains(':'))
+                    try
                     {
-                        var parts = rawEntry.Split(new[] { ':' }, 2);
-                        if (!string.IsNullOrWhiteSpace(parts[0]))
-                        {
-                            templateId = parts[0].Trim();
-                            if (parts.Length > 1 && int.TryParse(parts[1].Trim(), out var parsedQty) && parsedQty > 0)
+                        // Build candidate list with parsed templateId, optional trailing weight, and optional quantity
+                        var candidates = room.SpawnTemplateList
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Select(s =>
                             {
-                                requestedQty = Math.Min(parsedQty, 10000);
+                                var entry = s.Trim();
+                                int qty = 1;
+                                // handle quantity suffix "template:qty" (colon)
+                                var idxCol = entry.IndexOf(':');
+                                string left = entry;
+                                if (idxCol >= 0)
+                                {
+                                    left = entry.Substring(0, idxCol).Trim();
+                                    var qtyStr = entry.Substring(idxCol + 1).Trim();
+                                    if (!int.TryParse(qtyStr, out qty)) qty = 1;
+                                }
+
+                                // parse trailing digits as weight: e.g. "goblin70" -> id="goblin", weight=70
+                                int weight = 0;
+                                string tid = left;
+                                try
+                                {
+                                    var m = System.Text.RegularExpressions.Regex.Match(left, @"^(?<id>.+?)(?<wt>\d+)$");
+                                    if (m.Success && !string.IsNullOrWhiteSpace(m.Groups["id"].Value))
+                                    {
+                                        tid = m.Groups["id"].Value;
+                                        if (!int.TryParse(m.Groups["wt"].Value, out weight)) weight = 0;
+                                    }
+                                }
+                                catch { /* best-effort parse */ }
+
+                                return new { Raw = s, Template = tid, Qty = Math.Max(1, qty), Weight = Math.Max(0, weight) };
+                            })
+                            .Where(c => !string.IsNullOrWhiteSpace(c.Template))
+                            .ToList();
+
+                        if (candidates.Count == 0)
+                        {
+                            Console.WriteLine($"[Spawner][WARN] Room {room.RoomID} spawn parsing yielded no valid candidates from list: [{string.Join(',', room.SpawnTemplateList ?? new List<string>())}]");
+                            continue;
+                        }
+
+                        // If any candidate has a positive weight, perform weighted random selection.
+                        var totalWeight = candidates.Sum(c => c.Weight);
+                        if (totalWeight > 0)
+                        {
+                            var pick = _rng.Next(totalWeight);
+                            int acc = 0;
+                            foreach (var c in candidates)
+                            {
+                                acc += c.Weight;
+                                if (pick < acc)
+                                {
+                                    selectedRaw = c.Raw;
+                                    templateId = c.Template;
+                                    requestedQty = c.Qty;
+                                    break;
+                                }
                             }
+                        }
+                        else
+                        {
+                            // fallback: uniform random selection (preserves original behavior)
+                            var idx = _rng.Next(candidates.Count);
+                            var c = candidates[idx];
+                            selectedRaw = c.Raw;
+                            templateId = c.Template;
+                            requestedQty = c.Qty;
+                        }
+                    }
+                    catch (Exception exSelect)
+                    {
+                        Console.WriteLine($"[Spawner][ERROR] Template selection failed in room {room.RoomID}: {exSelect.Message}");
+                        // fallback to original simple choice to avoid blocking spawns
+                        try
+                        {
+                            var rawEntry = room.SpawnTemplateList.Where(s => !string.IsNullOrWhiteSpace(s)).ElementAt(_rng.Next(Math.Max(1, room.SpawnTemplateList.Count(s => !string.IsNullOrWhiteSpace(s)))));
+                            // strip qty if present
+                            var idxCol = rawEntry.IndexOf(':');
+                            var left = idxCol >= 0 ? rawEntry.Substring(0, idxCol).Trim() : rawEntry.Trim();
+                            var m = System.Text.RegularExpressions.Regex.Match(left, @"^(?<id>.+?)(?<wt>\d+)$");
+                            if (m.Success && !string.IsNullOrWhiteSpace(m.Groups["id"].Value))
+                                templateId = m.Groups["id"].Value;
+                            else
+                                templateId = left;
+                            requestedQty = 1;
+                            selectedRaw = rawEntry;
+                        }
+                        catch
+                        {
+                            // last resort - skip this room
+                            Console.WriteLine($"[Spawner][ERROR] Fallback template selection also failed for room {room.RoomID}; skipping spawn.");
+                            continue;
                         }
                     }
 
-                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} attempting spawn of '{templateId}' (raw='{rawEntry}') qtyRequested={requestedQty} as {room.SpawnType}");
+                    if (string.IsNullOrWhiteSpace(templateId))
+                    {
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} resolved empty templateId from '{selectedRaw ?? "(null)"}', skipping.");
+                        continue;
+                    }
+
+                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} selected spawn='{templateId}' qty={requestedQty} (raw='{selectedRaw}')");
 
                     if (room.SpawnType.Equals("Npc", StringComparison.OrdinalIgnoreCase))
                     {
@@ -130,7 +233,7 @@ namespace MudServer
                         // Ensure hydrated defaults (redundant but safe)
                         npc.ApplyTemplateDefaults();
 
-                        // CRITICAL Fix: explicitly ensure new spawn has description from template when missing.
+                        // CRITICAL: explicitly ensure new spawn has description from template when missing.
                         try
                         {
                             if (string.IsNullOrWhiteSpace(npc.Description) && npc.Template != null && !string.IsNullOrWhiteSpace(npc.Template.Description))
@@ -145,6 +248,22 @@ namespace MudServer
                         if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] NPC {npc.Name} WanderAreas={JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>())} CurrentAreaID={npc.CurrentAreaID}");
                         int newId = NpcPersistence.InsertNpc(conn, npc);
                         npc.NpcID = newId;
+
+                        // Persist trader initial state into Flags if this NPC is a trader and an ItemTrader instance exists.
+                        try
+                        {
+                            try
+                            {
+                                if (MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var traderInstance))
+                                {
+                                    // Persist using current writer connection to ensure atomicity with spawn insert
+                                    try { traderInstance.PersistState(conn); }
+                                    catch (Exception exPers) { Console.WriteLine($"[Spawner][WARN] Failed to persist TraderState for NpcID={npc.NpcID}: {exPers.Message}"); }
+                                }
+                            }
+                            catch { /* best-effort */ }
+                        }
+                        catch { /* best-effort */ }
 
                         // Equip from template and persist to NPC ownership
                         try
@@ -213,7 +332,7 @@ namespace MudServer
                     }
                     else
                     {
-                        // Item spawn branch — now enforces SpawnMaxRoom differently for stackable vs non-stackable templates.
+                        // Item spawn branch — unchanged selection applied for item creation.
                         if (world.ItemFactory == null)
                         {
                             Console.WriteLine("[Spawner][WARN] ItemFactory missing - cannot spawn Item.");
@@ -260,14 +379,12 @@ namespace MudServer
                                 item.RoomID = room.RoomID;
                                 item.OwnerAreaID = room.AreaID;
 
-                                // --- NEW: convert StartsBuriedN (template) into persistent BuriedN flag on created item ---
+                                // --- convert StartsBuriedN (template) into persistent BuriedN flag on created item ---
                                 try
                                 {
                                     if (item.Flags == null)
                                         item.Flags = new List<string>();
 
-                                    // If FlagsJson contains StartsBuried... (factory may populate Flags or FlagsJson)
-                                    // normalize FlagsJson into Flags if necessary
                                     if ((item.Flags == null || item.Flags.Count == 0) && !string.IsNullOrEmpty(item.FlagsJson))
                                     {
                                         try
@@ -288,7 +405,6 @@ namespace MudServer
                                             var num = f.Substring("StartsBuried".Length).Trim();
                                             if (int.TryParse(num, out var pct))
                                             {
-                                                // remove template-time marker and add persistent BuriedN
                                                 try { item.Flags.Remove(f); } catch { }
                                                 var buriedFlag = $"Buried{pct}";
                                                 if (!item.Flags.Any(ff => string.Equals(ff, buriedFlag, StringComparison.OrdinalIgnoreCase)))
@@ -311,7 +427,6 @@ namespace MudServer
                                 }
                                 // --- end buried conversion ---
 
-                                // Ensure descriptor assigned for spawned items
                                 try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
                                 if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Pre-SaveItem: Template='{templateId}', Name='{item.Name}', Quantity={item.Quantity}, FlagsJson='{item.FlagsJson}'.");
@@ -352,11 +467,10 @@ namespace MudServer
                                     room.IsDirty = true;
                                 }
 
-                                RoomPersistence.SaveRoom(conn, room);
+                                try { RoomPersistence.SaveRoom(conn, room); } catch (Exception exRoomSave) { Console.WriteLine($"[Spawner][WARN] Failed to save room after item spawn: {exRoomSave.Message}"); }
 
                                 foreach (var p in room.Players)
                                 {
-                                    // Always enqueue the room payload (it filters buried items automatically).
                                     p.PendingMessageQueue.Add(MessageHandler.Room(
                                         room,
                                         room.Npcs.Select(n => n.DisplayName).ToList(),
@@ -402,7 +516,7 @@ namespace MudServer
                                     item.RoomID = room.RoomID;
                                     item.OwnerAreaID = room.AreaID;
 
-                                    // --- NEW: convert StartsBuriedN -> BuriedN on non-stackable item
+                                    // --- convert StartsBuriedN -> BuriedN on non-stackable item
                                     try
                                     {
                                         if (item.Flags == null)
@@ -449,7 +563,6 @@ namespace MudServer
                                     }
                                     // --- end buried conversion ---
 
-                                    // Ensure descriptor assigned for spawned items
                                     try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
                                     ItemPersistence.SaveItem(conn, item);
@@ -490,7 +603,7 @@ namespace MudServer
                                     if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Spawned non-stack item '{item.Name}' ItemID={item.ItemID} in Room {room.RoomID}.");
                                 }
 
-                                RoomPersistence.SaveRoom(conn, room);
+                                try { RoomPersistence.SaveRoom(conn, room); } catch (Exception exRoomSave) { Console.WriteLine($"[Spawner][WARN] Failed to save room after non-stack item spawn: {exRoomSave.Message}"); }
 
                                 Console.WriteLine($"[Spawner] Spawned up to {allowedToSpawn} non-stack item(s) '{templateId}' in room {room.RoomID}.");
                             }
@@ -504,7 +617,14 @@ namespace MudServer
                     if ((now - room.LastSpawnTime).TotalSeconds < 1)
                     {
                         room.LastSpawnTime = now;
-                        RoomPersistence.SaveRoom(conn, room);
+                        try
+                        {
+                            RoomPersistence.SaveRoom(conn, room);
+                        }
+                        catch (Exception exSaveAgain)
+                        {
+                            Console.WriteLine($"[Spawner][WARN] Failed to persist LastSpawnTime for Room {room.RoomID} (second save): {exSaveAgain.Message}");
+                        }
                     }
                 }
                 catch (Exception ex)

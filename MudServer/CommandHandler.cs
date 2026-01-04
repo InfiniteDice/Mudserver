@@ -44,6 +44,486 @@ namespace MudServer
 
             string command = ExtractCommandText(rawCommand).Trim();
 
+            // --- NEW: If player has an outstanding TraderBuy pending, offer guidance for confirm (autopay disabled)
+            try
+            {
+                if (player?.PendingAction != null && string.Equals(player.PendingAction.Command, "TraderBuy", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Extract pending data
+                    if (player.PendingAction.Data is System.Collections.Generic.Dictionary<string, object> pd)
+                    {
+                        // Resolve the trader npc instance if possible
+                        if (pd.TryGetValue("NpcId", out var nidObj) && int.TryParse(nidObj.ToString(), out var pendingNpcId))
+                        {
+                            var room = player?.CurrentRoom;
+                            var npc = room?.Npcs.FirstOrDefault(n => n != null && n.NpcID == pendingNpcId)
+                                      ?? _world.Npcs.FirstOrDefault(n => n != null && n.NpcID == pendingNpcId);
+
+                            if (npc != null && MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                            {
+                                // 'confirm' no longer performs autopay; delegate to trader.HandleConfirm which instructs the player.
+                                if (string.Equals(command, "confirm", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    try
+                                    {
+                                        return trader.HandleConfirm(player, _dbConnection);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"[CMD][TRADER-CONFIRM] Confirm handling failed: {ex.Message}");
+                                        return MessageHandler.System("Confirm handling failed due to server error.");
+                                    }
+                                }
+
+                                // pay <amount> -> treat as explicit pay (still supported)
+                                if (command.StartsWith("pay ", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var amtArg = command.Substring(4).Trim();
+                                    if (string.IsNullOrWhiteSpace(amtArg)) return MessageHandler.System("Usage: pay <amount> (e.g. pay 1g20s5c or pay 250c)");
+                                    try
+                                    {
+                                        return trader.HandlePaymentAttempt(player, amtArg, _dbConnection);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"[CMD][TRADER-PAY] Pay handling failed: {ex.Message}");
+                                        return MessageHandler.System("Payment failed due to server error.");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CMD][TRADER-PENDING] Early pending handling failed: {ex.Message}");
+            }
+            // --- NEW: Interpret "give <what> to <npc>" specially when target is a trader with a pending buy --
+            try
+            {
+                var lcCmd = command.Length > 0 ? command.ToLowerInvariant() : "";
+                if (lcCmd.StartsWith("give "))
+                {
+                    var payload = command.Substring(5).Trim();
+
+                    // First try explicit " to " form
+                    var idxTo = payload.IndexOf(" to ", StringComparison.OrdinalIgnoreCase);
+                    string whatExpr = payload;
+                    string targetExpr = "";
+
+                    if (idxTo >= 0)
+                    {
+                        whatExpr = payload.Substring(0, idxTo).Trim();
+                        targetExpr = payload.Substring(idxTo + 4).Trim();
+                    }
+                    else
+                    {
+                        // permissive fallback: if last token matches an NPC in room, treat it as target (allows "give 11 copper seleas")
+                        var toks = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        if (toks.Length >= 2)
+                        {
+                            var possibleTarget = toks[^1];
+                            var possibleWhat = string.Join(" ", toks.Take(toks.Length - 1));
+                            var room = player?.CurrentRoom;
+                            if (room != null)
+                            {
+                                var matches = NpcTargeting.FindMatches(room, possibleTarget);
+                                if (matches.Count == 1)
+                                {
+                                    whatExpr = possibleWhat;
+                                    targetExpr = possibleTarget;
+                                }
+                                // If multiple matches, prefer explicit "to" to avoid ambiguity -> fall through to normal give path
+                            }
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(targetExpr))
+                    {
+                        if (string.IsNullOrWhiteSpace(whatExpr) || string.IsNullOrWhiteSpace(targetExpr))
+                            return MessageHandler.System("Usage: give <#> <item> to <npc>");
+
+                        var room = player?.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple matches: {list}");
+                        }
+
+                        var npc = matches[0];
+
+                        // If NPC is a trader and the player has a TraderBuy pending for that npc, treat this as payment
+                        if (MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader)
+                            && player.PendingAction != null
+                            && string.Equals(player.PendingAction.Command, "TraderBuy", StringComparison.OrdinalIgnoreCase)
+                            && player.PendingAction.Data is System.Collections.Generic.Dictionary<string, object> pd
+                            && pd.TryGetValue("NpcId", out var nidObj)
+                            && int.TryParse(nidObj.ToString(), out var nid)
+                            && nid == npc.NpcID)
+                        {
+                            // Attempt to interpret 'whatExpr' as coins and delegate to trader's payment flow.
+                            long copper = 0;
+
+                            // 1) Direct currency syntax (1g20s5c or 250c)
+                            if (whatExpr.IndexOf('g', StringComparison.OrdinalIgnoreCase) >= 0
+                                || whatExpr.IndexOf('s', StringComparison.OrdinalIgnoreCase) >= 0
+                                || whatExpr.IndexOf('c', StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                copper = MudServer.MudCore.AI.ItemTrader.ParseCurrencyExpressionToCopper(whatExpr);
+                            }
+                            else
+                            {
+                                // 2) Quantity + token: "2 coin_gold" or "2 gold"
+                                var toks = whatExpr.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                                if (toks.Length == 2 && int.TryParse(toks[0], out var q) && q > 0)
+                                {
+                                    var token = toks[1].Trim().ToLowerInvariant();
+                                    if (token.Contains("gold") || token.Contains("coin_gold"))
+                                        copper = (long)q * Currency.CopperPerGold;
+                                    else if (token.Contains("silver") || token.Contains("coin_silver"))
+                                        copper = (long)q * Currency.CopperPerSilver;
+                                    else if (token.Contains("copper") || token.Contains("coin_copper"))
+                                        copper = q;
+                                    else
+                                    {
+                                        // attempt to resolve a coin item in player's inventory by template or name
+                                        var found = player.Inventory?.FirstOrDefault(i =>
+                                            i != null
+                                            && (string.Equals(i.TemplateID, toks[1], StringComparison.OrdinalIgnoreCase)
+                                                || (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(toks[1], StringComparison.OrdinalIgnoreCase) >= 0)));
+                                        if (found != null)
+                                        {
+                                            if (string.Equals(found.TemplateID, "coin_gold", StringComparison.OrdinalIgnoreCase))
+                                                copper = (long)q * Currency.CopperPerGold;
+                                            else if (string.Equals(found.TemplateID, "coin_silver", StringComparison.OrdinalIgnoreCase))
+                                                copper = (long)q * Currency.CopperPerSilver;
+                                            else if (string.Equals(found.TemplateID, "coin_copper", StringComparison.OrdinalIgnoreCase))
+                                                copper = q;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    // 3) Single token that may match a coin stack in inventory: "coin_gold" or "gold"
+                                    var foundAny = player.Inventory?.Where(i => i != null && (
+                                        string.Equals(i.TemplateID, whatExpr, StringComparison.OrdinalIgnoreCase)
+                                        || (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(whatExpr, StringComparison.OrdinalIgnoreCase) >= 0)))
+                                        .ToList();
+
+                                    if (foundAny != null && foundAny.Count > 0)
+                                    {
+                                        // Sum matching coin stacks' copper value
+                                        foreach (var it in foundAny)
+                                        {
+                                            if (it == null) continue;
+                                            if (string.Equals(it.TemplateID, "coin_gold", StringComparison.OrdinalIgnoreCase))
+                                                copper += (long)it.Quantity * Currency.CopperPerGold;
+                                            else if (string.Equals(it.TemplateID, "coin_silver", StringComparison.OrdinalIgnoreCase))
+                                                copper += (long)it.Quantity * Currency.CopperPerSilver;
+                                            else if (string.Equals(it.TemplateID, "coin_copper", StringComparison.OrdinalIgnoreCase))
+                                                copper += it.Quantity;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (copper <= 0)
+                            {
+                                // Could not interpret input as coins — fall back to normal give.
+                                // Continue to standard give path below.
+                            }
+                            else
+                            {
+                                // Format copper into compact amount string like "1g20s5c" (no spaces).
+                                var cur = Currency.FromCopper(copper);
+                                var sb = new System.Text.StringBuilder();
+                                if (cur.Gold > 0) sb.Append($"{cur.Gold}g");
+                                if (cur.Silver > 0) sb.Append($"{cur.Silver}s");
+                                if (cur.Copper > 0) sb.Append($"{cur.Copper}c");
+                                if (sb.Length == 0) sb.Append("0c");
+
+                                // Delegate to trader payment attempt (this will remove coins from player transactionally)
+                                try
+                                {
+                                    var payMsg = trader.HandlePaymentAttempt(player, sb.ToString(), _dbConnection);
+                                    return payMsg;
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"[CMD][GIVE->TRADER] Payment delegation failed: {ex.Message}");
+                                    return MessageHandler.System("Payment failed due to server error.");
+                                }
+                            }
+                        }
+
+                        // Not a trader-payment scenario (or we couldn't parse coins) -> perform standard give:
+                        // Basic give: move item from player -> npc (single quantity or specified qty).
+                        try
+                        {
+                            int giveQty = 1;
+                            string itemQuery = whatExpr;
+                            // If expression starts with a number, use as qty
+                            var wToks = whatExpr.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                            if (wToks.Length == 2 && int.TryParse(wToks[0], out var n) && n > 0)
+                            {
+                                giveQty = n;
+                                itemQuery = wToks[1];
+                            }
+
+                            // Resolve item in player's non-equipped inventory
+                            var matchesItems = FindNonEquippedMatches(player, itemQuery);
+                            if (matchesItems == null || matchesItems.Count == 0)
+                                return MessageHandler.System("You are not carrying that item.");
+
+                            var item = matchesItems.First();
+                            if (item == null) return MessageHandler.System("You are not carrying that item.");
+
+                            int moveQty = Math.Min(giveQty, Math.Max(1, item.Quantity));
+
+                            // Use writer queue to persist transfer
+                            try
+                            {
+                                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                                {
+                                    try
+                                    {
+                                        // If stackable and moving partial qty, reduce player's item and possibly create new item row for NPC
+                                        if (moveQty < item.Quantity)
+                                        {
+                                            // Reduce player's stack
+                                            int remaining = item.Quantity - moveQty;
+                                            item.Quantity = remaining;
+                                            ItemPersistence.SaveItem(wConn, item, wTx);
+
+                                            // Create NPC-owned item stack of same template/qty
+                                            var created = _world.ItemFactory.CreateItem(item.TemplateID ?? item.Name ?? "", "NPC", npc.NpcID, 0, moveQty);
+                                            // copy runtime useful fields
+                                            created.Name = item.Name;
+                                            created.ItemCategory = item.ItemCategory;
+                                            ItemPersistence.SaveItem(wConn, created, wTx);
+
+                                            // update in-memory lists
+                                            player.Inventory.RemoveAll(i => i.ItemID == 0 && i.Quantity == remaining && string.IsNullOrWhiteSpace(i.TemplateID) == false); // best-effort trim
+                                            npc.Inventory.Add(created);
+                                        }
+                                        else
+                                        {
+                                            // Move full item: set owner fields and save
+                                            item.OwnerType = "NPC";
+                                            item.OwnerID = npc.NpcID;
+                                            item.RoomID = 0;
+                                            ItemPersistence.SaveItem(wConn, item, wTx);
+
+                                            // Update in-memory lists
+                                            try { player.Inventory.Remove(item); } catch { }
+                                            npc.Inventory.Add(item);
+                                        }
+                                    }
+                                    catch (Exception exW)
+                                    {
+                                        Console.WriteLine($"[CMD][GIVE] Writer tx failed: {exW.Message}");
+                                    }
+                                    return (object?)null;
+                                }, timeout: TimeSpan.FromSeconds(8));
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[CMD][GIVE] Enqueue writer failed: {ex.Message}");
+                                return MessageHandler.System("Failed to give item due to server error.");
+                            }
+
+                            // Notify both parties
+                            try
+                            {
+                                MessageHandler.SendSystem(player, $"You give {(moveQty > 1 ? $"{moveQty} {item.Name}" : item.Name)} to {npc.DisplayName}.");
+                                // NPC reaction (simple)
+                                MessageHandler.SendSystem(player, $"{npc.DisplayName}: Thank you.");
+                            }
+                            catch { /* best-effort */ }
+
+                            return MessageHandler.System($"You give {(moveQty > 1 ? $"{moveQty} {item.Name}" : item.Name)} to {npc.DisplayName}.");
+                        }
+                        catch (Exception exGive)
+                        {
+                            Console.WriteLine($"[CMD][GIVE] Give flow failed: {exGive.Message}");
+                            return MessageHandler.System("Give failed due to server error.");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CMD][GIVE] Unexpected error: {ex}");
+                // fall through to regular processing
+            }
+            // --- END give handling ---
+
+            // --- NEW: ItemTrader command routing ---
+            // Support:
+            //  - trade <npc> [list|buy <id>|sell <item>|convert <amount>]
+            //  - buy <npc> <templateId>
+            //  - sell <npc> <item>
+            //  - convert <npc> <amount>
+            try
+            {
+                var lc = command.Length > 0 ? command.ToLowerInvariant() : "";
+                if (lc == "trade" || lc.StartsWith("trade "))
+                {
+                    var payload = command.Length > 5 ? command.Substring(5).Trim() : "";
+                    if (string.IsNullOrWhiteSpace(payload))
+                        return MessageHandler.System("Usage: trade <npc> [list|buy <id>|sell <item>|convert <amount>]");
+
+                    var parts = payload.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                    var targetExpr = parts[0];
+                    var sub = parts.Length > 1 ? parts[1] : "";
+
+                    var room = player?.CurrentRoom;
+                    if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                    var matches = NpcTargeting.FindMatches(room, targetExpr);
+                    if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                    if (matches.Count > 1)
+                    {
+                        var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                        return MessageHandler.System($"Multiple matches: {list}");
+                    }
+
+                    var npc = matches[0];
+                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                        return MessageHandler.System($"{npc.DisplayName} does not trade.");
+
+                    var args = string.IsNullOrWhiteSpace(sub) ? "trade" : sub;
+                    return trader.HandleCommand(player, args, _dbConnection);
+                }
+
+                if (lc.StartsWith("buy "))
+                {
+                    var payload = command.Substring(4).Trim();
+
+                    // Support both forms:
+                    //  - buy <npc> <item>         (legacy)
+                    //  - buy <item> from <npc>    (natural / consistent with other commands)
+                    string targetExpr;
+                    string itemArg;
+
+                    int idxFrom = payload.IndexOf(" from ", StringComparison.OrdinalIgnoreCase);
+                    if (idxFrom >= 0)
+                    {
+                        itemArg = payload.Substring(0, idxFrom).Trim();
+                        targetExpr = payload.Substring(idxFrom + " from ".Length).Trim();
+                        if (string.IsNullOrWhiteSpace(itemArg) || string.IsNullOrWhiteSpace(targetExpr))
+                            return MessageHandler.System("Usage: buy <npc> <item> OR buy <item> from <npc>");
+                    }
+                    else
+                    {
+                        var parts = payload.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) return MessageHandler.System("Usage: buy <npc> <item> OR buy <item> from <npc>");
+                        targetExpr = parts[0];
+                        itemArg = parts[1];
+                    }
+
+                    var room = player?.CurrentRoom;
+                    if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                    var matches = NpcTargeting.FindMatches(room, targetExpr);
+                    if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                    if (matches.Count > 1)
+                    {
+                        var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                        return MessageHandler.System($"Multiple matches: {list}");
+                    }
+
+                    var npc = matches[0];
+                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                        return MessageHandler.System($"{npc.DisplayName} does not trade.");
+
+                    // Delegate to trader; ItemTrader.HandleBuy will use ItemParser to resolve item keywords.
+                    return trader.HandleCommand(player, $"buy {itemArg}", _dbConnection);
+                }
+
+                if (lc.StartsWith("sell "))
+                {
+                    var payload = command.Substring(5).Trim();
+
+                    // Support both:
+                    //  - sell <npc> <item>   (legacy)
+                    //  - sell <item> to <npc> (natural)
+                    string targetExpr;
+                    string itemArg;
+
+                    int idxTo = payload.IndexOf(" to ", StringComparison.OrdinalIgnoreCase);
+                    if (idxTo >= 0)
+                    {
+                        itemArg = payload.Substring(0, idxTo).Trim();
+                        targetExpr = payload.Substring(idxTo + 4).Trim();
+                        if (string.IsNullOrWhiteSpace(itemArg) || string.IsNullOrWhiteSpace(targetExpr))
+                            return MessageHandler.System("Usage: sell <npc> <item> OR sell <item> to <npc>");
+                    }
+                    else
+                    {
+                        var parts = payload.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) return MessageHandler.System("Usage: sell <npc> <item> OR sell <item> to <npc>");
+                        targetExpr = parts[0];
+                        itemArg = parts[1];
+                    }
+
+                    var room = player?.CurrentRoom;
+                    if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                    var matches = NpcTargeting.FindMatches(room, targetExpr);
+                    if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                    if (matches.Count > 1)
+                    {
+                        var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                        return MessageHandler.System($"Multiple matches: {list}");
+                    }
+
+                    var npc = matches[0];
+                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                        return MessageHandler.System($"{npc.DisplayName} does not trade.");
+
+                    // Delegate to trader; ItemTrader uses ItemParser to resolve the actual inventory item.
+                    return trader.HandleCommand(player, $"sell {itemArg}", _dbConnection);
+                }
+
+                if (lc.StartsWith("convert "))
+                {
+                    var payload = command.Substring(8).Trim();
+                    var parts = payload.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 2) return MessageHandler.System("Usage: convert <npc> <amount>");
+                    var targetExpr = parts[0];
+                    var amtArg = parts[1];
+
+                    var room = player?.CurrentRoom;
+                    if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                    var matches = NpcTargeting.FindMatches(room, targetExpr);
+                    if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                    if (matches.Count > 1)
+                    {
+                        var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                        return MessageHandler.System($"Multiple matches: {list}");
+                    }
+
+                    var npc = matches[0];
+                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                        return MessageHandler.System($"{npc.DisplayName} does not trade.");
+
+                    return trader.HandleCommand(player, $"convert {amtArg}", _dbConnection);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CMD][TRADER ROUTE] Error routing trader command: {ex.Message}");
+                // fall through to normal command processing if routing fails unexpectedly
+            }
+            // --- END ItemTrader routing ---
+
             // --- OPEN / CLOSE door commands ---
             if (command.StartsWith("open ", StringComparison.OrdinalIgnoreCase))
             {
@@ -1069,10 +1549,20 @@ namespace MudServer
                         var buffs = player.Buffs ?? new List<string>();
                         var debuffs = player.Debuffs ?? new List<string>();
 
+                        // Compute XP to next level using AdvancementManager; avoid throwing if manager missing.
+                        long xpToNext = 0;
+                        try
+                        {
+                            xpToNext = MudServer.MudCore.Services.AdvancementManager.GetXpToNext(player.Experience);
+                        }
+                        catch { xpToNext = 0; }
+
                         var lines = new List<string>
     {
         $"Stats for {player.Name}:",
         $"Level: {player.Level}",
+        $"Xp to Next Level: {(xpToNext > 0 ? xpToNext.ToString() : "(max level)")}",
+        $"Unspent Skill Points: {player.SkillPoints}",
         $"Health: {player.Health}/{player.MaxHealth}",
         $"Size (SizeEnum): {player.SizeEnum}",
         $"Effective Mass: {player.EffMass:F2}",
@@ -1383,12 +1873,30 @@ namespace MudServer
         {
             var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList(); if (tokens.Count < 2) return MessageHandler.System("Usage: get <item> [container] OR get <n|all> <item> <container>");
             var (quantity, explicitQuantity, itemExpr, containerName, getErr) = ParseQuantityItemContainer(tokens, 1);
+            
+
             if (getErr != null) return MessageHandler.System(getErr);
 
             // If a container is specified, operate against its contents.
             if (!string.IsNullOrWhiteSpace(containerName))
             {
-                var container = InventoryManager.FindContainer(player, containerName);
+                // Resolve container using ItemParser first (search player inventory + room) to match 'inspect' behavior.
+                Item? container = null;
+                try
+                {
+                    var optsContainer = new ItemParserOptions
+                    {
+                        IncludeDescriptorTokens = true,
+                        IncludeMaterialTokens = true,
+                        AllowStartsWith = true
+                    };
+                    var pres2 = ItemParser.ResolveForAny(player, containerName, optsContainer);
+                    if (pres2?.Winner != null) container = pres2.Winner;
+                }
+                catch { /* best-effort; fall through to legacy lookup */ }
+
+                // Fallback to legacy lookup
+                if (container == null) container = InventoryManager.FindContainer(player, containerName);
                 if (container == null) return MessageHandler.System($"No container matching '{containerName}' found.");
 
                 // enforce lock check before attempting to read container contents
@@ -1544,7 +2052,9 @@ namespace MudServer
                     }
 
                     if (available < quantity)
+                    {
                         return MessageHandler.System($"Only {available} available. Enter a number up to {available}.");
+                    }
 
                     int remaining = quantity;
                     int taken = 0;
@@ -2904,6 +3414,80 @@ namespace MudServer
                 return false;
             }
 
+            // --- NEW: TraderSession pending handling ---
+            // If player opened a trade session using 'trade <npc>', short commands like 'list', 'buy <item>',
+            // 'sell <item> to <trader>', 'confirm', 'cancel', 'quit' are routed here without re-specifying the NPC.
+            if (string.Equals(pa.Command, "TraderSession", StringComparison.OrdinalIgnoreCase) && string.Equals(pa.Step, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                // Quick cancellation / quit
+                if (string.Equals(input, "cancel", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(input, "quit", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(input, "end", StringComparison.OrdinalIgnoreCase))
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Trade session ended.");
+                }
+
+                // Resolve NpcId from pending data
+                try
+                {
+                    if (!(pa.Data is System.Collections.Generic.IDictionary<string, object> dict) || !dict.TryGetValue("NpcId", out var nidObj))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Trade session invalid.");
+                    }
+
+                    int nid = Convert.ToInt32(nidObj);
+                    var npc = _world.Npcs.FirstOrDefault(n => n != null && n.NpcID == nid);
+                    if (npc == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Trader not found.");
+                    }
+
+                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"{npc.DisplayName} does not trade.");
+                    }
+
+                    // PASS-THROUGH WHITELIST:
+                    // Allow inventory-related commands to fall through to regular handlers while a trade session is active.
+                    // This enables workflows like: inspect bag -> get 1 egg from bag -> sell 1 egg
+                    var passthrough = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "inventory", "inv", "inspect", "get", "take", "put", "look", "fill"
+                    };
+
+                    var firstTok = (input ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+                    if (passthrough.Contains(firstTok))
+                    {
+                        // Return null so ProcessCommand continues normal command handling (inspect/get/put/etc).
+                        return null;
+                    }
+
+                    // Delegate the user's typed short command to the trader instance
+                    var msg = trader.HandleCommand(player, input, _dbConnection);
+
+                    // If the player asked to quit or cancel via trader command, ensure session cleared
+                    if (string.Equals(input, "cancel", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(input, "quit", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(input, "end", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { player.PendingAction = null!; } catch { }
+                    }
+
+                    return msg;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[PENDING][TRADER] TraderSession handling failed: {ex.Message}");
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Trade session failed due to server error.");
+                }
+            }
+            // --- END TraderSession handling ---
+
             // Handle LockKey pending action (unchanged)
             if (pa.Command == "LockKey")
             {
@@ -3572,38 +4156,19 @@ namespace MudServer
             return false;
         }
 
-        // --- Insert this helper inside the CommandHandler class (near other private helpers) ---
+        // Delegate to InventoryManager to centralize matching behavior across commands.
         private List<Item> FindNonEquippedMatches(Player player, string itemExpr)
         {
-            if (player == null || string.IsNullOrWhiteSpace(itemExpr) || player.Inventory == null) return new List<Item>();
-
-            // Exact name/template first (non-equipped)
-            var exact = player.Inventory
-                .Where(i => i != null &&
-                       !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
-                       (
-                           (!string.IsNullOrWhiteSpace(i.Name) && i.Name.Equals(itemExpr, StringComparison.OrdinalIgnoreCase)) ||
-                           (!string.IsNullOrWhiteSpace(i.TemplateID) && i.TemplateID.Equals(itemExpr, StringComparison.OrdinalIgnoreCase))
-                       ))
-                .ToList();
-            if (exact.Count > 0) return exact;
-
-            // Starts-with match
-            var starts = player.Inventory
-                .Where(i => i != null &&
-                       !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
-                       (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)))
-                .ToList();
-            if (starts.Count > 0) return starts;
-
-            // Fallback: first-token or contains
-            var firstTok = itemExpr.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? itemExpr;
-            var contains = player.Inventory
-                .Where(i => i != null &&
-                       !IsRuntimeWorn(i) && !IsRuntimeHeld(i) &&
-                       (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(firstTok, StringComparison.OrdinalIgnoreCase) >= 0))
-                .ToList();
-            return contains;
+            // Added when trying to resolve Trader - Sell command issues.
+            try
+            {
+                return InventoryManager.FindNonEquippedMatches(player, itemExpr) ?? new List<Item>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CMD] FindNonEquippedMatches delegation failed: {ex.Message}");
+                return new List<Item>();
+            }
         }
 
         private static bool IsRuntimeHeld(Item i)

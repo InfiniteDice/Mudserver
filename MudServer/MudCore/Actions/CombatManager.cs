@@ -82,6 +82,56 @@ namespace MudServer
             // If player was digging/mining, starting an attack interrupts it immediately.
             try { MudServer.MudCore.Actions.DigManager.CancelPending(attacker); } catch { /* best-effort */ }
 
+            // NEW: If attacker had any trader-related pending (TraderBuy or TraderSession), terminate it due to combat start.
+            try
+            {
+                var pa = attacker.PendingAction;
+                if (pa != null && pa.Data is System.Collections.Generic.Dictionary<string, object> d)
+                {
+                    // Look for NpcId in pending data when present
+                    if (d.TryGetValue("NpcId", out var nidObj) && int.TryParse(nidObj.ToString(), out var nid))
+                    {
+                        var traderNpc = attacker.CurrentRoom?.Npcs.FirstOrDefault(n => n != null && n.NpcID == nid)
+                                        ?? world.Rooms.SelectMany(r => r.Npcs).FirstOrDefault(n => n != null && n.NpcID == nid);
+
+                        if (traderNpc != null && MudServer.MudCore.AI.ItemTraderManager.TryGet(traderNpc, out var trader))
+                        {
+                            try
+                            {
+                                // Use the public termination API on the trader to refund/clear state.
+                                trader.HandlePlayerTermination(attacker, "combat", conn);
+                            }
+                            catch { /* best-effort */ }
+                        }
+                    }
+                    else
+                    {
+                        // fallback: if the pending Command explicitly names a TraderSession without NpcId, clear it
+                        if (!string.IsNullOrWhiteSpace(pa.Command) && pa.Command.StartsWith("Trader", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try { attacker.PendingAction = null; } catch { }
+                        }
+                    }
+
+                    // Ensure client-side updates so inventory/UI refreshes when trade aborted
+                    try { MessageHandler.EnqueuePlayerUpdate(attacker); } catch { }
+                    try
+                    {
+                        // Send authoritative room payload so clients refresh NPC list/state immediately
+                        foreach (var p in attacker.CurrentRoom?.Players ?? new List<Player>())
+                        {
+                            try
+                            {
+                                p.PendingMessageQueue.Add(MessageHandler.Room(attacker.CurrentRoom, attacker.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(), attacker.CurrentRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { /* best-effort */ }
+                }
+            }
+            catch { /* best-effort */ }
+
             var room = attacker.CurrentRoom;
             if (!_activeByRoom.TryGetValue(room.RoomID, out var state))
             {
@@ -119,7 +169,7 @@ namespace MudServer
                 var msg = PerformImmediateAttack(attacker, defender, world, conn);
                 return msg ?? MessageHandler.System($"{attacker.Name} attacks {defender.DisplayName}.");
             }
-        }
+        }//end StartOrJoin
 
         // Public join (assist) API: join an existing combat without immediate attack.
         // target can be an NPC or Player name in the same room.
@@ -346,6 +396,49 @@ namespace MudServer
                         if (defender.IsPlayer && defender.AsPlayer != null)
                         {
                             MudServer.MudCore.Actions.DigManager.CancelPending(defender.AsPlayer);
+
+                            // NEW: also terminate any pending Trader* for defender due to combat interrupt (TraderBuy or TraderSession)
+                            try
+                            {
+                                var pa = defender.AsPlayer.PendingAction;
+                                if (pa != null && pa.Data is System.Collections.Generic.Dictionary<string, object> dict)
+                                {
+                                    if (dict.TryGetValue("NpcId", out var nidObj) && int.TryParse(nidObj.ToString(), out var nid))
+                                    {
+                                        var traderNpc = defender.AsPlayer.CurrentRoom?.Npcs.FirstOrDefault(n => n != null && n.NpcID == nid)
+                                                        ?? world.Rooms.SelectMany(r => r.Npcs).FirstOrDefault(n => n != null && n.NpcID == nid);
+                                        if (traderNpc != null && MudServer.MudCore.AI.ItemTraderManager.TryGet(traderNpc, out var trader))
+                                        {
+                                            try { trader.HandlePlayerTermination(defender.AsPlayer, "combat", conn); } catch { /* best-effort */ }
+
+                                            // Ensure UI refresh so player sees trade aborted and can act
+                                            try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
+                                            try
+                                            {
+                                                foreach (var p in defender.AsPlayer.CurrentRoom?.Players ?? new List<Player>())
+                                                {
+                                                    try
+                                                    {
+                                                        p.PendingMessageQueue.Add(MessageHandler.Room(defender.AsPlayer.CurrentRoom, defender.AsPlayer.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(), defender.AsPlayer.CurrentRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                                                    }
+                                                    catch { }
+                                                }
+                                            }
+                                            catch { /* best-effort */ }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // If pending indicates trader session without NpcId, clear it as a fallback
+                                        if (!string.IsNullOrWhiteSpace(pa.Command) && pa.Command.StartsWith("Trader", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            try { defender.AsPlayer.PendingAction = null; } catch { }
+                                            try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
+                                        }
+                                    }
+                                }
+                            }
+                            catch { /* best-effort */ }
                         }
                     }
                     catch { /* best-effort */ }
@@ -575,7 +668,40 @@ namespace MudServer
                                 {
                                     Console.WriteLine($"[NpcPersistence][ERROR] Failed to delete NpcID={deadNpc?.NpcID} via NpcPersistence: {exDb}");
                                 }
+
+                                // Send authoritative room payload to refresh client NPC lists immediately
+                                try
+                                {
+                                    var room = state.Room;
+                                    foreach (var p in room.Players)
+                                    {
+                                        try
+                                        {
+                                            p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                                        }
+                                        catch { }
+                                    }
+                                }
+                                catch { /* best-effort */ }
                             }
+
+                            // Ensure winners receive an authoritative player update (xp/level changes)
+                            try
+                            {
+                                if (winners != null)
+                                {
+                                    foreach (var wp in winners)
+                                    {
+                                        try
+                                        {
+                                            if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, wp);
+                                            MessageHandler.EnqueuePlayerUpdate(wp);
+                                        }
+                                        catch { }
+                                    }
+                                }
+                            }
+                            catch { /* best-effort */ }
                         }
                         catch (Exception exCleanup)
                         {
@@ -606,7 +732,7 @@ namespace MudServer
                     Console.WriteLine($"[COMBAT][ATTACK][EX] While processing attacker {(attacker?.DisplayName ?? "<null>")}: {exAtt}");
                 }
             }
-        }//end ExecuteTeamAttacks
+        }//end ExecuteTeamAttacksw
 
         private static CombatParticipant? SelectDefender(
             CombatParticipant attacker,

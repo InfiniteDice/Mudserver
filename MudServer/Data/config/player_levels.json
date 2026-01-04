@@ -1,0 +1,388 @@
+{
+  "player_levels": [
+    {
+      "level": 1,
+      "xp_to_next": 500,
+      "cumulative_xp": 0,
+      "skill_points": 0
+    },
+    {
+      "level": 2,
+      "xp_to_next": 872,
+      "cumulative_xp": 500,
+      "skill_points": 5
+    },
+    {
+      "level": 3,
+      "xp_to_next": 1521,
+      "cumulative_xp": 1372,
+      "skill_points": 5
+    },
+    {
+      "level": 4,
+      "xp_to_next": 2655,
+      "cumulative_xp": 2893,
+      "skill_points": 5
+    },
+    {
+      "level": 5,
+      "xp_to_next": 4631,
+      "cumulative_xp": 5548,
+      "skill_points": 5
+    },
+    {
+      "level": 6,
+      "xp_to_next": 8078,
+      "cumulative_xp": 10179,
+      "skill_points": 5
+    },
+    {
+      "level": 7,
+      "xp_to_next": 14077,
+      "cumulative_xp": 18257,
+      "skill_points": 5
+    },
+    {
+      "level": 8,
+      "xp_to_next": 24532,
+      "cumulative_xp": 32334,
+      "skill_points": 5
+    },
+    {
+      "level": 9,
+      "xp_to_next": 42758,
+      "cumulative_xp": 56866,
+      "skill_points": 5
+    },
+    {
+      "level": 10,
+      "xp_to_next": 74619,
+      "cumulative_xp": 99624,
+      "skill_points": 5
+    },
+    {
+      "level": 11,
+      "xp_to_next": 98435,
+      "cumulative_xp": 174243,
+      "skill_points": 6
+    },
+    {
+      "level": 12,
+      "xp_to_next": 130086,
+      "cumulative_xp": 272678,
+      "skill_points": 6
+    },
+    {
+      "level": 13,
+      "xp_to_next": 172212,
+      "cumulative_xp": 402764,
+      "skill_points": 6
+    },
+    {
+      "level": 14,
+      "xp_to_next": 227927,
+      "cumulative_xp": 574976,
+      "skill_points": 6
+    },
+    {
+      "level": 15,
+      "xp_to_next": 301450,
+      "cumulative_xp": 2658776,
+      "skill_points": 6
+    },
+    {
+      "level": 16,
+      "xp_to_next": 1840832,
+      "cumulative_xp": 3887072,
+      "skill_points": 6
+    },
+    {
+      "level": 17,
+      "xp_to_next": 2603744,
+      "cumulative_xp": 5507284,
+      "skill_points": 6
+    },
+    {
+      "level": 18,
+      "xp_to_next": 3677150,
+      "cumulative_xp": 8030148,
+      "skill_points": 6
+    },
+    {
+      "level": 19,
+      "xp_to_next": 5204814,
+      "cumulative_xp": 11707298,
+      "skill_points": 6
+    },
+    {
+      "level": 20,
+      "xp_to_next": 7351680,
+      "cumulative_xp": 16521312,
+      "skill_points": 6
+    },
+    {
+      "level": 21,
+      "xp_to_next": 7993686,
+      "cumulative_xp": 23673092,
+      "skill_points": 7
+    },
+    {
+      "level": 22,
+      "xp_to_next": 9512373,
+      "cumulative_xp": 31666778,
+      "skill_points": 7
+    },
+    {
+      "level": 23,
+      "xp_to_next": 1849788,
+      "cumulative_xp": 41179151,
+      "skill_points": 7
+    },
+    {
+      "level": 24,
+      "xp_to_next": 2133775,
+      "cumulative_xp": 43028939,
+      "skill_points": 7
+    },
+    {
+      "level": 25,
+      "xp_to_next": 2440637,
+      "cumulative_xp": 45162714,
+      "skill_points": 7
+    },
+    {
+      "level": 26,
+      "xp_to_next": 2810317,
+      "cumulative_xp": 47603351,
+      "skill_points": 7
+    },
+    {
+      "level": 27,
+      "xp_to_next": 3242177,
+      "cumulative_xp": 50413668,
+      "skill_points": 7
+    },
+    {
+      "level": 28,
+      "xp_to_next": 3747427,
+      "cumulative_xp": 53655845,
+      "skill_points": 7
+    },
+    {
+      "level": 29,
+      "xp_to_next": 4339720,
+      "cumulative_xp": 57403272,
+      "skill_points": 7
+    },
+    {
+      "level": 30,
+      "xp_to_next": 5035432,
+      "cumulative_xp": 61742992,
+      "skill_points": 7
+    },
+    {
+      "level": 31,
+      "xp_to_next": 5397997,
+      "cumulative_xp": 66778424,
+      "skill_points": 8
+    },
+    {
+      "level": 32,
+      "xp_to_next": 5782157,
+      "cumulative_xp": 72176421,
+      "skill_points": 8
+    },
+    {
+      "level": 33,
+      "xp_to_next": 6190373,
+      "cumulative_xp": 77958578,
+      "skill_points": 8
+    },
+    {
+      "level": 34,
+      "xp_to_next": 6624570,
+      "cumulative_xp": 84148951,
+      "skill_points": 8
+    },
+    {
+      "level": 35,
+      "xp_to_next": 7086119,
+      "cumulative_xp": 90773521,
+      "skill_points": 8
+    },
+    {
+      "level": 36,
+      "xp_to_next": 7576873,
+      "cumulative_xp": 97859640,
+      "skill_points": 8
+    },
+    {
+      "level": 37,
+      "xp_to_next": 8097374,
+      "cumulative_xp": 105345513,
+      "skill_points": 8
+    },
+    {
+      "level": 38,
+      "xp_to_next": 8647548,
+      "cumulative_xp": 113442887,
+      "skill_points": 8
+    },
+    {
+      "level": 39,
+      "xp_to_next": 9227460,
+      "cumulative_xp": 122090435,
+      "skill_points": 8
+    },
+    {
+      "level": 40,
+      "xp_to_next": 9837320,
+      "cumulative_xp": 131317895,
+      "skill_points": 8
+    },
+    {
+      "level": 41,
+      "xp_to_next": 10390000,
+      "cumulative_xp": 141155215,
+      "skill_points": 10
+    },
+    {
+      "level": 42,
+      "xp_to_next": 10780000,
+      "cumulative_xp": 151545215,
+      "skill_points": 10
+    },
+    {
+      "level": 43,
+      "xp_to_next": 11180000,
+      "cumulative_xp": 162325215,
+      "skill_points": 10
+    },
+    {
+      "level": 44,
+      "xp_to_next": 11590000,
+      "cumulative_xp": 173505215,
+      "skill_points": 10
+    },
+    {
+      "level": 45,
+      "xp_to_next": 12010000,
+      "cumulative_xp": 185095215,
+      "skill_points": 10
+    },
+    {
+      "level": 46,
+      "xp_to_next": 12440000,
+      "cumulative_xp": 197105215,
+      "skill_points": 10
+    },
+    {
+      "level": 47,
+      "xp_to_next": 12880000,
+      "cumulative_xp": 209545215,
+      "skill_points": 10
+    },
+    {
+      "level": 48,
+      "xp_to_next": 13330000,
+      "cumulative_xp": 222425215,
+      "skill_points": 10
+    },
+    {
+      "level": 49,
+      "xp_to_next": 13790000,
+      "cumulative_xp": 235755215,
+      "skill_points": 10
+    },
+    {
+      "level": 50,
+      "xp_to_next": 14260000,
+      "cumulative_xp": 249545215,
+      "skill_points": 10
+    }
+  ],
+  "skill_type": [
+    {
+      "name": "Mundane",
+      "max_level": 5,
+      "cost_at_level": [ 1, 2, 5, 10, 15 ],
+      "bonus_at_level": [ 1.2, 1.5, 2.0, 2.5, 3.0 ]
+    },
+    {
+      "name": "Trade",
+      "max_level": 5,
+      "cost_at_level": [ 1, 5, 10, 15, 20 ],
+      "bonus_at_level": [ 1.2, 1.5, 2.0, 2.5, 3.0 ]
+    },
+    {
+      "name": "Arcane",
+      "max_level": 5,
+      "cost_at_level": [ 5, 10, 15, 20, 30 ],
+      "bonus_at_level": [ 1.2, 1.5, 2.0, 2.5, 3.0 ]
+    }
+  ],
+  "skilltrade_item_tiers": [
+    {
+      "name": "Poor",
+      "creation_level": 1,
+      "value_mod": [ 0.5 ],
+      "bonus_applied": [ 0 ]
+    },
+    {
+      "name": "Average",
+      "creation_level": 2,
+      "value_mod": [ 1 ],
+      "bonus_applied": [ 1 ]
+    },
+    {
+      "name": "Superior",
+      "creation_level": 3,
+      "value_mod": [ 10 ],
+      "bonus_applied": [ 2 ]
+    },
+    {
+      "name": "Rare",
+      "creation_level": 4,
+      "value_mod": [ 50 ],
+      "bonus_applied": [ 3.0 ]
+    },
+    {
+      "name": "Masterwork",
+      "creation_level": 5,
+      "value_mod": [ 500 ],
+      "bonus_applied": [ 5.0 ]
+    }
+  ],
+  "skillarcane_power_tiers": [
+    {
+      "name": "Pupil",
+      "spells_level": 1,
+      "mana_cost": [ 2 ],
+      "power_multi": [ 1 ]
+    },
+    {
+      "name": "Caster",
+      "spells_level": 2,
+      "mana_cost": [ 1 ],
+      "power_multi": [ 1.5 ]
+    },
+    {
+      "name": "Magus",
+      "spells_level": 3,
+      "mana_cost": [ 0.75 ],
+      "power_multi": [ 3 ]
+    },
+    {
+      "name": "Master",
+      "spells_level": 4,
+      "mana_cost": [ 0.5 ],
+      "power_multi": [ 5 ]
+    },
+    {
+      "name": "GrandMaster",
+      "spells_level": 5,
+      "mana_cost": [ 0.25 ],
+      "power_multi": [ 10 ]
+    }
+  ]
+}

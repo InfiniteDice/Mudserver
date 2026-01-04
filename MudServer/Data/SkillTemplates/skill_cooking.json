@@ -1,0 +1,28 @@
+{
+  "id": "skill_cooking",
+  "skill_type": "Mundane",
+  "skill_tiers": [
+    {
+      "level": 1,
+      "title": "Novice Cook"
+    },
+    {
+      "level": 2,
+      "title": "Cook"
+    },
+    {
+      "level": 3,
+      "title": "Head Cook"
+    },
+    {
+      "level": 4,
+      "title": "Master Cook"
+    },
+    {
+      "level": 5,
+      "title": "Grandmaster Cook"
+    }
+  ],
+  
+  "notes": "Cooking skill is a basic/general skill type"
+}

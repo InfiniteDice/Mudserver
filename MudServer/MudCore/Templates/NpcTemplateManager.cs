@@ -11,7 +11,7 @@ namespace MudCore.Templates
     {
         private readonly Dictionary<string, NpcTemplate> _byId = new(StringComparer.OrdinalIgnoreCase);
 
-        
+
         public void LoadTemplates(string relativeFolder)
         {
             var baseDir = AppContext.BaseDirectory;
@@ -55,7 +55,8 @@ namespace MudCore.Templates
                 Converters = { new JsonStringEnumConverter() }
             };
 
-            foreach (var file in Directory.GetFiles(folderToUse, "*.json"))
+            // Search JSON files in the chosen folder and all subfolders so templates can be organized into subdirectories.
+            foreach (var file in Directory.GetFiles(folderToUse, "*.json", SearchOption.AllDirectories))
             {
                 try
                 {
@@ -103,7 +104,7 @@ namespace MudCore.Templates
                     Console.WriteLine($"[NpcTemplateManager] Failed loading {Path.GetFileName(file)}: {ex.Message}");
                 }
             }
-        }
+        }//End LoadTemplates
 
         // Register a single template
         public void Register(NpcTemplate template)

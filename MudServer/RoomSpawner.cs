@@ -254,7 +254,7 @@ namespace MudServer
                         {
                             try
                             {
-                                if (MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var traderInstance))
+                                if (MudCore.AI.ItemTraderManager.TryGet(npc, out var traderInstance))
                                 {
                                     // Persist using current writer connection to ensure atomicity with spawn insert
                                     try { traderInstance.PersistState(conn); }
@@ -341,8 +341,41 @@ namespace MudServer
 
                         try
                         {
-                            // Determine effective per-room limit
+                            // Determine effective per-room limit (CUMULATIVE across all spawnable templates)
                             int max = Math.Max(1, room.SpawnMaxRoom);
+
+                            // NEW: Count TOTAL spawnable items currently in room (cumulative check)
+                            // Extract template IDs from spawn list (handles "template:qty" and "template80" weight syntax)
+                            var spawnableTemplateIds = room.SpawnTemplateList
+                                .Where(s => !string.IsNullOrWhiteSpace(s))
+                                .Select(s =>
+                                {
+                                    var cleaned = s.Trim();
+                                    // Strip ":qty" suffix
+                                    var idxColon = cleaned.IndexOf(':');
+                                    if (idxColon >= 0)
+                                        cleaned = cleaned.Substring(0, idxColon).Trim();
+                                    // Strip trailing weight digits (e.g., "mushroom80" -> "mushroom")
+                                    var m = System.Text.RegularExpressions.Regex.Match(cleaned, @"^(?<id>.+?)(?<wt>\d+)$");
+                                    if (m.Success && !string.IsNullOrWhiteSpace(m.Groups["id"].Value))
+                                        cleaned = m.Groups["id"].Value;
+                                    return cleaned;
+                                })
+                                .Where(tid => !string.IsNullOrWhiteSpace(tid))
+                                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                            // Count ALL spawnable items in room (both stackable and non-stackable)
+                            int totalExistingCount = room.Inventory
+                                .Where(i => !string.IsNullOrEmpty(i.TemplateID) && spawnableTemplateIds.Contains(i.TemplateID))
+                                .Sum(i => Math.Max(1, i.Quantity)); // For non-stackable this is just count, for stackable it's total qty
+
+                            if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} TOTAL spawnable items = {totalExistingCount}, limit={max}");
+
+                            if (totalExistingCount >= max)
+                            {
+                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} reached cumulative limit of {max}; skipping spawn.");
+                                continue;
+                            }
 
                             // Build a prototype item (in-memory only) to learn flags (and therefore stackability).
                             var proto = world.ItemFactory.CreateItem(templateId, "Room", room.RoomID, room.RoomID, 1);
@@ -351,27 +384,27 @@ namespace MudServer
 
                             if (templateStackable)
                             {
-                                // Sum existing quantity for matching template+flags in this room
-                                int existingQty = room.Inventory
+                                // For stackable items: check if we can still add to this specific template's stack
+                                int existingQtyThisTemplate = room.Inventory
                                     .Where(i => !string.IsNullOrEmpty(i.TemplateID)
                                                 && i.TemplateID == templateId
                                                 && string.Equals(i.FlagsJson ?? "[]", protoFlagsJson, StringComparison.Ordinal))
                                     .Sum(i => Math.Max(1, i.Quantity));
 
-                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} existing total qty for '{templateId}' = {existingQty}, limit={max}");
+                                // Calculate remaining capacity in the room (cumulative limit minus total current)
+                                int remainingRoomCapacity = max - totalExistingCount;
 
-                                if (existingQty >= max)
+                                if (remainingRoomCapacity <= 0)
                                 {
-                                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} reached stack quantity limit for '{templateId}'; skipping spawn.");
+                                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} no remaining capacity for stackable '{templateId}'; skipping spawn.");
                                     continue;
                                 }
 
-                                // Only spawn up to remaining capacity
-                                int allowedToAdd = max - existingQty;
-                                int spawnQty = Math.Min(requestedQty, allowedToAdd);
+                                // Only spawn up to remaining room capacity
+                                int spawnQty = Math.Min(requestedQty, remainingRoomCapacity);
                                 if (spawnQty <= 0) continue;
 
-                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Creating stackable item '{templateId}' qty={spawnQty} in Room {room.RoomID}.");
+                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} remaining capacity={remainingRoomCapacity}, spawning {spawnQty} of '{templateId}'.");
 
                                 var item = world.ItemFactory.CreateItem(templateId, "Room", room.RoomID, room.RoomID, spawnQty);
                                 item.OwnerType = "Room";
@@ -496,18 +529,17 @@ namespace MudServer
                             }
                             else
                             {
-                                // Non-stackable: count existing rows for this template (or across templates, preserve previous semantics per-template)
-                                int currentCount = room.Inventory.Count(i => !string.IsNullOrEmpty(i.TemplateID) && i.TemplateID == templateId);
-                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} non-stack currentCount for '{templateId}' = {currentCount}, limit={max}");
+                                // Non-stackable: respect cumulative room limit
+                                int remainingRoomCapacity = max - totalExistingCount;
 
-                                if (currentCount >= max)
+                                if (remainingRoomCapacity <= 0)
                                 {
-                                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} at non-stack item limit for '{templateId}'; skipping spawn.");
+                                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} no remaining capacity for non-stackable '{templateId}'; skipping spawn.");
                                     continue;
                                 }
 
-                                // Determine how many individual items we can create
-                                int allowedToSpawn = Math.Min(requestedQty, max - currentCount);
+                                // Determine how many individual items we can create (limited by remaining room capacity)
+                                int allowedToSpawn = Math.Min(requestedQty, remainingRoomCapacity);
                                 for (int i = 0; i < allowedToSpawn; i++)
                                 {
                                     var item = world.ItemFactory.CreateItem(templateId, "Room", room.RoomID, room.RoomID, 1);

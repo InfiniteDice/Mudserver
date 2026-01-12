@@ -9,8 +9,9 @@ using MudCore.Entities;
 using MudCore.World;
 using MudPersistence;
 using MudNetworking;
+using MudUtils;
 
-namespace MudServer.MudCore.Actions
+namespace MudCore.Actions
 {
     internal static class Crafting
     {
@@ -54,14 +55,18 @@ namespace MudServer.MudCore.Actions
             { "Copper",   1.20 },
             { "Tin",      1.50 },
             { "Brass",    1.15 },
+            { "Zinc",     1.30 },
+            { "Lead",     1.50 },
 
-            // precious / softer metals — wear faster
+            // precious  — wear faster
             { "Silver",   1.30 },
             { "Gold",     1.40 },
+            { "Electrum", 1.35 },
 
             // harder / exotic metals — wear slower
             { "Nickel",   0.95 },
             { "Platinum", 0.75 },
+            { "Meteoric", 0.5 },
             { "Mithril",  0.01 }  // nearly immune to wear (designer-tunable)
         };
 
@@ -117,7 +122,7 @@ namespace MudServer.MudCore.Actions
         public static IReadOnlyCollection<string> AllowedWoods => _allowedWoods;
         public static IReadOnlyCollection<string> AllowedCloths => _allowedCloths;
         public static IReadOnlyCollection<string> AllowedStones => _allowedStones;
-        public static Message Smelt(Player player, string args, World world, SqliteConnection conn)
+        public static Message Smelt(Player player, string args, World.World world, SqliteConnection conn)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
             if (world == null) return MessageHandler.System("Invalid world.");
@@ -762,5 +767,349 @@ namespace MudServer.MudCore.Actions
                 return MessageHandler.System("Smelting failed due to an internal error.");
             }
         } // end Smelt
+
+        // NEW: Milling functionality
+        // Usage:
+        //   mill [#] <grainkeyword>   -> consumes # grain (default 1) -> produces same # grist_XXX and bran_XXX (bran not millable)
+        //   mill [#] <gristkeyword>   -> consumes (2*#) grist -> produces # flour_XXX (2 grist -> 1 flour)
+        // Requirements:
+        //  - Player must be in a room with flag "Grindstone"
+        //  - Player must be holding a Temse tool (template "tool_temse")
+        //  - Input items are taken from player's inventory; results placed into player's inventory
+        public static Message Mill(Player player, string args, World.World world, SqliteConnection conn)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (world == null) return MessageHandler.System("Invalid world.");
+            if (string.IsNullOrWhiteSpace(args)) return MessageHandler.System("Usage: mill [#] <grain|grist>");
+
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            // Require Grindstone in room flags
+            if (room.Flags == null || !room.Flags.Any(f => string.Equals(f, "Grindstone", StringComparison.OrdinalIgnoreCase)))
+                return MessageHandler.System("You need a grindstone to mill.");
+
+            // Ensure player is holding a Temse tool
+            bool IsRuntimeHeld(Item it)
+            {
+                if (it == null) return false;
+                if (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase))) return true;
+                if (!string.IsNullOrEmpty(it.FlagsJson) && it.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                return false;
+            }
+
+            bool hasTemse = false;
+            try
+            {
+                hasTemse = player.Inventory != null && player.Inventory.Any(i => i != null && string.Equals(i.TemplateID, "tool_temse", StringComparison.OrdinalIgnoreCase) && IsRuntimeHeld(i));
+            }
+            catch { hasTemse = false; }
+
+            if (!hasTemse) return MessageHandler.System("You must be holding a temse to operate the grindstone.");
+
+            // Parse count + keyword
+            var m = Regex.Match(args.Trim(), @"^\s*(?:(\d+)\s+)?(.+)$", RegexOptions.IgnoreCase);
+            if (!m.Success) return MessageHandler.System("Usage: mill [#] <grain|grist>");
+
+            int requested = 1;
+            if (!string.IsNullOrWhiteSpace(m.Groups[1].Value))
+            {
+                if (!int.TryParse(m.Groups[1].Value, out requested) || requested <= 0) requested = 1;
+            }
+            string targetToken = m.Groups[2].Value.Trim();
+
+            // Tokenize helpers like Smelt
+            IEnumerable<string> Tokenize(string? s)
+            {
+                if (string.IsNullOrWhiteSpace(s)) yield break;
+                int i = 0, n = s.Length;
+                while (i < n)
+                {
+                    while (i < n && !char.IsLetterOrDigit(s[i])) i++;
+                    int start = i;
+                    while (i < n && char.IsLetterOrDigit(s[i])) i++;
+                    if (i > start) yield return s.Substring(start, i - start).ToLowerInvariant();
+                }
+            }
+            string NormalizeTemplate(string? tid) => (tid ?? "").Replace('_', ' ').Replace('-', ' ').ToLowerInvariant();
+
+            // Find matching inventory items by token (match template or name tokens)
+            List<Item> FindMatches(Func<Item, bool> filter)
+            {
+                var inv = player.Inventory ?? new List<Item>();
+                var list = new List<Item>();
+                try
+                {
+                    foreach (var it in inv)
+                    {
+                        try
+                        {
+                            if (it == null) continue;
+                            if (filter(it)) list.Add(it);
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+                return list;
+            }
+
+            // Resolve request: check if token matches a grain template (grain_<type>) or grist_<type> or bran_<type>
+            // We'll inspect player's inventory templates to choose best match
+            var invSnapshot = player.Inventory?.ToList() ?? new List<Item>();
+            Item? explicitMatch = null;
+            try
+            {
+                // 1) exact template id match
+                explicitMatch = invSnapshot.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, targetToken, StringComparison.OrdinalIgnoreCase));
+                if (explicitMatch == null)
+                {
+                    // 2) token-equals on name or template tokens
+                    var reqTok = targetToken.ToLowerInvariant();
+                    explicitMatch = invSnapshot.FirstOrDefault(i =>
+                        Tokenize(i.Name).Any(t => string.Equals(t, reqTok, StringComparison.OrdinalIgnoreCase)) ||
+                        Tokenize(NormalizeTemplate(i.TemplateID)).Any(t => string.Equals(t, reqTok, StringComparison.OrdinalIgnoreCase)));
+                }
+
+                if (explicitMatch == null)
+                {
+                    var reqTok = targetToken.ToLowerInvariant();
+                    explicitMatch = invSnapshot.FirstOrDefault(i => Tokenize(i.Name).Any(t => t.StartsWith(reqTok, StringComparison.OrdinalIgnoreCase)) || Tokenize(NormalizeTemplate(i.TemplateID)).Any(t => t.StartsWith(reqTok, StringComparison.OrdinalIgnoreCase)));
+                }
+            }
+            catch { explicitMatch = null; }
+
+            if (explicitMatch == null)
+            {
+                // If no explicit match, also attempt to interpret token as plain type (e.g. "wheat")
+                var reqTok = targetToken.ToLowerInvariant();
+                explicitMatch = invSnapshot.FirstOrDefault(i =>
+                    (!string.IsNullOrEmpty(i.TemplateID) && i.TemplateID.IndexOf(reqTok, StringComparison.OrdinalIgnoreCase) >= 0)
+                    || (!string.IsNullOrEmpty(i.Name) && i.Name.IndexOf(reqTok, StringComparison.OrdinalIgnoreCase) >= 0));
+            }
+
+            if (explicitMatch == null)
+            {
+                return MessageHandler.System($"You are not carrying anything matching '{targetToken}'.");
+            }
+
+            // Determine kind by template prefix: grain_, grist_, bran_, flour_
+            string tpl = explicitMatch.TemplateID ?? "";
+            if (tpl.StartsWith("grain_", StringComparison.OrdinalIgnoreCase))
+            {
+                // Milling grain -> 1 grist + 1 bran per grain
+                string type = tpl.Substring("grain_".Length); // e.g. "wheat"
+                int totalAvailable = invSnapshot.Where(i => string.Equals(i.TemplateID, explicitMatch.TemplateID, StringComparison.OrdinalIgnoreCase)).Sum(i => Math.Max(1, i.Quantity));
+                int toProcess = Math.Min(requested, totalAvailable);
+                if (toProcess <= 0) return MessageHandler.System($"You do not have any {explicitMatch.Name} to mill.");
+
+                int gristQty = toProcess;
+                int branQty = toProcess;
+
+                // Perform DB changes
+                try
+                {
+                    MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                    {
+                        int remaining = toProcess;
+                        // consume grains
+                        foreach (var it in invSnapshot.Where(i => string.Equals(i.TemplateID, explicitMatch.TemplateID, StringComparison.OrdinalIgnoreCase)).ToList())
+                        {
+                            if (remaining <= 0) break;
+                            int take = Math.Min(remaining, Math.Max(1, it.Quantity));
+                            int newQty = it.Quantity - take;
+                            remaining -= take;
+
+                            if (it.ItemID > 0)
+                            {
+                                if (newQty > 0)
+                                {
+                                    it.Quantity = newQty;
+                                    ItemPersistence.SaveItem(wConn, it, wTx);
+                                }
+                                else
+                                {
+                                    using var del = wConn.CreateCommand();
+                                    del.Transaction = wTx;
+                                    del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                    del.Parameters.AddWithValue("@id", it.ItemID);
+                                    del.ExecuteNonQuery();
+                                }
+                            }
+                        }
+
+                        // create grist
+                        var gristTpl = $"grist_{type}";
+                        var gristItem = world.ItemFactory.CreateItem(gristTpl, "Player", player.DbPlayerID, room.RoomID, gristQty);
+                        gristItem.OwnerType = "Player"; gristItem.OwnerID = player.DbPlayerID; gristItem.RoomID = room.RoomID;
+                        try { ItemDescriptorManager.AssignDescriptorIfApplicable(gristItem); } catch { }
+                        ItemPersistence.SaveItem(wConn, gristItem, wTx);
+
+                        // create bran
+                        var branTpl = $"bran_{type}";
+                        var branItem = world.ItemFactory.CreateItem(branTpl, "Player", player.DbPlayerID, room.RoomID, branQty);
+                        branItem.OwnerType = "Player"; branItem.OwnerID = player.DbPlayerID; branItem.RoomID = room.RoomID;
+                        try { ItemDescriptorManager.AssignDescriptorIfApplicable(branItem); } catch { }
+                        ItemPersistence.SaveItem(wConn, branItem, wTx);
+
+                        return (object?)null;
+                    }, timeout: TimeSpan.FromSeconds(10));
+                }
+                catch (InvalidOperationException)
+                {
+                    // Fallback path
+                    int remaining = toProcess;
+                    foreach (var it in invSnapshot.Where(i => string.Equals(i.TemplateID, explicitMatch.TemplateID, StringComparison.OrdinalIgnoreCase)).ToList())
+                    {
+                        if (remaining <= 0) break;
+                        int take = Math.Min(remaining, Math.Max(1, it.Quantity));
+                        int newQty = it.Quantity - take;
+                        remaining -= take;
+
+                        if (it.ItemID > 0)
+                        {
+                            if (newQty > 0)
+                            {
+                                it.Quantity = newQty;
+                                ItemPersistence.SaveItem(conn, it);
+                            }
+                            else
+                            {
+                                ItemPersistence.DeleteItem(conn, it.ItemID);
+                            }
+                        }
+                        if (it.Quantity <= 0) player.Inventory.Remove(it);
+                    }
+
+                    var gristTpl = $"grist_{type}";
+                    var gristItem = world.ItemFactory.CreateItem(gristTpl, "Player", player.DbPlayerID, room.RoomID, gristQty);
+                    gristItem.OwnerType = "Player"; gristItem.OwnerID = player.DbPlayerID; gristItem.RoomID = room.RoomID;
+                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(gristItem); } catch { }
+                    ItemPersistence.SaveItem(conn, gristItem);
+
+                    var branTpl = $"bran_{type}";
+                    var branItem = world.ItemFactory.CreateItem(branTpl, "Player", player.DbPlayerID, room.RoomID, branQty);
+                    branItem.OwnerType = "Player"; branItem.OwnerID = player.DbPlayerID; branItem.RoomID = room.RoomID;
+                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(branItem); } catch { }
+                    ItemPersistence.SaveItem(conn, branItem);
+                }
+
+                // Refresh inventory
+                try
+                {
+                    var created = ItemPersistence.LoadItemsByOwner(conn, "Player", player.DbPlayerID);
+                    if (created != null) player.Inventory = created;
+                }
+                catch { }
+
+                try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
+
+                return MessageHandler.System($"You mill {toProcess} {explicitMatch.Name} into {gristQty} grist_{type} and {branQty} bran_{type}.");
+            }
+            else if (tpl.StartsWith("grist_", StringComparison.OrdinalIgnoreCase))
+            {
+                // Milling grist -> flour (2 grist -> 1 flour)
+                string type = tpl.Substring("grist_".Length);
+                int totalGrist = invSnapshot.Where(i => string.Equals(i.TemplateID, explicitMatch.TemplateID, StringComparison.OrdinalIgnoreCase)).Sum(i => Math.Max(1, i.Quantity));
+                int maxFlourPossible = totalGrist / 2;
+                int toMake = Math.Min(requested, maxFlourPossible);
+                if (toMake <= 0) return MessageHandler.System($"You need 2 grist_{type} to mill 1 flour_{type}.");
+
+                int gristToConsume = toMake * 2;
+                try
+                {
+                    MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                    {
+                        int remaining = gristToConsume;
+                        // consume grist stacks
+                        foreach (var it in invSnapshot.Where(i => string.Equals(i.TemplateID, explicitMatch.TemplateID, StringComparison.OrdinalIgnoreCase)).ToList())
+                        {
+                            if (remaining <= 0) break;
+                            int take = Math.Min(remaining, Math.Max(1, it.Quantity));
+                            int newQty = it.Quantity - take;
+                            remaining -= take;
+
+                            if (it.ItemID > 0)
+                            {
+                                if (newQty > 0)
+                                {
+                                    it.Quantity = newQty;
+                                    ItemPersistence.SaveItem(wConn, it, wTx);
+                                }
+                                else
+                                {
+                                    using var del = wConn.CreateCommand();
+                                    del.Transaction = wTx;
+                                    del.CommandText = "DELETE FROM Item WHERE ItemID = @id";
+                                    del.Parameters.AddWithValue("@id", it.ItemID);
+                                    del.ExecuteNonQuery();
+                                }
+                            }
+                        }
+
+                        // create flour
+                        var flourTpl = $"flour_{type}";
+                        var flourItem = world.ItemFactory.CreateItem(flourTpl, "Player", player.DbPlayerID, room.RoomID, toMake);
+                        flourItem.OwnerType = "Player"; flourItem.OwnerID = player.DbPlayerID; flourItem.RoomID = room.RoomID;
+                        try { ItemDescriptorManager.AssignDescriptorIfApplicable(flourItem); } catch { }
+                        ItemPersistence.SaveItem(wConn, flourItem, wTx);
+
+                        return (object?)null;
+                    }, timeout: TimeSpan.FromSeconds(10));
+                }
+                catch (InvalidOperationException)
+                {
+                    // fallback
+                    int remaining = gristToConsume;
+                    foreach (var it in invSnapshot.Where(i => string.Equals(i.TemplateID, explicitMatch.TemplateID, StringComparison.OrdinalIgnoreCase)).ToList())
+                    {
+                        if (remaining <= 0) break;
+                        int take = Math.Min(remaining, Math.Max(1, it.Quantity));
+                        int newQty = it.Quantity - take;
+                        remaining -= take;
+
+                        if (it.ItemID > 0)
+                        {
+                            if (newQty > 0)
+                            {
+                                it.Quantity = newQty;
+                                ItemPersistence.SaveItem(conn, it);
+                            }
+                            else
+                            {
+                                ItemPersistence.DeleteItem(conn, it.ItemID);
+                            }
+                        }
+                        if (it.Quantity <= 0) player.Inventory.Remove(it);
+                    }
+
+                    var flourTpl = $"flour_{type}";
+                    var flourItem = world.ItemFactory.CreateItem(flourTpl, "Player", player.DbPlayerID, room.RoomID, toMake);
+                    flourItem.OwnerType = "Player"; flourItem.OwnerID = player.DbPlayerID; flourItem.RoomID = room.RoomID;
+                    try { ItemDescriptorManager.AssignDescriptorIfApplicable(flourItem); } catch { }
+                    ItemPersistence.SaveItem(conn, flourItem);
+                }
+
+                // Refresh inventory
+                try
+                {
+                    var created = ItemPersistence.LoadItemsByOwner(conn, "Player", player.DbPlayerID);
+                    if (created != null) player.Inventory = created;
+                }
+                catch { }
+
+                try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
+
+                return MessageHandler.System($"You mill {gristToConsume} grist_{type} into {toMake} flour_{type}.");
+            }
+            else if (tpl.StartsWith("bran_", StringComparison.OrdinalIgnoreCase))
+            {
+                return MessageHandler.System("Bran cannot be milled further.");
+            }
+            else
+            {
+                return MessageHandler.System("You can only mill grain or grist (e.g. grain_wheat, grist_wheat).");
+            }
+        } // end Mill
     }
 }

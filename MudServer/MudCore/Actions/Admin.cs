@@ -5,24 +5,26 @@ using MudCore.Templates;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
-using MudServer.MudUtils;
+using MudUtils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using DbWriteQueue = global::MudServer.DbWriteQueue;
 
-namespace MudServer
+
+namespace MudCore.Actions
 {
     // Encapsulates admin command logic previously in CommandHandler.
     // Construct with the same runtime dependencies and call from CommandHandler.
     public class AdminService
     {
-        private readonly World _world;
+        private readonly World.World _world;
         private readonly SqliteConnection _db;
-        
+
         private static bool setVerboseServerLogs = false;
 
-        public AdminService(World world, SqliteConnection dbConnection)
+        public AdminService(World.World world, SqliteConnection dbConnection)
         {
             _world = world ?? throw new ArgumentNullException(nameof(world));
             _db = dbConnection ?? throw new ArgumentNullException(nameof(dbConnection));
@@ -344,7 +346,7 @@ namespace MudServer
         }
 
         // HandleEditRoomPending: processes removed as redundant.
-        
+
 
         public Message? HandleEditExit(Player player, string command)
         {
@@ -383,6 +385,7 @@ namespace MudServer
                 "Choose a field to edit:\n" +
                 "1) HasDoor\n" +
                 "2) CreateExitToRoom (link an exit from this room to an existing RoomID)\n" +
+                "3) EditDoor (edit DoorType and Flags - only available when exit has a door)\n" +
                 "Type the option name/number, or type EndEdit to finish."
             );
         }//END HandleEditExit
@@ -406,7 +409,7 @@ namespace MudServer
                 {
                     try
                     {
-                        if (MudServer.MudCore.AI.ItemTraderManager.TryGet(newNpc, out var traderInstance))
+                        if (MudCore.AI.ItemTraderManager.TryGet(newNpc, out var traderInstance))
                         {
                             try { traderInstance.PersistState(_db); }
                             catch (Exception exPers) { Console.WriteLine($"[ADMIN] Failed to persist TraderState for NpcID={newNpc.NpcID}: {exPers.Message}"); }
@@ -535,6 +538,87 @@ namespace MudServer
                 return MessageHandler.System($"Failed to create NPC: {ex.Message}");
             }
         } //end HandleCreateNpc
+
+        // Public: start the EditNpc admin flow (delegates interactive steps to HandlePendingAction)
+        // Moves the initial routing from CommandHandler into AdminService so all admin edit UX lives here.
+        public Message? HandleEditNpc(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            // Normalize payload after 'editnpc'
+            string payload = (command ?? "").Trim();
+            if (payload.StartsWith("editnpc", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring("editnpc".Length).Trim();
+
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            // If no argument provided, enter pending flow so admin can type the npc name/template
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                player.PendingAction = new PendingAction
+                {
+                    Command = "EditNpc",
+                    Step = "SpecifyTarget"
+                };
+                return MessageHandler.System("Enter NPC name or template to edit (or type 'EndEdit' to cancel):");
+            }
+
+            var targetExpr = payload.Trim();
+            if (string.IsNullOrWhiteSpace(targetExpr)) return MessageHandler.System("Usage: editnpc <npcname>");
+
+            // Resolve matches in current room (reuse NpcTargeting to keep behavior consistent)
+            List<Npc> matches;
+            try
+            {
+                matches = NpcTargeting.FindMatches(room, targetExpr);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][EditNpc] Match lookup failed: {ex.Message}");
+                return MessageHandler.System("Failed to resolve NPC matches due to a server error.");
+            }
+
+            if (matches == null || matches.Count == 0)
+            {
+                return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+            }
+
+            if (matches.Count > 1)
+            {
+                var list = string.Join("\n", matches.Select((m, idx) => $"{idx + 1}) {m.DisplayName}"));
+                // Store matches so pending handler can resolve selection
+                player.PendingAction = new PendingAction
+                {
+                    Command = "EditNpc",
+                    Step = "SelectTarget",
+                    Data = new Dictionary<string, object> { { "Matches", matches } }
+                };
+                return MessageHandler.System($"Multiple NPCs match '{targetExpr}'. Choose one to edit:\n{list}\nType the number of the NPC to edit, or 'EndEdit' to cancel.");
+            }
+
+            // Single match -> present edit menu and set pending to SelectField
+            var chosen = matches[0];
+            var dict = new Dictionary<string, object> { { "NpcId", chosen.NpcID } };
+            player.PendingAction = new PendingAction
+            {
+                Command = "EditNpc",
+                Step = "SelectField",
+                Data = dict
+            };
+
+            // Add AdminEdit interrupt on chosen NPC so movement is suppressed while admin edits it.
+            try
+            {
+                try { chosen.AddInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name, note: "AdminEdit", ttl: null); } catch { }
+            }
+            catch { /* best-effort */ }
+
+            string summary = $"Editing NPC: Template='{chosen.TemplateID}', Name='{chosen.Name}', Flags=[{string.Join(", ", chosen.Flags ?? new List<string>())}], AiBehaviors=[{(chosen.Template?.AiBehaviorConfigs != null ? string.Join(", ", chosen.Template.AiBehaviorConfigs.Select(b => b.Behavior)) : string.Join(", ", chosen.AiBehaviors ?? new List<string>()))}]";
+            var menu = summary + "\n\nChoose a field to edit:\n1) NPC Name\n2) NPC Flags\n3) NPC AiBehaviors\n4) Visual Trait\n5) Buffs/Debuffs\n6) Hunger\n7) WanderAreas\nType the option number or name, or 'EndEdit' to finish.";
+            return MessageHandler.System(menu);
+        }
 
         public Message? AddItem(Player player, string itemTemplateId, int quantity = 1)
         {
@@ -808,6 +892,214 @@ namespace MudServer
             {
                 Console.WriteLine($"[DEBUGITEMS][ERROR] {ex}");
                 return MessageHandler.System($"DebugItems failed: {ex.Message}");
+            }
+        }
+
+        // Add this method to the AdminService class, after the HandleNpcCounts method:
+
+        /// <summary>
+        /// Admin command to display current game time in human-readable format.
+        /// Syntax: time
+
+        public Message? HandleTime(Player player)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null || _world.GameTime == null) return MessageHandler.System("Game time unavailable.");
+
+            try
+            {
+                var gc = _world.GameTime;
+
+                // Month names array (matches GameClock internal array)
+                string[] monthNames = new[]
+                {
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        };
+
+                string monthName = (gc.Month >= 1 && gc.Month <= 12) ? monthNames[gc.Month - 1] : $"Month{gc.Month}";
+                string period = gc.GetPeriodDescriptor();
+
+                var lines = new List<string>
+        {
+            "=== Current Game Time ===",
+            $"Year: {gc.Year}",
+            $"Month: {gc.Month} ({monthName})",
+            $"Day: {gc.Day}",
+            $"Hour: {gc.Hour}",
+            $"Minute: {gc.Minute}",
+            $"Second: {gc.Second}",
+            $"Time Period: {period}",
+            "========================"
+        };
+
+                return MessageHandler.System(string.Join("\n", lines));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][TIME] Failed: {ex.Message}");
+                return MessageHandler.System("Failed to retrieve time due to a server error.");
+            }
+        }
+
+        /// <summary>
+        /// Admin command to list all available admin commands.
+        /// Syntax: adminhelp
+        /// </summary>
+        public Message? HandleAdminHelp(Player player)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            var commands = new List<string>
+    {
+        "time - Display current time",
+            "timechange - Adjust game time",
+            "npccounts - Show NPC counts",
+            "debugrooms - List all rooms",
+            "debugitems - Print all items",
+            "kill <npc> - Remove NPCs",
+            "createnpc - Spawn an NPC",
+            "editnpc - Edit an NPC",
+            "createarea - Create new area",
+            "createroom - Create new room",
+            "editroom - Edit current room",
+            "editexit - Edit exit properties",
+            "additem - Add item to room",
+            "removeitem - Remove item",
+            "listitems - List items in room",
+            "anchor - Prevents item pickup"
+    };
+
+            var header = "=== Admin Commands ===";
+            var footer = "======================";
+
+            return MessageHandler.System($"{header}\n{string.Join("\n", commands)}\n{footer}");
+        }
+
+        // NEW: admin timechange handler
+        // Syntax: timechange [int] [unit]
+        // Examples: timechange 1 hour   timechange -3 hour   timechange 4 day
+        public Message? HandleTimeChange(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null) return MessageHandler.System("World unavailable.");
+
+            // Normalize payload after 'timechange'
+            var payload = command ?? "";
+            if (payload.StartsWith("timechange", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring("timechange".Length).Trim();
+
+            if (string.IsNullOrWhiteSpace(payload))
+                return MessageHandler.System("Usage: timechange <n> <unit>  (unit = second|minute|hour|day). Examples: timechange 1 hour  timechange -3 hour");
+
+            var toks = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (toks.Length < 2)
+                return MessageHandler.System("Usage: timechange <n> <unit>. Examples: timechange 1 hour  timechange -3 hour");
+
+            // Parse amount (allow + or -)
+            if (!int.TryParse(toks[0], out var amt))
+            {
+                // allow formats like '+1' or '-1' (int.TryParse handles +/-) - fail otherwise
+                return MessageHandler.System("Invalid amount. Provide an integer, e.g. 1 or -3.");
+            }
+
+            string unitTok = toks[1].Trim().ToLowerInvariant();
+            // accept plural forms and common abbreviations
+            string NormalizeUnit(string u)
+            {
+                if (string.IsNullOrWhiteSpace(u)) return "";
+                u = u.Trim().ToLowerInvariant();
+                if (u.EndsWith("s")) u = u.Substring(0, u.Length - 1); // crude singularize
+                if (u == "sec") return "second";
+                if (u == "min") return "minute";
+                if (u == "hr") return "hour";
+                if (u == "h") return "hour";
+                if (u == "d") return "day";
+                return u;
+            }
+
+            unitTok = NormalizeUnit(unitTok);
+
+            long multiplierSeconds = unitTok switch
+            {
+                "second" => 1L,
+                "minute" => 60L,
+                "hour" => 60L * 60L,
+                "day" => 24L * 60L * 60L,
+                _ => 0L
+            };
+
+            if (multiplierSeconds == 0L)
+                return MessageHandler.System("Unknown unit. Supported units: second(s), minute(s), hour(s), day(s).");
+
+            long deltaSeconds = (long)amt * multiplierSeconds;
+
+            try
+            {
+                // Compute new GameClock by converting current clock to total seconds, adding delta, then reconstructing.
+                // Use same calendar rules as GameClock: 60s/min,60min/hr,24hr/day,30day/month,12month/year
+                const long SecondsPerMinute = 60L;
+                const long MinutesPerHour = 60L;
+                const long HoursPerDay = 24L;
+                const long DaysPerMonth = 30L;
+                const long MonthsPerYear = 12L;
+
+                var gc = _world.GameTime ?? new GameClock();
+                long curYear = gc.Year;
+                int curMonth = gc.Month;
+                int curDay = gc.Day;
+                int curHour = gc.Hour;
+                int curMinute = gc.Minute;
+                int curSecond = gc.Second;
+
+                // compute total seconds since epoch (Year=1, Month=1, Day=1, Hour=0,Min=0,Sec=0)
+                long totalDays = (long)(curYear - 1) * MonthsPerYear * DaysPerMonth
+                                 + (long)(curMonth - 1) * DaysPerMonth
+                                 + (long)(curDay - 1);
+                long totalHours = totalDays * HoursPerDay + curHour;
+                long totalMinutes = totalHours * MinutesPerHour + curMinute;
+                long totalSeconds = totalMinutes * SecondsPerMinute + curSecond;
+
+                long newTotalSeconds = totalSeconds + deltaSeconds;
+                if (newTotalSeconds < 0) newTotalSeconds = 0; // clamp to epoch start
+
+                // decompose back
+                long seconds = newTotalSeconds;
+                int newSecond = (int)(seconds % SecondsPerMinute);
+                seconds /= SecondsPerMinute;
+                int newMinute = (int)(seconds % MinutesPerHour);
+                seconds /= MinutesPerHour;
+                int newHour = (int)(seconds % HoursPerDay);
+                seconds /= HoursPerDay;
+                long daysSinceEpoch = seconds % (MonthsPerYear * DaysPerMonth);
+                long fullMonths = seconds / DaysPerMonth;
+                int newDay = (int)((daysSinceEpoch % DaysPerMonth) + 1);
+                int newMonth = (int)((fullMonths % MonthsPerYear) + 1);
+                long newYear = (seconds / (DaysPerMonth * MonthsPerYear)) + 1;
+
+                // Apply new GameClock
+                _world.GameTime = new GameClock(newYear, newMonth, newDay, newHour, newMinute, newSecond);
+
+                // Broadcast admin message to all players
+                string notif = $"[ADMIN] Time changed by {amt} {unitTok}{(Math.Abs(amt) == 1 ? "" : "s")} -> {_world.GameTime.GetHeaderString()}";
+                try
+                {
+                    foreach (var p in _world.Players ?? Enumerable.Empty<Player>())
+                    {
+                        try { MessageHandler.SendSystem(p, notif); } catch { /* best-effort */ }
+                    }
+                }
+                catch { /* best-effort */ }
+
+                return MessageHandler.System($"Time updated. {_world.GameTime.GetHeaderString()}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][TIMECHANGE] Failed: {ex}");
+                return MessageHandler.System("Failed to change time due to server error.");
             }
         }
 
@@ -1095,7 +1387,84 @@ namespace MudServer
                         return MessageHandler.System("Enter exit direction to create (N, S, E, W, NE, NW, SE, SW, UP, DOWN):");
                     }
 
-                    return MessageHandler.System("Invalid option. Type '1' or 'HasDoor' or '2' or 'CreateExitToRoom', or 'EndEdit'.");
+                    // NEW: Option 3 - EditDoor (only when exit has a door)
+                    if (input == "3" || input.Equals("EditDoor", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Find the exit by normalized direction
+                        var exit = room.Exits.FirstOrDefault(e => string.Equals(NormalizeDirection(e.Direction), NormalizeDirection(pa.Direction), StringComparison.OrdinalIgnoreCase));
+                        if (exit == null)
+                        {
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"No exit found for direction '{pa.Direction}'.");
+                        }
+
+                        if (!exit.DoorId.HasValue)
+                        {
+                            return MessageHandler.System($"Exit '{exit.Direction}' does not have a door. Set HasDoor to true first (option 1).");
+                        }
+
+                        // Store DoorId in pa.Data for subsequent steps
+                        var dict = new Dictionary<string, object>
+                    {
+                        { "DoorId", exit.DoorId.Value },
+                        { "Direction", pa.Direction }
+                    };
+                        pa.Data = dict;
+                        pa.Step = "EditDoorMenu";
+
+                        // Load current door metadata from DB
+                        string currentType = "Door";
+                        List<string> currentFlags = new List<string>();
+                        try
+                        {
+                            using var q = _db.CreateCommand();
+                            q.CommandText = "SELECT DoorType, Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                            q.Parameters.AddWithValue("@did", exit.DoorId.Value);
+                            using var rdr = q.ExecuteReader();
+                            if (rdr.Read())
+                            {
+                                if (!rdr.IsDBNull(0))
+                                {
+                                    var dt = rdr.GetString(0);
+                                    if (!string.IsNullOrWhiteSpace(dt))
+                                        currentType = dt;
+                                }
+                                if (!rdr.IsDBNull(1))
+                                {
+                                    var fj = rdr.GetString(1);
+                                    if (!string.IsNullOrWhiteSpace(fj))
+                                    {
+                                        try
+                                        {
+                                            var parsed = JsonSerializer.Deserialize<List<string>>(fj);
+                                            if (parsed != null) currentFlags = parsed;
+                                        }
+                                        catch { /* fallback to empty */ }
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception exLoad)
+                        {
+                            Console.WriteLine($"[ADMIN][EditDoor] Failed to load door metadata: {exLoad.Message}");
+                        }
+
+                        var flagsDisplay = currentFlags.Count == 0 ? "(none)" : string.Join(", ", currentFlags);
+                        return MessageHandler.System(
+                            $"Editing door for exit '{exit.Direction}' (DoorId={exit.DoorId.Value})\n" +
+                            $"Current DoorType: {currentType}\n" +
+                            $"Current Flags: {flagsDisplay}\n\n" +
+                            "Options:\n" +
+                            "1) Set DoorType\n" +
+                            "2) Add Flag\n" +
+                            "3) Remove Flag\n" +
+                            "4) Done\n" +
+                            "Type the option number or 'EndEdit' to cancel."
+                        );
+                    }
+
+
+                    return MessageHandler.System("Invalid option. Type '1' or 'HasDoor' or '2' or 'CreateExitToRoom' or '3' or 'EditExit', or 'EndEdit'.");
                 }
 
                 // --- CreateExitToRoom: Step 1 = direction ---
@@ -1288,7 +1657,7 @@ namespace MudServer
                                 {
                                     using var ins = conn.CreateCommand();
                                     ins.Transaction = tx;
-                                    ins.CommandText = "INSERT INTO Doors (IsOpen, DoorType, Flags) VALUES (0, NULL, NULL);";
+                                    ins.CommandText = "INSERT INTO Doors (IsOpen, DoorType, Flags) VALUES (0, 'Door', '[\"Close:30\"]');";
                                     ins.ExecuteNonQuery();
 
                                     using var last = conn.CreateCommand();
@@ -1516,6 +1885,354 @@ namespace MudServer
                     return MessageHandler.System($"Exit '{exit.Direction}' HasDoor set to {(exit.DoorId.HasValue ? "true" : "false")}.");
                 }
 
+                // NEW: EditDoorMenu step
+                if (pa.Step == "EditDoorMenu")
+                {
+                    if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase) || input.Equals("4", StringComparison.OrdinalIgnoreCase) || input.Equals("Done", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Door editing complete.");
+                    }
+
+                    var dict = pa.Data as Dictionary<string, object>;
+                    if (dict == null || !dict.TryGetValue("DoorId", out var didObj) || !int.TryParse(didObj.ToString(), out var doorId))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Internal error: DoorId not found. Restart edit.");
+                    }
+
+                    if (input.Equals("1", StringComparison.OrdinalIgnoreCase) || input.Equals("Set DoorType", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "SetDoorType";
+                        return MessageHandler.System("Enter new DoorType (e.g., Door, Gate, Trapdoor, Portcullis):");
+                    }
+
+                    if (input.Equals("2", StringComparison.OrdinalIgnoreCase) || input.Equals("Add Flag", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "AddDoorFlag";
+                        return MessageHandler.System("Enter flag to add (e.g., 'Close:30' for 30-second auto-close, 'Lockable' to enable locking):");
+                    }
+
+                    if (input.Equals("3", StringComparison.OrdinalIgnoreCase) || input.Equals("Remove Flag", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "RemoveDoorFlag";
+                        // Load current flags and display numbered list
+                        List<string> flags = new List<string>();
+                        try
+                        {
+                            using var q = _db.CreateCommand();
+                            q.CommandText = "SELECT Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                            q.Parameters.AddWithValue("@did", doorId);
+                            var obj = q.ExecuteScalar();
+                            if (obj != null && obj != DBNull.Value)
+                            {
+                                var fj = obj.ToString();
+                                if (!string.IsNullOrWhiteSpace(fj))
+                                {
+                                    var parsed = JsonSerializer.Deserialize<List<string>>(fj);
+                                    if (parsed != null) flags = parsed;
+                                }
+                            }
+                        }
+                        catch { /* best-effort */ }
+
+                        if (flags.Count == 0)
+                            return MessageHandler.System("No flags to remove. Type 'back' to return to menu.");
+
+                        var list = string.Join("\n", flags.Select((f, i) => $"{i + 1}) {f}"));
+                        return MessageHandler.System($"Current flags:\n{list}\n\nType the flag number to remove, or 'back':");
+                    }
+
+                    return MessageHandler.System("Invalid option. Type 1, 2, 3, 4, or 'EndEdit'.");
+                }
+
+                // NEW: SetDoorType step
+                if (pa.Step == "SetDoorType")
+                {
+                    var dict = pa.Data as Dictionary<string, object>;
+                    if (dict == null || !dict.TryGetValue("DoorId", out var didObj) || !int.TryParse(didObj.ToString(), out var doorId))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Internal error: DoorId not found.");
+                    }
+
+                    if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase) || input.Equals("cancel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Edit cancelled.");
+                    }
+
+                    var newType = input.Trim();
+                    if (string.IsNullOrWhiteSpace(newType) || newType.Length > 50)
+                        return MessageHandler.System("Invalid DoorType. Enter a reasonable name (max 50 chars).");
+
+                    // Persist to DB via DbWriteQueue
+                    try
+                    {
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((conn, tx) =>
+                        {
+                            using var cmd = conn.CreateCommand();
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "UPDATE Doors SET DoorType = @dtype WHERE DoorId = @did;";
+                            cmd.Parameters.AddWithValue("@dtype", newType);
+                            cmd.Parameters.AddWithValue("@did", doorId);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditDoor] Failed to update DoorType: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save DoorType due to a server error.");
+                    }
+
+                    // Update in-memory cache on both exits
+                    try
+                    {
+                        var currentRoom = player.CurrentRoom;
+                        if (currentRoom != null && dict.TryGetValue("Direction", out var dirObj))
+                        {
+                            var dir = dirObj.ToString();
+                            var exit = currentRoom.Exits.FirstOrDefault(e => string.Equals(NormalizeDirection(e.Direction), NormalizeDirection(dir), StringComparison.OrdinalIgnoreCase));
+                            if (exit != null && exit.DoorId == doorId)
+                                exit.DoorType = newType;
+
+                            // Update mate exit
+                            var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit?.ToRoomID);
+                            if (mateRoom != null && exit != null)
+                            {
+                                var opp = OppositeDirection(NormalizeDirection(dir));
+                                var mateExit = mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == currentRoom.RoomID && string.Equals(NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase));
+                                if (mateExit != null && mateExit.DoorId == doorId)
+                                    mateExit.DoorType = newType;
+                            }
+                        }
+                    }
+                    catch { /* best-effort */ }
+
+                    // Broadcast room updates
+                    try
+                    {
+                        BroadcastRoomUpdates(player.CurrentRoom, _world, _db);
+                    }
+                    catch { /* best-effort */ }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"DoorType updated to '{newType}'.");
+                }
+
+                // NEW: AddDoorFlag step
+                if (pa.Step == "AddDoorFlag")
+                {
+                    var dict = pa.Data as Dictionary<string, object>;
+                    if (dict == null || !dict.TryGetValue("DoorId", out var didObj) || !int.TryParse(didObj.ToString(), out var doorId))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Internal error: DoorId not found.");
+                    }
+
+                    if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase) || input.Equals("cancel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Edit cancelled.");
+                    }
+
+                    var newFlag = input.Trim();
+                    if (string.IsNullOrWhiteSpace(newFlag))
+                        return MessageHandler.System("Flag cannot be empty. Enter a flag or 'EndEdit'.");
+
+                    // Load current flags, remove any existing Close:* flags if adding a new Close:N
+                    List<string> flags = new List<string>();
+                    try
+                    {
+                        using var q = _db.CreateCommand();
+                        q.CommandText = "SELECT Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                        q.Parameters.AddWithValue("@did", doorId);
+                        var obj = q.ExecuteScalar();
+                        if (obj != null && obj != DBNull.Value)
+                        {
+                            var fj = obj.ToString();
+                            if (!string.IsNullOrWhiteSpace(fj))
+                            {
+                                var parsed = JsonSerializer.Deserialize<List<string>>(fj);
+                                if (parsed != null) flags = parsed;
+                            }
+                        }
+                    }
+                    catch { /* best-effort */ }
+
+                    // If adding Close:N, remove existing Close:* flags (only one allowed)
+                    if (newFlag.StartsWith("Close:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        flags.RemoveAll(f => f.StartsWith("Close:", StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    // Add new flag (avoid duplicates)
+                    if (!flags.Contains(newFlag, StringComparer.OrdinalIgnoreCase))
+                        flags.Add(newFlag);
+
+                    // Persist via DbWriteQueue
+                    try
+                    {
+                        var flagsJson = JsonSerializer.Serialize(flags);
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((conn, tx) =>
+                        {
+                            using var cmd = conn.CreateCommand();
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "UPDATE Doors SET Flags = @flags WHERE DoorId = @did;";
+                            cmd.Parameters.AddWithValue("@flags", flagsJson);
+                            cmd.Parameters.AddWithValue("@did", doorId);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditDoor] Failed to add flag: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save flag due to a server error.");
+                    }
+
+                    // Update in-memory cache on both exits
+                    try
+                    {
+                        var currentRoom = player.CurrentRoom;
+                        if (currentRoom != null && dict.TryGetValue("Direction", out var dirObj))
+                        {
+                            var dir = dirObj.ToString();
+                            var exit = currentRoom.Exits.FirstOrDefault(e => string.Equals(NormalizeDirection(e.Direction), NormalizeDirection(dir), StringComparison.OrdinalIgnoreCase));
+                            if (exit != null && exit.DoorId == doorId)
+                                exit.DoorFlags = new List<string>(flags);
+
+                            // Update mate exit
+                            var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit?.ToRoomID);
+                            if (mateRoom != null && exit != null)
+                            {
+                                var opp = OppositeDirection(NormalizeDirection(dir));
+                                var mateExit = mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == currentRoom.RoomID && string.Equals(NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase));
+                                if (mateExit != null && mateExit.DoorId == doorId)
+                                    mateExit.DoorFlags = new List<string>(flags);
+                            }
+                        }
+                    }
+                    catch { /* best-effort */ }
+
+                    // Broadcast room updates
+                    try
+                    {
+                        BroadcastRoomUpdates(player.CurrentRoom, _world, _db);
+                    }
+                    catch { /* best-effort */ }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Flag '{newFlag}' added.");
+                }
+
+                // NEW: RemoveDoorFlag step
+                if (pa.Step == "RemoveDoorFlag")
+                {
+                    var dict = pa.Data as Dictionary<string, object>;
+                    if (dict == null || !dict.TryGetValue("DoorId", out var didObj) || !int.TryParse(didObj.ToString(), out var doorId))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Internal error: DoorId not found.");
+                    }
+
+                    if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase) || input.Equals("cancel", StringComparison.OrdinalIgnoreCase) || input.Equals("back", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Edit cancelled.");
+                    }
+
+                    if (!int.TryParse(input.Trim(), out var idx) || idx < 1)
+                        return MessageHandler.System("Invalid index. Enter a flag number or 'back'.");
+
+                    // Load current flags
+                    List<string> flags = new List<string>();
+                    try
+                    {
+                        using var q = _db.CreateCommand();
+                        q.CommandText = "SELECT Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                        q.Parameters.AddWithValue("@did", doorId);
+                        var obj = q.ExecuteScalar();
+                        if (obj != null && obj != DBNull.Value)
+                        {
+                            var fj = obj.ToString();
+                            if (!string.IsNullOrWhiteSpace(fj))
+                            {
+                                var parsed = JsonSerializer.Deserialize<List<string>>(fj);
+                                if (parsed != null) flags = parsed;
+                            }
+                        }
+                    }
+                    catch { /* best-effort */ }
+
+                    if (idx > flags.Count)
+                        return MessageHandler.System($"Invalid index. Enter 1..{flags.Count} or 'back'.");
+
+                    var removed = flags[idx - 1];
+                    flags.RemoveAt(idx - 1);
+
+                    // Persist via DbWriteQueue
+                    try
+                    {
+                        var flagsJson = JsonSerializer.Serialize(flags);
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((conn, tx) =>
+                        {
+                            using var cmd = conn.CreateCommand();
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "UPDATE Doors SET Flags = @flags WHERE DoorId = @did;";
+                            cmd.Parameters.AddWithValue("@flags", flagsJson);
+                            cmd.Parameters.AddWithValue("@did", doorId);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditDoor] Failed to remove flag: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save flags due to a server error.");
+                    }
+
+                    // Update in-memory cache on both exits
+                    try
+                    {
+                        var currentRoom = player.CurrentRoom;
+                        if (currentRoom != null && dict.TryGetValue("Direction", out var dirObj))
+                        {
+                            var dir = dirObj.ToString();
+                            var exit = currentRoom.Exits.FirstOrDefault(e => string.Equals(NormalizeDirection(e.Direction), NormalizeDirection(dir), StringComparison.OrdinalIgnoreCase));
+                            if (exit != null && exit.DoorId == doorId)
+                                exit.DoorFlags = new List<string>(flags);
+
+                            // Update mate exit
+                            var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit?.ToRoomID);
+                            if (mateRoom != null && exit != null)
+                            {
+                                var opp = OppositeDirection(NormalizeDirection(dir));
+                                var mateExit = mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == currentRoom.RoomID && string.Equals(NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase));
+                                if (mateExit != null && mateExit.DoorId == doorId)
+                                    mateExit.DoorFlags = new List<string>(flags);
+                            }
+                        }
+                    }
+                    catch { /* best-effort */ }
+
+                    // Broadcast room updates
+                    try
+                    {
+                        BroadcastRoomUpdates(player.CurrentRoom, _world, _db);
+                    }
+                    catch { /* best-effort */ }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Flag '{removed}' removed.");
+                }
+
+
+
                 return null;
             }//End EditExit
 
@@ -1537,6 +2254,573 @@ namespace MudServer
 
                 return null;
             }
+
+            // --- EditNpc pending action ---
+            if (pa.Command == "EditNpc")
+            {
+                if (!player.IsAdmin)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Permission denied. Admins only.");
+                }
+
+                // helper to resolve npc by id stored in pa.Data
+                Npc ResolveNpcFromPa()
+                {
+                    try
+                    {
+                        if (pa.Data is Dictionary<string, object> dict && dict.TryGetValue("NpcId", out var nidObj) && int.TryParse(nidObj.ToString(), out var nid))
+                        {
+                            return _world.Npcs.FirstOrDefault(n => n != null && n.NpcID == nid);
+                        }
+                    }
+                    catch { }
+                    return null!;
+                }
+
+                if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase))
+                {
+                    // If we were editing a specific npc, remove the admin edit interrupt (owner-scoped)
+                    try
+                    {
+                        var maybe = ResolveNpcFromPa();
+                        if (maybe != null) try { maybe.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+                    }
+                    catch { /* best-effort */ }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System("NPC editing cancelled.");
+                }
+
+                // Step: selecting target from a prior presented list
+                if (pa.Step == "SelectTarget")
+                {
+                    if (!int.TryParse(input, out var idx) || idx < 1)
+                        return MessageHandler.System("Invalid selection. Type the number of the NPC to edit or 'EndEdit' to cancel.");
+
+                    if (!(pa.Data is Dictionary<string, object> data) || !data.TryGetValue("Matches", out var matchesObj) || !(matchesObj is List<Npc> matches) || matches.Count == 0)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Pending selection list no longer available. Restart edit.");
+                    }
+
+                    if (idx > matches.Count)
+                        return MessageHandler.System($"Invalid selection. Enter a number between 1 and {matches.Count}.");
+
+                    var chosen = matches[idx - 1];
+                    if (chosen == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Selected NPC no longer available.");
+                    }
+
+                    // Store selected npc id and present edit menu
+                    var dict = new Dictionary<string, object> { { "NpcId", chosen.NpcID } };
+                    pa.Data = dict;
+                    pa.Step = "SelectField";
+
+                    // Add AdminEdit interrupt on chosen NPC so movement is suppressed while admin edits it.
+                    try { chosen.AddInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name, note: "AdminEdit", ttl: null); } catch { }
+
+                    string summary = $"Editing NPC: Template='{chosen.TemplateID}', Name='{chosen.Name}', Flags=[{string.Join(", ", chosen.Flags ?? new List<string>())}], AiBehaviors=[{(chosen.Template?.AiBehaviorConfigs != null ? string.Join(", ", chosen.Template.AiBehaviorConfigs.Select(b => b.Behavior)) : string.Join(", ", chosen.AiBehaviors ?? new List<string>()))}]";
+                    var menu = summary + "\n\nChoose a field to edit:\n1) NPC Name\n2) NPC Flags\n3) NPC AiBehaviors\n4) Visual Trait\n5) Buffs/Debuffs\n6) Hunger\n7) WanderAreas\nType the option number or name, or 'EndEdit' to finish.";
+                    return MessageHandler.System(menu);
+                }
+
+                // Step: choose which field to edit
+                if (pa.Step == "SelectField")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("NPC not found. It may have been removed.");
+                    }
+
+                    var choice = (input ?? "").Trim();
+                    if (choice.Equals("1") || choice.Equals("NPC Name", StringComparison.OrdinalIgnoreCase) || choice.Equals("Name", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditName";
+                        return MessageHandler.System($"Current name is '{npc.Name}'. Enter new name (or 'EndEdit'):");
+                    }
+                    if (choice.Equals("2") || choice.Equals("NPC Flags", StringComparison.OrdinalIgnoreCase) || choice.Equals("Flags", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditFlags";
+                        // present flags numbered
+                        var flags = npc.Flags ?? new List<string>();
+                        if (flags.Count == 0)
+                            return MessageHandler.System("NPC has no flags. Type 'add <flag>' to add one, or 'EndEdit' to cancel.");
+                        var list = string.Join("\n", flags.Select((f, i) => $"{i + 1}) {f}"));
+                        return MessageHandler.System($"Current NPC Flags:\n{list}\n\nCommands: 'add <flag>' or 'remove <n>' or 'edit <n> <newflag>' or 'EndEdit'.");
+                    }
+                    if (choice.Equals("3") || choice.Equals("NPC AiBehaviors", StringComparison.OrdinalIgnoreCase) || choice.Equals("AiBehaviors", StringComparison.OrdinalIgnoreCase) || choice.Equals("AI", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditAi";
+                        var behaviors = npc.Template?.AiBehaviorConfigs != null && npc.Template.AiBehaviorConfigs.Count > 0
+                            ? npc.Template.AiBehaviorConfigs.Select(b => b.Behavior).ToList()
+                            : (npc.AiBehaviors ?? new List<string>());
+                        if (behaviors == null || behaviors.Count == 0)
+                            return MessageHandler.System("NPC has no AI behaviors. Type 'add <behavior>' to add one, or 'EndEdit' to cancel.");
+                        var list = string.Join("\n", behaviors.Select((b, i) => $"{i + 1}) {b}"));
+                        return MessageHandler.System($"Current AI Behaviors:\n{list}\n\nCommands: 'add <behavior>' or 'remove <n>' or 'edit <n> <newbehavior>' or 'EndEdit'.");
+                    }
+                    if (choice.Equals("4") || choice.Equals("Visual Trait", StringComparison.OrdinalIgnoreCase) || choice.Equals("VisualTrait", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditVisual";
+                        var current = string.IsNullOrWhiteSpace(npc.VisualTrait) ? "(none)" : npc.VisualTrait;
+                        return MessageHandler.System($"Current visual trait is: {current}\nEnter new visual trait (or 'clear' to remove, 'EndEdit' to cancel):");
+                    }
+                    if (choice.Equals("5") || choice.Equals("Buffs", StringComparison.OrdinalIgnoreCase) || choice.Equals("Debuffs", StringComparison.OrdinalIgnoreCase) || choice.Equals("Buffs/Debuffs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditEffects";
+                        var buffs = npc.Buffs ?? new List<string>();
+                        var debuffs = npc.Debuffs ?? new List<string>();
+                        var all = new List<string>();
+                        all.AddRange(buffs.Select(b => $"Buff: {b}"));
+                        all.AddRange(debuffs.Select(d => $"Debuff: {d}"));
+                        var text = all.Count == 0 ? "(none)" : string.Join("\n", all.Select((s, i) => $"{i + 1}) {s}"));
+                        return MessageHandler.System($"Current Buffs/Debuffs:\n{text}\n\nCommands: 'add buff <token>', 'add debuff <token>', 'remove buff <token>', 'remove debuff <token>' or 'EndEdit'.");
+                    }
+                    if (choice.Equals("6") || choice.Equals("Hunger", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditHunger";
+                        return MessageHandler.System($"Current Hunger is {npc.Hunger}. Enter new hunger value (0-10) or 'EndEdit':");
+                    }
+                    if (choice.Equals("7") || choice.Equals("WanderAreas", StringComparison.OrdinalIgnoreCase) || choice.Equals("Wander", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Show current wander areas and transition to WanderAreas step
+                        var areas = npc.WanderAreas ?? new List<int>();
+                        string list = areas.Count == 0 ? "(none)" : string.Join(" ", areas.Select(a => $"[{a}]"));
+                        pa.Step = "WanderAreas";
+                        // Ensure NpcId remains present in pa.Data
+                        try
+                        {
+                            if (!(pa.Data is Dictionary<string, object> dict)) pa.Data = new Dictionary<string, object> { { "NpcId", npc.NpcID } };
+                            else dict["NpcId"] = npc.NpcID;
+                        }
+                        catch { pa.Data = new Dictionary<string, object> { { "NpcId", npc.NpcID } }; }
+
+                        return MessageHandler.System($"Current wander areas are: {list}\nWould you like to Add, or Remove an AreaID? Type: 'Add [AreaID]' or 'Remove [AreaID]', or 'EndEdit' to cancel.");
+                    }
+
+                    return MessageHandler.System("Invalid option. Choose 1..7 or type the field name, or 'EndEdit'.");
+                }
+
+                // Step: Edit Name
+                if (pa.Step == "EditName")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null) { player.PendingAction = null!; return MessageHandler.System("NPC not found."); }
+                    if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase)) { player.PendingAction = null!; return MessageHandler.System("Edit cancelled."); }
+
+                    var newName = (input ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(newName)) return MessageHandler.System("Name cannot be empty. Enter a valid name or 'EndEdit'.");
+
+                    npc.Name = newName;
+                    try
+                    {
+                        NpcPersistence.UpdateNpc(_db, npc);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditNpc] Failed to persist name for NpcID={npc.NpcID}: {ex.Message}");
+                        return MessageHandler.System("Failed to save NPC name due to a server error.");
+                    }
+
+                    // Remove admin-edit interrupt now that admin completed editing
+                    try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                    // Notify room occupants
+                    try
+                    {
+                        var room = npc.CurrentRoom;
+                        if (room != null)
+                        {
+                            foreach (var p in room.Players)
+                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), _world));
+                        }
+                    }
+                    catch { }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"NPC name updated to '{npc.Name}'.");
+                }
+
+                // Step: Edit Flags
+                if (pa.Step == "EditFlags")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null) { player.PendingAction = null!; return MessageHandler.System("NPC not found."); }
+                    var cmd = (input ?? "").Trim();
+                    if (string.Equals(cmd, "EndEdit", StringComparison.OrdinalIgnoreCase)) { player.PendingAction = null!; return MessageHandler.System("Edit cancelled."); }
+
+                    // add <flag>
+                    if (cmd.StartsWith("add ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var flag = cmd.Substring(4).Trim();
+                        if (string.IsNullOrWhiteSpace(flag)) return MessageHandler.System("Usage: add <flag>");
+                        if (npc.Flags == null) npc.Flags = new List<string>();
+                        if (!npc.Flags.Any(f => string.Equals(f, flag, StringComparison.OrdinalIgnoreCase)))
+                            npc.Flags.Add(flag);
+
+                        try { NpcPersistence.UpdateNpc(_db, npc); }
+                        catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist flags add for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC flags."); }
+
+                        // Remove admin-edit interrupt now that admin completed editing
+                        try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"Added flag '{flag}' to NPC.");
+                    }
+
+                    // remove <n> or remove <flag>
+                    if (cmd.StartsWith("remove ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var arg = cmd.Substring(7).Trim();
+                        if (int.TryParse(arg, out var idx))
+                        {
+                            var flags = npc.Flags ?? new List<string>();
+                            if (idx < 1 || idx > flags.Count) return MessageHandler.System($"Invalid index. Enter 1..{flags.Count} or 'remove <flag>'.");
+                            var removed = flags[idx - 1];
+                            flags.RemoveAt(idx - 1);
+                            npc.Flags = flags;
+                            try { NpcPersistence.UpdateNpc(_db, npc); }
+                            catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist flags remove for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC flags."); }
+
+                            // Remove admin-edit interrupt now that admin completed editing
+                            try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"Removed flag '{removed}'.");
+                        }
+                        else
+                        {
+                            var flags = npc.Flags ?? new List<string>();
+                            var found = flags.FirstOrDefault(f => string.Equals(f, arg, StringComparison.OrdinalIgnoreCase));
+                            if (found == null) return MessageHandler.System($"Flag '{arg}' not found on NPC.");
+                            flags.RemoveAll(f => string.Equals(f, arg, StringComparison.OrdinalIgnoreCase));
+                            npc.Flags = flags;
+                            try { NpcPersistence.UpdateNpc(_db, npc); }
+                            catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist flags remove for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC flags."); }
+
+                            // Remove admin-edit interrupt now that admin completed editing
+                            try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"Removed flag '{arg}'.");
+                        }
+                    }
+
+                    // edit <n> <newflag>
+                    if (cmd.StartsWith("edit ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var parts = cmd.Substring(5).Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) return MessageHandler.System("Usage: edit <n> <newflag>");
+                        if (!int.TryParse(parts[0], out var idx)) return MessageHandler.System("Usage: edit <n> <newflag>");
+                        var flags = npc.Flags ?? new List<string>();
+                        if (idx < 1 || idx > flags.Count) return MessageHandler.System($"Invalid index. Enter 1..{flags.Count}.");
+                        flags[idx - 1] = parts[1].Trim();
+                        npc.Flags = flags;
+                        try { NpcPersistence.UpdateNpc(_db, npc); }
+                        catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist flags edit for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC flags."); }
+
+                        // Remove admin-edit interrupt now that admin completed editing
+                        try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"Updated flag {idx} to '{parts[1].Trim()}'.");
+                    }
+
+                    return MessageHandler.System("Invalid flags command. Use 'add <flag>', 'remove <n>' or 'remove <flag>' or 'edit <n> <newflag>' or 'EndEdit'.");
+                }
+
+                // Step: Edit AI behaviors
+                if (pa.Step == "EditAi")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null) { player.PendingAction = null!; return MessageHandler.System("NPC not found."); }
+                    var cmd = (input ?? "").Trim();
+                    if (string.Equals(cmd, "EndEdit", StringComparison.OrdinalIgnoreCase)) { player.PendingAction = null!; return MessageHandler.System("Edit cancelled."); }
+
+                    // Behaviors list - support editing template-based AiBehaviorConfigs only as simple string fallback
+                    var behaviors = npc.Template?.AiBehaviorConfigs != null && npc.Template.AiBehaviorConfigs.Count > 0
+                        ? npc.Template.AiBehaviorConfigs.Select(b => b.Behavior).ToList()
+                        : (npc.AiBehaviors ?? new List<string>());
+
+                    if (cmd.StartsWith("add ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var b = cmd.Substring(4).Trim();
+                        if (string.IsNullOrWhiteSpace(b)) return MessageHandler.System("Usage: add <behavior>");
+                        if (npc.AiBehaviors == null) npc.AiBehaviors = new List<string>();
+                        npc.AiBehaviors.Add(b);
+                        try { NpcPersistence.UpdateNpc(_db, npc); }
+                        catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist ai add for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC behaviors."); }
+
+                        // Remove admin-edit interrupt now that admin completed editing
+                        try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"Added AI behavior '{b}'.");
+                    }
+
+                    if (cmd.StartsWith("remove ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var arg = cmd.Substring(7).Trim();
+                        if (int.TryParse(arg, out var idx))
+                        {
+                            var list = npc.AiBehaviors ?? new List<string>();
+                            if (idx < 1 || idx > list.Count) return MessageHandler.System($"Invalid index. Enter 1..{list.Count}.");
+                            var removed = list[idx - 1];
+                            list.RemoveAt(idx - 1);
+                            npc.AiBehaviors = list;
+                            try { NpcPersistence.UpdateNpc(_db, npc); }
+                            catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist ai remove for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC behaviors."); }
+
+                            // Remove admin-edit interrupt now that admin completed editing
+                            try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                            player.PendingAction = null!;
+                            return MessageHandler.System($"Removed AI behavior '{removed}'.");
+                        }
+                        else
+                        {
+                            var list = npc.AiBehaviors ?? new List<string>();
+                            if (!list.RemoveAll(s => string.Equals(s, arg, StringComparison.OrdinalIgnoreCase)).Equals(0))
+                            {
+                                try { NpcPersistence.UpdateNpc(_db, npc); }
+                                catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist ai remove for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC behaviors."); }
+
+                                // Remove admin-edit interrupt now that admin completed editing
+                                try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                                player.PendingAction = null!;
+                                return MessageHandler.System($"Removed AI behavior '{arg}'.");
+                            }
+                            return MessageHandler.System($"Behavior '{arg}' not found.");
+                        }
+                    }
+
+                    if (cmd.StartsWith("edit ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var parts = cmd.Substring(5).Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) return MessageHandler.System("Usage: edit <n> <newbehavior>");
+                        if (!int.TryParse(parts[0], out var idx)) return MessageHandler.System("Usage: edit <n> <newbehavior>");
+                        var list = npc.AiBehaviors ?? new List<string>();
+                        if (idx < 1 || idx > list.Count) return MessageHandler.System($"Invalid index. Enter 1..{list.Count}.");
+                        list[idx - 1] = parts[1].Trim();
+                        npc.AiBehaviors = list;
+                        try { NpcPersistence.UpdateNpc(_db, npc); }
+                        catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist ai edit for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC behaviors."); }
+
+                        // Remove admin-edit interrupt now that admin completed editing
+                        try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"Updated AI behavior {idx} to '{parts[1].Trim()}'.");
+                    }
+
+                    return MessageHandler.System("Invalid AI command. Use 'add <behavior>', 'remove <n>', 'edit <n> <newbehavior>' or 'EndEdit'.");
+                }
+
+                // Step: Edit Visual Trait
+                if (pa.Step == "EditVisual")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null) { player.PendingAction = null!; return MessageHandler.System("NPC not found."); }
+                    var cmd = (input ?? "").Trim();
+                    if (string.Equals(cmd, "EndEdit", StringComparison.OrdinalIgnoreCase)) { player.PendingAction = null!; return MessageHandler.System("Edit cancelled."); }
+
+                    if (string.Equals(cmd, "clear", StringComparison.OrdinalIgnoreCase))
+                        npc.VisualTrait = "";
+                    else
+                        npc.VisualTrait = cmd;
+
+                    try { NpcPersistence.UpdateNpc(_db, npc); }
+                    catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist visual trait for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save visual trait."); }
+
+                    // Remove admin-edit interrupt now that admin completed editing
+                    try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                    // Notify room occupants
+                    try
+                    {
+                        var room = npc.CurrentRoom;
+                        if (room != null)
+                        {
+                            foreach (var p in room.Players)
+                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), _world));
+                        }
+                    }
+                    catch { }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Visual trait updated to '{npc.VisualTrait}'.");
+                }
+
+                // Step: Edit Buffs/Debuffs
+                if (pa.Step == "EditEffects")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null) { player.PendingAction = null!; return MessageHandler.System("NPC not found."); }
+                    var cmd = (input ?? "").Trim();
+                    if (string.Equals(cmd, "EndEdit", StringComparison.OrdinalIgnoreCase)) { player.PendingAction = null!; return MessageHandler.System("Edit cancelled."); }
+
+                    // add buff <token> / add debuff <token>
+                    if (cmd.StartsWith("add ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rest = cmd.Substring(4).Trim();
+                        var parts = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) return MessageHandler.System("Usage: add buff <token> or add debuff <token>");
+                        var which = parts[0].Trim().ToLowerInvariant();
+                        var token = parts[1].Trim();
+                        if (which == "buff")
+                        {
+                            if (npc.Buffs == null) npc.Buffs = new List<string>();
+                            npc.Buffs.Add(token);
+                        }
+                        else if (which == "debuff")
+                        {
+                            if (npc.Debuffs == null) npc.Debuffs = new List<string>();
+                            npc.Debuffs.Add(token);
+                        }
+                        else return MessageHandler.System("Specify 'buff' or 'debuff'. Usage: add buff <token>");
+
+                        try { NpcPersistence.UpdateNpc(_db, npc); }
+                        catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist effects add for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC effects."); }
+
+                        // Remove admin-edit interrupt now that admin completed editing
+                        try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"Added {which} '{token}' to NPC.");
+                    }
+
+                    // remove buff <token> or remove debuff <token>
+                    if (cmd.StartsWith("remove ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rest = cmd.Substring(7).Trim();
+                        var parts = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) return MessageHandler.System("Usage: remove buff <token> or remove debuff <token>");
+                        var which = parts[0].Trim().ToLowerInvariant();
+                        var token = parts[1].Trim();
+                        if (which == "buff")
+                        {
+                            npc.Buffs?.RemoveAll(b => string.Equals(b, token, StringComparison.OrdinalIgnoreCase));
+                        }
+                        else if (which == "debuff")
+                        {
+                            npc.Debuffs?.RemoveAll(d => string.Equals(d, token, StringComparison.OrdinalIgnoreCase));
+                        }
+                        else return MessageHandler.System("Specify 'buff' or 'debuff'. Usage: remove buff <token>");
+
+                        try { NpcPersistence.UpdateNpc(_db, npc); }
+                        catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist effects remove for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC effects."); }
+
+                        // Remove admin-edit interrupt now that admin completed editing
+                        try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                        player.PendingAction = null!;
+                        return MessageHandler.System($"Removed {which} '{token}' from NPC.");
+                    }
+
+                    return MessageHandler.System("Invalid effects command. Use 'add buff <token>', 'add debuff <token>', 'remove buff <token>', 'remove debuff <token>' or 'EndEdit'.");
+                }
+
+                // Step: Edit Hunger
+                if (pa.Step == "EditHunger")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null) { player.PendingAction = null!; return MessageHandler.System("NPC not found."); }
+                    var cmd = (input ?? "").Trim();
+                    if (string.Equals(cmd, "EndEdit", StringComparison.OrdinalIgnoreCase)) { player.PendingAction = null!; return MessageHandler.System("Edit cancelled."); }
+
+                    if (!int.TryParse(cmd, out var val) || val < 0 || val > 10)
+                        return MessageHandler.System("Invalid hunger. Enter an integer between 0 and 10.");
+
+                    npc.Hunger = val;
+                    try { NpcPersistence.UpdateNpc(_db, npc); }
+                    catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist hunger for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC hunger."); }
+
+                    // Remove admin-edit interrupt now that admin completed editing
+                    try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"NPC Hunger set to {npc.Hunger}.");
+                }
+
+                // Step: WanderAreas - accept "Add <AreaID>" or "Remove <AreaID>"
+                if (pa.Step == "WanderAreas")
+                {
+                    var npc = ResolveNpcFromPa();
+                    if (npc == null) { player.PendingAction = null!; return MessageHandler.System("NPC not found."); }
+
+                    var cmd = (input ?? "").Trim();
+                    if (string.Equals(cmd, "EndEdit", StringComparison.OrdinalIgnoreCase) || string.Equals(cmd, "cancel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Edit cancelled.");
+                    }
+
+                    var parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 2) return MessageHandler.System("Usage: Add <AreaID> or Remove <AreaID>");
+
+                    var verb = parts[0].Trim().ToLowerInvariant();
+                    if (!int.TryParse(parts[1], out int areaId) || areaId <= 0)
+                        return MessageHandler.System("Invalid AreaID. Provide a positive integer.");
+
+                    try
+                    {
+                        if (npc.WanderAreas == null) npc.WanderAreas = new List<int>();
+
+                        if (verb == "add")
+                        {
+                            if (!npc.WanderAreas.Contains(areaId))
+                                npc.WanderAreas.Add(areaId);
+                            else
+                                return MessageHandler.System($"AreaID {areaId} is already present in NPC wander areas.");
+
+                            try { NpcPersistence.UpdateNpc(_db, npc); }
+                            catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist WanderAreas add for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC wander areas."); }
+
+                            // Remove admin-edit interrupt now that admin completed editing
+                            try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                            player.PendingAction = null!;
+                            var list = string.Join(" ", npc.WanderAreas.Select(a => $"[{a}]"));
+                            return MessageHandler.System($"Added AreaID {areaId}. Current wander areas: {list}");
+                        }
+                        else if (verb == "remove" || verb == "rm")
+                        {
+                            if (!npc.WanderAreas.Contains(areaId))
+                                return MessageHandler.System($"AreaID {areaId} is not present in NPC wander areas.");
+
+                            npc.WanderAreas.RemoveAll(a => a == areaId);
+
+                            try { NpcPersistence.UpdateNpc(_db, npc); }
+                            catch (Exception ex) { Console.WriteLine($"[ADMIN][EditNpc] Failed to persist WanderAreas remove for NpcID={npc.NpcID}: {ex.Message}"); return MessageHandler.System("Failed to save NPC wander areas."); }
+
+                            // Remove admin-edit interrupt now that admin completed editing
+                            try { npc.RemoveInterrupt(Npc.InterruptType.AdminEdit, owner: player.Name); } catch { }
+
+                            player.PendingAction = null!;
+                            var list = npc.WanderAreas.Count == 0 ? "(none)" : string.Join(" ", npc.WanderAreas.Select(a => $"[{a}]"));
+                            return MessageHandler.System($"Removed AreaID {areaId}. Current wander areas: {list}");
+                        }
+                        else
+                        {
+                            return MessageHandler.System("Unknown action. Use 'Add <AreaID>' or 'Remove <AreaID>'.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        player.PendingAction = null!;
+                        Console.WriteLine($"[ADMIN][EditNpc] Error processing WanderAreas edit: {ex.Message}");
+                        return MessageHandler.System("Failed to update wander areas due to a server error.");
+                    }
+                }
+
+                return null;
+            } // end EditNpc pending action
 
             // EditRoom pending action
             if (pa.Command == "EditRoom")
@@ -2240,6 +3524,227 @@ namespace MudServer
             };
         }
 
+        public Message? HandleToggleVisible(Player player)
+        {
+            // 1. Toggle state
+            player.IsInvisibleToMortals = !player.IsInvisibleToMortals;
+
+            // 2. Persist immediately
+            try
+            {
+                if (_db != null)
+                    PlayerPersistence.SavePlayer(_db, player);
+            }
+            catch { /* log error */ }
+
+            // 3. Send confirmation to admin
+            string adminMsg = player.IsInvisibleToMortals
+                ? "You are now invisible to Mortals"
+                : "You are now visible to Mortals";
+            player.PendingMessageQueue.Add(MessageHandler.System(adminMsg));
+
+            // 4. Broadcast dramatic message to room
+            if (player.CurrentRoom != null)
+            {
+                string broadcastMsg = player.IsInvisibleToMortals
+                    ? $"{player.Name} vanishes into the air!"
+                    : $"{player.Name} appears in a flash of lightning!";
+
+                foreach (var p in player.CurrentRoom.Players.Where(p => p != player))
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.System(broadcastMsg));
+                }
+
+                // 5. Force immediate room refresh for all players
+                BroadcastRoomUpdates(player.CurrentRoom, _world, _db);
+            }
+
+            return null;
+        }
+
+        public Message? HandleTeleport(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            // Parse command payload after "teleport"
+            var payload = command.Trim();
+            if (payload.StartsWith("teleport", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring(8).Trim();
+
+            if (string.IsNullOrWhiteSpace(payload))
+                return MessageHandler.System("Usage: teleport <roomid> OR teleport <player> [to <roomid>]");
+
+            // Detect "to <roomid>" clause
+            int idxTo = payload.IndexOf(" to ", StringComparison.OrdinalIgnoreCase);
+            string targetExpr = idxTo >= 0 ? payload.Substring(0, idxTo).Trim() : payload.Trim();
+            string roomExpr = idxTo >= 0 ? payload.Substring(idxTo + 4).Trim() : "";
+
+            // Case 1: "teleport <roomid>" - admin self-teleport
+            if (string.IsNullOrWhiteSpace(roomExpr) && int.TryParse(targetExpr, out int selfRoomId))
+            {
+                return ExecuteAdminSelfTeleport(player, selfRoomId);
+            }
+
+            // Case 2: "teleport <player> [to <roomid>]" - teleport another player
+            Player? targetPlayer = ResolvePlayer(targetExpr);
+            if (targetPlayer == null)
+                return MessageHandler.System($"Player '{targetExpr}' not found.");
+
+            // Determine destination room
+            Room? destRoom;
+            if (string.IsNullOrWhiteSpace(roomExpr))
+            {
+                // "teleport player1" → bring to admin's location
+                destRoom = player.CurrentRoom;
+            }
+            else
+            {
+                // "teleport player1 to 34"
+                if (!int.TryParse(roomExpr, out int targetRoomId))
+                    return MessageHandler.System($"Invalid room ID '{roomExpr}'.");
+                destRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == targetRoomId);
+            }
+
+            if (destRoom == null)
+                return MessageHandler.System("Destination room not found.");
+
+            return ExecutePlayerTeleport(player, targetPlayer, destRoom);
+        }
+
+        // Helper: Resolve player by name (exact, starts-with, contains)
+        private Player? ResolvePlayer(string name)
+        {
+            var candidates = _world.Players.Where(p => p != null && p.IsAuthenticated).ToList();
+
+            // Exact match
+            var exact = candidates.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (exact != null) return exact;
+
+            // Starts-with
+            var starts = candidates.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Name) &&
+                                                         p.Name.StartsWith(name, StringComparison.OrdinalIgnoreCase));
+            if (starts != null) return starts;
+
+            // Contains
+            return candidates.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Name) &&
+                                                   p.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        // Execute admin self-teleport
+        private Message? ExecuteAdminSelfTeleport(Player admin, int targetRoomId)
+        {
+            var originRoom = admin.CurrentRoom;
+            var destRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == targetRoomId);
+
+            if (destRoom == null)
+                return MessageHandler.System($"Room {targetRoomId} not found.");
+
+            if (originRoom == destRoom)
+                return MessageHandler.System("You are already in that room.");
+
+            // Broadcast departure (only if visible)
+            if (originRoom != null && !admin.IsInvisibleToMortals)
+            {
+                foreach (var p in originRoom.Players.Where(p => p != admin))
+                {
+                    MessageHandler.SendSystem(p, $"{admin.Name} disappears in a flash, leaving only a wisp of smoke!");
+                }
+            }
+
+            // Update admin's location
+            try
+            {
+                if (originRoom != null)
+                    originRoom.Players.Remove(admin);
+
+                admin.CurrentRoom = destRoom;
+                destRoom.Players.Add(admin);
+
+                // Persist
+                PlayerPersistence.SavePlayer(_db, admin);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][TELEPORT] Failed to teleport admin: {ex.Message}");
+                return MessageHandler.System("Teleport failed due to server error.");
+            }
+
+            // Broadcast arrival (only if visible)
+            if (!admin.IsInvisibleToMortals)
+            {
+                foreach (var p in destRoom.Players.Where(p => p != admin))
+                {
+                    MessageHandler.SendSystem(p, $"In a thunderous flash {admin.Name} appears!");
+                }
+            }
+
+            // Notify admin
+            admin.PendingMessageQueue.Add(MessageHandler.System($"You teleported to {destRoom.Name}."));
+
+            // Send room updates to all affected players
+            if (originRoom != null)
+                BroadcastRoomUpdates(originRoom, _world, _db);
+            BroadcastRoomUpdates(destRoom, _world, _db);
+
+            return null;
+        }
+
+        // Execute player teleport (admin teleporting another player)
+        private Message? ExecutePlayerTeleport(Player admin, Player target, Room destRoom)
+        {
+            var originRoom = target.CurrentRoom;
+
+            if (originRoom == destRoom)
+                return MessageHandler.System($"{target.Name} is already in that room.");
+
+            // Broadcast departure to origin room
+            if (originRoom != null)
+            {
+                foreach (var p in originRoom.Players.Where(p => p != target))
+                {
+                    MessageHandler.SendSystem(p, $"{target.Name} disappears, leaving no trace!");
+                }
+            }
+
+            // Notify target player (BEFORE moving so they see this first)
+            MessageHandler.SendSystem(target, "You are torn asunder, space and time flash before you! You are then yourself again!");
+
+            // Update player's location
+            try
+            {
+                if (originRoom != null)
+                    originRoom.Players.Remove(target);
+
+                target.CurrentRoom = destRoom;
+                destRoom.Players.Add(target);
+
+                // Persist
+                PlayerPersistence.SavePlayer(_db, target);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][TELEPORT] Failed to teleport player: {ex.Message}");
+                return MessageHandler.System("Teleport failed due to server error.");
+            }
+
+            // Broadcast arrival to destination room (AFTER player is moved)
+            foreach (var p in destRoom.Players.Where(p => p != target))
+            {
+                MessageHandler.SendSystem(p, $"In a thunderous flash {target.Name} appears, quite confused!");
+            }
+
+            // Notify admin
+            admin.PendingMessageQueue.Add(MessageHandler.System($"Teleported {target.Name} to {destRoom.Name}."));
+
+            // Send room updates to all affected players
+            if (originRoom != null)
+                BroadcastRoomUpdates(originRoom, _world, _db);
+            BroadcastRoomUpdates(destRoom, _world, _db);
+
+            return null;
+        }
+
         public Message? HandleNpcCounts(Player player, string command)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
@@ -2341,6 +3846,26 @@ namespace MudServer
             "DOWN" => "UP",
             _ => ""
         };
+
+        /// <summary>
+        /// Helper to broadcast room updates to all occupants (for admin edits).
+        /// </summary>
+        private void BroadcastRoomUpdates(Room room, World.World world, SqliteConnection db)
+        {
+            if (room == null) return;
+            try
+            {
+                foreach (var p in room.Players)
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        room,
+                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                        room.Players.Where(pl => pl != p && !pl.IsInvisibleToMortals).Select(pl => pl.Name).ToList(),
+                        world, db));
+                }
+            }
+            catch { /* best-effort */ }
+        }
     }
 }
 

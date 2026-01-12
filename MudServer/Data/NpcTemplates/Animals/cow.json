@@ -20,7 +20,10 @@
       "CreatedPerChance": 2,
       "Max": 6,
       "ItemTemplate": "milk_raw",
-      "RequiresItem": "None"
+      "RequiresItem": "None",
+      "ConsumesReqs": false,
+      "RequiresTool": "None",
+      "RequiresRoomFlag": "None"
     },
     {
       "Behavior": "ItemCreator",
@@ -30,7 +33,10 @@
       "CreatedPerChance": 2,
       "Max": 6,
       "ItemTemplate": "milk_raw",
-      "RequiresItem": "None"
+      "RequiresItem": "None",
+      "ConsumesReqs": false,
+      "RequiresTool": "None",
+      "RequiresRoomFlag": "None"
     }
   ],
   "AiTaskList": [],

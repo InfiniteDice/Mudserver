@@ -1,0 +1,14 @@
+{
+  "Id": "bag_large",
+  "Name": "Large Bag",
+  "ItemCategory": "Container",
+  "Weight": 0.3,
+  "Value": 5,
+  "ShortDesc": "A goods transportation bag",
+  "LongDesc": "A large bag made of linen, this can hold some stuff.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity15", "Accept:All" ],
+  "Material": "Cloth",
+  "BaseACBonus": 0.0
+}

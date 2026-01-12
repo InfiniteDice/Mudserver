@@ -93,6 +93,9 @@ namespace MudPersistence
             // NEW: Flags column support
             if (Has("Flags")) wanted.Add("Flags");
 
+            // NEW: AlignmentValue persisted as REAL/NUMERIC
+            if (Has("AlignmentValue")) wanted.Add("AlignmentValue");
+
             if (wanted.Count == 0) return;
 
             var sql = $"SELECT {string.Join(",", wanted)} FROM Player WHERE PlayerID = @pid;";
@@ -156,11 +159,24 @@ namespace MudPersistence
                                         player.FlagsJson = "[]";
                                     }
                                     break;
+                                case "AlignmentValue":
+                                    try
+                                    {
+                                        player.AlignmentValue = GetDoubleFlexible(rdr, ordinal, player.AlignmentValue);
+                                    }
+                                    catch { player.AlignmentValue = 0.0; }
+                                    break;
                             }
                         }
                         catch { }
                         ordinal++;
                     }
+                    // After loading numeric AlignmentValue, compute enum Alignment once (best-effort).
+                    try
+                    {
+                        RefreshAlignmentFromValue(player);
+                    }
+                    catch { /* best-effort */ }
                 }
             }
             catch { }
@@ -231,6 +247,9 @@ namespace MudPersistence
             if (Has("MaxArcanePower")) colAssignments.Add("MaxArcanePower = @MaxArcanePower");
 
             if (Has("Flags")) colAssignments.Add("Flags = @Flags");
+
+            // NEW: AlignmentValue persisted
+            if (Has("AlignmentValue")) colAssignments.Add("AlignmentValue = @AlignmentValue");
 
             var sql = $"UPDATE Player SET {string.Join(", ", colAssignments)} WHERE PlayerID = @pid;";
 
@@ -309,6 +328,17 @@ namespace MudPersistence
                 cmd.Parameters.AddWithValue("@Flags", "[]");
             }
 
+            // NEW: AlignmentValue parameter
+            try
+            {
+                if (Has("AlignmentValue"))
+                    cmd.Parameters.AddWithValue("@AlignmentValue", player.AlignmentValue);
+            }
+            catch
+            {
+                if (Has("AlignmentValue")) cmd.Parameters.AddWithValue("@AlignmentValue", 0.0);
+            }
+
             try
             {
                 cmd.ExecuteNonQuery();
@@ -319,5 +349,29 @@ namespace MudPersistence
                 throw;
             }
         } // end SavePlayerInternal
+
+        // Map AlignmentValue -> Alignment enum and apply to player.
+        // Rules:
+        //   - AlignmentValue < -50.0 => Evil
+        //   - -50.0 .. +50.0 => Neutral
+        //   - AlignmentValue > +50.0 => Good
+        public static void RefreshAlignmentFromValue(Player player)
+        {
+            if (player == null) return;
+            try
+            {
+                double v = player.AlignmentValue;
+                if (v < -50.0)
+                    player.Alignment = MudCore.Entities.Alignment.Evil;
+                else if (v > 50.0)
+                    player.Alignment = MudCore.Entities.Alignment.Good;
+                else
+                    player.Alignment = MudCore.Entities.Alignment.Neutral;
+            }
+            catch
+            {
+                player.Alignment = MudCore.Entities.Alignment.Neutral;
+            }
+        }
     }
 }

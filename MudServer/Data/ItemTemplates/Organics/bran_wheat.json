@@ -1,0 +1,14 @@
+{
+  "Id": "bran_wheat",
+  "Name": "Wheat Bran",
+  "ItemCategory": "Food",
+  "Weight": 0.05,
+  "Value": 2,
+  "ShortDesc": "Bran of wheat",
+  "LongDesc": "Some bran from grinding wheat, I bet you could make something with this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "true"
+}

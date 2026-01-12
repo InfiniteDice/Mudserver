@@ -2,7 +2,7 @@
 using System.Runtime.CompilerServices;
 using MudCore.Entities;
 
-namespace MudServer.MudCore.AI
+namespace MudCore.AI
 {
     // Top-level registry for ItemTrader instances.
     // Uses ConditionalWeakTable so entries do not prevent GC of Npc objects.

@@ -4,7 +4,7 @@ using System.Linq;
 using Microsoft.Data.Sqlite;
 using MudCore.World;
 
-namespace MudServer.MudCore.AI
+namespace MudCore.AI
 {
     /// <summary>
     /// Simple BFS pathfinder that is door-aware.
@@ -20,7 +20,7 @@ namespace MudServer.MudCore.AI
         /// If conn is null the method will conservatively assume doors are not locked.
         /// Returns null when no passable path exists.
         /// </summary>
-        public static List<(Room.RoomExit Exit, Room ToRoom)>? FindPath(World world, int fromRoomId, int toRoomId, SqliteConnection? conn = null)
+        public static List<(Room.RoomExit Exit, Room ToRoom)>? FindPath(World.World world, int fromRoomId, int toRoomId, SqliteConnection? conn = null)
         {
             if (world == null) return null;
             if (fromRoomId == toRoomId) return new List<(Room.RoomExit, Room)>(); // already there: zero-step path
@@ -69,6 +69,8 @@ namespace MudServer.MudCore.AI
                     }
 
                     if (blockedByLockedDoor) continue;
+
+
 
                     // Accept neighbor
                     visited.Add(nbrId);

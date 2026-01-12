@@ -1,0 +1,87 @@
+{
+  "Id": "worker_miller",
+  "Name": "Miller",
+  "Alignment": "Neutral",
+  "Description": "A miller, works to change grain to flour, supplies baker etc.",
+  "IdleActions": [
+    "plays with the temse",
+    "says: lookin good, lookin good!",
+    "scratches his nose",
+    "checks that everything is in order!"
+  ],
+  "WanderChance": 0.0047741,
+  "WanderAreas": [],
+  "AiBehaviors": [
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "afternoon",
+      "Chance": 1.0,
+      "Location": "Npc",
+      "CreatedPerChance": 1,
+      "Max": 5,
+      "ItemTemplate": "grist_wheat",
+      "RequiresItem": [ "grain_wheat:1" ],
+      "RequiresTool": "tool_temse",
+      "RequiresRoomFlag": "Grindstone",
+      "ConsumesReqs": "true"
+    },
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "Morning",
+      "Chance": 1.0,
+      "Location": "Npc",
+      "CreatedPerChance": 1,
+      "Max": 2,
+      "ItemTemplate": "flour_wheat",
+      "RequiresItem": [ "grist_wheat:2" ],
+      "RequiresTool": "tool_temse",
+      "RequiresRoomFlag": "Grindstone",
+      "ConsumesReqs": "true"
+    }
+  ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 100,
+  "Health": 100,
+  "Flags": ["Carnivore"],
+  "Level": 2,
+  "Mass": 75.0,
+  "EffMass": 75.0,
+  "SizeEnum": 4,
+  "CombatSkill": 49.0,
+  "EffCombatSkill": 49.0,
+  "BaseDmgDice": 2.15,
+  "EffDmgDice": 2.15,
+  "BaseArmorClass": 12.0,
+  "EffArmorClass": 12.0,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": ["tool_temse"],
+  "DropChance": 0.70,
+  "DropCountMin": 1,
+  "DropCountMax": 4,
+  "DropPool": [
+    {
+      "TemplateId": "coin_copper",
+      "Weight": 60,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 6,
+      "Stackable": true,
+      "Notes": "coins"
+    },
+    {
+      "TemplateId": "flour_wheat",
+      "Weight": 40,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 3,
+      "Stackable": true,
+      "Notes": "cooking component/food"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 1,
+  "VisualTrait": "",
+  "VisualTraitType": "Generalhumanoid"
+}

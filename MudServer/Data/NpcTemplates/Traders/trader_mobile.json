@@ -1,8 +1,8 @@
 {
-  "Id": "trader_seleas",
-  "Name": "Seleas",
+  "Id": "trader_mobile",
+  "Name": "Trader",
   "Alignment": "Neutral",
-  "Description": "Seleas the renouned trader.",
+  "Description": "A travelling trader.",
   "IdleActions": [
     "Looks around for the next customer",
     "Checks things over twice",
@@ -41,7 +41,7 @@
   "CurrentAiTask": null,
   "HealthMax": 100,
   "Health": 100,
-  "Flags": [ "Carnivore", "Sleep:0:Midnight:Dawn" ],
+  "Flags": [ "Carnivore", "Sleep:36:Night:Dawn" , "Move:59:Noon", "Move:81:Evening"],
   "Level": 10,
   "Mass": 75.0,
   "EffMass": 75.0,
@@ -79,7 +79,7 @@
   ],
   "Debuffs": [],
   "Buffs": [],
-  "Hunger": 1,
+  "Hunger": 0,
   "VisualTrait": "",
   "VisualTraitType": "Generalhumanoid"
 }

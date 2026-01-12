@@ -6,8 +6,9 @@ using MudCore.Entities;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
+using World = global::MudCore.World.World;
 
-namespace MudServer
+namespace MudCore.Actions
 {
     // Phase 1+2: Add tick-based multi-party combat loop (one attack per participant per tick)
     public static class CombatManager
@@ -74,31 +75,29 @@ namespace MudServer
 
         // ----------------------- Phase 1 API: Start / Join -----------------------
 
-        public static Message StartOrJoin(Player attacker, Npc defender, World world, SqliteConnection conn)
+        public static Message StartOrJoin(Player attacker, Npc defender, World.World world, SqliteConnection conn)
         {
             if (attacker?.CurrentRoom == null || defender?.CurrentRoom == null || attacker.CurrentRoom != defender.CurrentRoom)
                 return MessageHandler.System("Target is not in your room.");
 
             // If player was digging/mining, starting an attack interrupts it immediately.
-            try { MudServer.MudCore.Actions.DigManager.CancelPending(attacker); } catch { /* best-effort */ }
+            try { MudCore.Actions.DigManager.CancelPending(attacker); } catch { /* best-effort */ }
 
-            // NEW: If attacker had any trader-related pending (TraderBuy or TraderSession), terminate it due to combat start.
+            // NEW: When a player starts combat against an NPC, ensure any pending trade sessions are terminated.
             try
             {
                 var pa = attacker.PendingAction;
                 if (pa != null && pa.Data is System.Collections.Generic.Dictionary<string, object> d)
                 {
-                    // Look for NpcId in pending data when present
                     if (d.TryGetValue("NpcId", out var nidObj) && int.TryParse(nidObj.ToString(), out var nid))
                     {
                         var traderNpc = attacker.CurrentRoom?.Npcs.FirstOrDefault(n => n != null && n.NpcID == nid)
                                         ?? world.Rooms.SelectMany(r => r.Npcs).FirstOrDefault(n => n != null && n.NpcID == nid);
 
-                        if (traderNpc != null && MudServer.MudCore.AI.ItemTraderManager.TryGet(traderNpc, out var trader))
+                        if (traderNpc != null && MudCore.AI.ItemTraderManager.TryGet(traderNpc, out var trader))
                         {
                             try
                             {
-                                // Use the public termination API on the trader to refund/clear state.
                                 trader.HandlePlayerTermination(attacker, "combat", conn);
                             }
                             catch { /* best-effort */ }
@@ -106,18 +105,15 @@ namespace MudServer
                     }
                     else
                     {
-                        // fallback: if the pending Command explicitly names a TraderSession without NpcId, clear it
                         if (!string.IsNullOrWhiteSpace(pa.Command) && pa.Command.StartsWith("Trader", StringComparison.OrdinalIgnoreCase))
                         {
                             try { attacker.PendingAction = null; } catch { }
                         }
                     }
 
-                    // Ensure client-side updates so inventory/UI refreshes when trade aborted
                     try { MessageHandler.EnqueuePlayerUpdate(attacker); } catch { }
                     try
                     {
-                        // Send authoritative room payload so clients refresh NPC list/state immediately
                         foreach (var p in attacker.CurrentRoom?.Players ?? new List<Player>())
                         {
                             try
@@ -143,11 +139,20 @@ namespace MudServer
                 state.TeamA.Members.Add(pA);
                 state.TeamB.Members.Add(pD);
 
+                // NEW: mark NPC participants with Combat interrupt so scheduler/executor stop movement
+                try
+                {
+                    if (pD.AsNpc != null) pD.AsNpc.AddInterrupt(Npc.InterruptType.Combat, owner: null, note: "InCombat", ttl: null);
+                    // attacker is a Player here; no NPC attacker to mark.
+                }
+                catch { /* best-effort */ }
+
                 if (DebugCombat)
                     Console.WriteLine($"[COMBAT] State {state.Id} created in Room {room.RoomID}. TeamA=[{pA.DisplayName}] TeamB=[{pD.DisplayName}]");
 
-                var msg = PerformImmediateAttack(attacker, defender, world, conn);
-                Combat.Messaging.Engage(attacker.CurrentRoom, attacker, defender);
+                var msg = PerformImmediateAttack_PlayerVsNpc(attacker, defender, world, conn);
+                // explicit casts to force the correct Engage overload (Room, Player, Npc)
+                try { Combat.Messaging.Engage(attacker.CurrentRoom, (Player)attacker, (Npc)defender); } catch { }
                 return msg ?? MessageHandler.System($"{attacker.Name} engages {defender.DisplayName}!");
             }
             else
@@ -166,14 +171,14 @@ namespace MudServer
                     BroadcastSystem(room, $"{attacker.Name} joins the fight against {defender.DisplayName}!");
                 }
 
-                var msg = PerformImmediateAttack(attacker, defender, world, conn);
+                var msg = PerformImmediateAttack_PlayerVsNpc(attacker, defender, world, conn);
                 return msg ?? MessageHandler.System($"{attacker.Name} attacks {defender.DisplayName}.");
             }
-        }//end StartOrJoin
+        } //end StartOrJoin
 
         // Public join (assist) API: join an existing combat without immediate attack.
         // target can be an NPC or Player name in the same room.
-        public static Message Assist(Player joiner, string targetName, World world, SqliteConnection conn)
+        public static Message Assist(Player joiner, string targetName, World.World world, SqliteConnection conn)
         {
             if (joiner?.CurrentRoom == null)
                 return MessageHandler.System("You are not in a valid room.");
@@ -246,7 +251,7 @@ namespace MudServer
 
         // ----------------------- Phase 2: Tick loop -----------------------
 
-        public static void Tick(World world, SqliteConnection conn)
+        public static void Tick(World.World world, SqliteConnection conn)
         {
             try
             {
@@ -367,7 +372,7 @@ namespace MudServer
             int budget,
             HashSet<object> usedAttackers,
             Dictionary<object, int> defenderSlotsUsed,
-            World world,
+            World.World world,
             SqliteConnection conn)
         {
             if (budget <= 0) return;
@@ -395,7 +400,7 @@ namespace MudServer
                     {
                         if (defender.IsPlayer && defender.AsPlayer != null)
                         {
-                            MudServer.MudCore.Actions.DigManager.CancelPending(defender.AsPlayer);
+                            MudCore.Actions.DigManager.CancelPending(defender.AsPlayer);
 
                             // NEW: also terminate any pending Trader* for defender due to combat interrupt (TraderBuy or TraderSession)
                             try
@@ -407,7 +412,7 @@ namespace MudServer
                                     {
                                         var traderNpc = defender.AsPlayer.CurrentRoom?.Npcs.FirstOrDefault(n => n != null && n.NpcID == nid)
                                                         ?? world.Rooms.SelectMany(r => r.Npcs).FirstOrDefault(n => n != null && n.NpcID == nid);
-                                        if (traderNpc != null && MudServer.MudCore.AI.ItemTraderManager.TryGet(traderNpc, out var trader))
+                                        if (traderNpc != null && MudCore.AI.ItemTraderManager.TryGet(traderNpc, out var trader))
                                         {
                                             try { trader.HandlePlayerTermination(defender.AsPlayer, "combat", conn); } catch { /* best-effort */ }
 
@@ -828,7 +833,8 @@ namespace MudServer
 
 
         // Phase 1 immediate attack helper (updated to solo CS award fallback through new method)
-        private static Message? PerformImmediateAttack(Player attacker, Npc defender, World world, SqliteConnection conn)
+        // Phase 1 immediate attack helper (player -> npc)
+        private static Message? PerformImmediateAttack_PlayerVsNpc(Player attacker, Npc defender, World.World world, SqliteConnection conn)
         {
             Combat.InitializeSizeDefaults(attacker);
             Combat.InitializeSizeDefaults(defender);
@@ -839,10 +845,6 @@ namespace MudServer
             var (dmg, isCrit) = Combat.CalculateDamage(attacker, defender);
             var msg = $"{attacker.Name} attacks {defender.DisplayName} for {Math.Round(dmg, 1)} damage. ({Math.Round((double)defender.Health, 0)}/{Math.Round((double)defender.HealthMax, 0)})";
 
-            // NOTE:
-            // Do NOT broadcast the attack line here. Historically this method both broadcasted the line
-            // (via MessageHandler.SendSystem) and returned a Message which higher layers also send,
-            // producing duplicate lines in the client log. Return the Message and let the caller send it once.
             try { if (conn != null) NpcPersistence.UpdateNpc(conn, defender); } catch { }
 
             // Apply hit-trigger effects on critical
@@ -896,9 +898,219 @@ namespace MudServer
                 Combat.HandleNpcDeath(attacker, defender, world, conn, soloContributors);
             }
 
-            // Return a system message for the caller to send once (avoids duplicate room lines)
             return MessageHandler.System(msg);
-        } // end PerformImmediateAttack
+        } // end PerformImmediateAttack_PlayerVsNpc
+
+        // -----------------------------------------------------------------------------
+        // New: NPC-initiated combat entrypoints
+        // These adapt the existing StartOrJoin flow to accept an NPC initiator and ensure
+        // CombatState is created and participants registered so the tick loop takes over.
+        // -----------------------------------------------------------------------------
+
+        public static Message NpcStartOrJoin(Npc attacker, Player defender, World.World world, SqliteConnection conn)
+        {
+            if (attacker?.CurrentRoom == null || defender?.CurrentRoom == null || attacker.CurrentRoom != defender.CurrentRoom)
+                return MessageHandler.System("Target is not in your room.");
+
+            var room = attacker.CurrentRoom;
+            if (!_activeByRoom.TryGetValue(room.RoomID, out var state))
+            {
+                state = new CombatState { RoomID = room.RoomID, Room = room, InitiatorTeamId = 0 };
+                _activeByRoom[room.RoomID] = state;
+
+                var pA = BuildParticipant(attacker);
+                var pD = BuildParticipant(defender);
+                state.TeamA.Members.Add(pA);
+                state.TeamB.Members.Add(pD);
+
+                // NEW: mark NPC attacker as in-combat to stop movement
+                try
+                {
+                    attacker.AddInterrupt(Npc.InterruptType.Combat, owner: null, note: "InCombat", ttl: null);
+                }
+                catch { /* best-effort */ }
+
+                if (DebugCombat)
+                    Console.WriteLine($"[COMBAT] State {state.Id} created in Room {room.RoomID}. TeamA=[{pA.DisplayName}] TeamB=[{pD.DisplayName}]");
+
+                // Perform immediate attack using NPC attacker variant
+                var msg = PerformImmediateAttack_NpcVsPlayer(attacker, defender, world, conn);
+
+                // explicit casts to force the correct Engage overload (Room, Npc, Player)
+                try { Combat.Messaging.Engage(attacker.CurrentRoom, (Npc)attacker, (Player)defender); } catch { }
+
+                return msg ?? MessageHandler.System($"{attacker.DisplayName} engages {defender.Name}!");
+            }
+            else
+            {
+                EnsureParticipantPresent(state, attacker, defender);
+                var targetTeam = state.GetTeamOf(defender) ?? state.TeamB;
+                var attackTeam = state.Opposing(targetTeam);
+
+                if (state.GetTeamOf(attacker) == null)
+                {
+                    var pAtt = BuildParticipant(attacker);
+                    attackTeam.Members.Add(pAtt);
+
+                    // NEW: mark newly-joined NPC attacker in-combat
+                    try { attacker.AddInterrupt(Npc.InterruptType.Combat, owner: null, note: "InCombat", ttl: null); } catch { }
+
+                    if (DebugCombat)
+                        Console.WriteLine($"[COMBAT] Join: {attacker.DisplayName} added to Team{attackTeam.Id} in State {state.Id}");
+                    BroadcastSystem(room, $"{attacker.DisplayName} joins the fight against {defender.Name}!");
+                }
+
+                if (state.GetTeamOf(defender) == null)
+                {
+                    var pDef = BuildParticipant(defender);
+                    var defTeam = state.Opposing(attackTeam);
+                    defTeam.Members.Add(pDef);
+                }
+
+                var msg = PerformImmediateAttack_NpcVsPlayer(attacker, defender, world, conn);
+                return msg ?? MessageHandler.System($"{attacker.DisplayName} attacks {defender.Name}.");
+            }
+        } // end NpcStartOrJoin (Npc->Player)
+
+        public static Message NpcStartOrJoin(Npc attacker, Npc defender, World.World world, SqliteConnection conn)
+        {
+            if (attacker?.CurrentRoom == null || defender?.CurrentRoom == null || attacker.CurrentRoom != defender.CurrentRoom)
+                return MessageHandler.System("Target is not in the same room.");
+
+            var room = attacker.CurrentRoom;
+            if (!_activeByRoom.TryGetValue(room.RoomID, out var state))
+            {
+                state = new CombatState { RoomID = room.RoomID, Room = room, InitiatorTeamId = 0 };
+                _activeByRoom[room.RoomID] = state;
+
+                var pA = BuildParticipant(attacker);
+                var pD = BuildParticipant(defender);
+                state.TeamA.Members.Add(pA);
+                state.TeamB.Members.Add(pD);
+
+                // NEW: mark both NPC participants with Combat interrupt
+                try
+                {
+                    attacker.AddInterrupt(Npc.InterruptType.Combat, owner: null, note: "InCombat", ttl: null);
+                    defender.AddInterrupt(Npc.InterruptType.Combat, owner: null, note: "InCombat", ttl: null);
+                }
+                catch { /*best-effort*/ }
+
+                if (DebugCombat)
+                    Console.WriteLine($"[COMBAT] State {state.Id} created in Room {room.RoomID}. TeamA=[{pA.DisplayName}] TeamB=[{pD.DisplayName}]");
+
+                // Perform immediate attack using NPC->NPC variant
+                var msg = PerformImmediateAttack_NpcVsNpc(attacker, defender, world, conn);
+
+                // explicit casts to force the correct Engage overload (Room, Npc, Npc)
+                try { Combat.Messaging.Engage(attacker.CurrentRoom, (Npc)attacker, (Npc)defender); } catch { }
+
+                return msg ?? MessageHandler.System($"{attacker.DisplayName} engages {defender.DisplayName}!");
+            }
+            else
+            {
+                var targetTeam = state.GetTeamOf(defender) ?? state.TeamB;
+                var attackTeam = state.Opposing(targetTeam);
+
+                if (state.GetTeamOf(attacker) == null)
+                {
+                    var pAtt = BuildParticipant(attacker);
+                    attackTeam.Members.Add(pAtt);
+
+                    // NEW: mark newly-joined NPC attacker in-combat
+                    try { attacker.AddInterrupt(Npc.InterruptType.Combat, owner: null, note: "InCombat", ttl: null); } catch { }
+
+                    if (DebugCombat)
+                        Console.WriteLine($"[COMBAT] Join: {attacker.DisplayName} added to Team{attackTeam.Id} in State {state.Id}");
+                    BroadcastSystem(room, $"{attacker.DisplayName} joins the fight against {defender.DisplayName}!");
+                }
+
+                if (state.GetTeamOf(defender) == null)
+                {
+                    var pDef = BuildParticipant(defender);
+                    var defTeam = state.Opposing(attackTeam);
+                    defTeam.Members.Add(pDef);
+                }
+
+                var msg = PerformImmediateAttack_NpcVsNpc(attacker, defender, world, conn);
+                return msg ?? MessageHandler.System($"{attacker.DisplayName} attacks {defender.DisplayName}.");
+            }
+        } // end NpcStartOrJoin (Npc->Npc)
+
+        // NPC -> Player immediate attack helper
+        private static Message? PerformImmediateAttack_NpcVsPlayer(Npc attacker, Player defender, World.World world, SqliteConnection conn)
+        {
+            Combat.InitializeSizeDefaults(attacker);
+            Combat.InitializeSizeDefaults(defender);
+            Combat.UpdateEffectiveStats(attacker);
+            Combat.UpdateEffectiveStats(defender);
+
+            var (dmg, isCrit) = Combat.CalculateDamage(attacker, defender);
+            // Use Messaging.Attack with attackerPlayer = null so clients see NPC as attacker
+            Combat.Messaging.Attack(attacker.CurrentRoom, null, attacker.DisplayName, defender.Name, dmg, defender.Health, defender.MaxHealth, defender);
+
+            if (isCrit)
+            {
+                try { MessageHandler.SendSystem(defender, $"{attacker.DisplayName} lands a critical strike on you!"); } catch { }
+            }
+
+            if (defender.Health <= 0)
+            {
+                try { Combat.Messaging.PlayerKo(defender, attacker.DisplayName); } catch { }
+            }
+
+            try { if (conn != null) PlayerPersistence.SavePlayer(conn, defender); } catch { }
+            try { if (conn != null) NpcPersistence.UpdateNpc(conn, attacker); } catch { }
+
+            // Return null since we already broadcasted; preserve caller expectations.
+            return null;
+        } // end PerformImmediateAttack_NpcVsPlayer
+
+        // NPC -> NPC immediate attack helper
+        private static Message? PerformImmediateAttack_NpcVsNpc(Npc attacker, Npc defender, World.World world, SqliteConnection conn)
+        {
+            Combat.InitializeSizeDefaults(attacker);
+            Combat.InitializeSizeDefaults(defender);
+            Combat.UpdateEffectiveStats(attacker);
+            Combat.UpdateEffectiveStats(defender);
+
+            var (dmg, isCrit) = Combat.CalculateDamage(attacker, defender);
+
+            Combat.Messaging.Attack(attacker.CurrentRoom, null, attacker.DisplayName, defender.DisplayName, dmg, defender.Health, defender.HealthMax);
+
+            if (isCrit)
+            {
+                try
+                {
+                    foreach (var p in attacker.CurrentRoom.Players)
+                        MessageHandler.SendSystem(p, $"{attacker.DisplayName} scores a critical hit on {defender.DisplayName}!");
+                }
+                catch { }
+            }
+
+            if (defender.Health <= 0)
+            {
+                try
+                {
+                    Combat.HandleNpcDeath(null, defender, world, conn);
+                }
+                catch { }
+
+                try
+                {
+                    foreach (var p in attacker.CurrentRoom.Players)
+                    {
+                        MessageHandler.SendSystem(p, $"{defender.DisplayName} has been killed by {attacker.DisplayName}.");
+                    }
+                }
+                catch { /* best-effort */ }
+            }
+
+            try { if (conn != null) NpcPersistence.UpdateNpc(conn, attacker); } catch { }
+            try { if (conn != null) NpcPersistence.UpdateNpc(conn, defender); } catch { }
+
+            return null;
+        } // end PerformImmediateAttack_NpcVsNpc
 
         private static CombatParticipant BuildParticipant(Player p)
         {
@@ -935,6 +1147,7 @@ namespace MudServer
             };
         }
 
+        // Ensure participant present for Player attacker / Npc defender (original typed helper)
         private static void EnsureParticipantPresent(CombatState state, Player attacker, Npc defender)
         {
             if (!state.ContainsEntity(attacker))
@@ -953,8 +1166,46 @@ namespace MudServer
             }
         }
 
+        // New overload: Npc attacker / Player defender
+        private static void EnsureParticipantPresent(CombatState state, Npc attacker, Player defender)
+        {
+            if (!state.ContainsEntity(attacker))
+            {
+                var pA = BuildParticipant(attacker);
+                var defTeam = state.GetTeamOf(defender) ?? state.TeamB;
+                var atkTeam = state.Opposing(defTeam);
+                atkTeam.Members.Add(pA);
+            }
+            if (!state.ContainsEntity(defender))
+            {
+                var pD = BuildParticipant(defender);
+                var atkTeam = state.GetTeamOf(attacker) ?? state.TeamA;
+                var defTeam = state.Opposing(atkTeam);
+                defTeam.Members.Add(pD);
+            }
+        }
+
+        // New overload: Npc attacker / Npc defender
+        private static void EnsureParticipantPresent(CombatState state, Npc attacker, Npc defender)
+        {
+            if (!state.ContainsEntity(attacker))
+            {
+                var pA = BuildParticipant(attacker);
+                var defTeam = state.GetTeamOf(defender) ?? state.TeamB;
+                var atkTeam = state.Opposing(defTeam);
+                atkTeam.Members.Add(pA);
+            }
+            if (!state.ContainsEntity(defender))
+            {
+                var pD = BuildParticipant(defender);
+                var atkTeam = state.GetTeamOf(attacker) ?? state.TeamA;
+                var defTeam = state.Opposing(atkTeam);
+                defTeam.Members.Add(pD);
+            }
+        }
+
         // NEW: prune participants helper (moved back from prior iteration)
-        private static void PruneParticipants(CombatState state, World world)
+        private static void PruneParticipants(CombatState state, World.World world)
         {
             // Remove entities that left the room or are dead
             state.TeamA.Members.RemoveAll(p => !IsStillInRoom(p, state.Room) || !p.Alive);
@@ -977,6 +1228,24 @@ namespace MudServer
         private static void EndState(CombatState state, string reason)
         {
             if (!state.Active) return;
+
+            // NEW: clear Combat interrupt for any NPC participants when combat ends
+            try
+            {
+                foreach (var p in state.AllParticipants().ToList())
+                {
+                    try
+                    {
+                        if (!p.IsPlayer && p.AsNpc != null)
+                        {
+                            p.AsNpc.RemoveInterrupt(Npc.InterruptType.Combat, owner: null);
+                        }
+                    }
+                    catch { /* best-effort */ }
+                }
+            }
+            catch { /* best-effort */ }
+
             state.Active = false;
             foreach (var pl in state.Room.Players)
                 MessageHandler.SendSystem(pl, "Combat ends.");
@@ -985,12 +1254,12 @@ namespace MudServer
 
         // NEW helper: extracted call-for-help logic
         private static void TryCallForHelp(
-            CombatState state,
-            CombatParticipant attacker,
-            CombatParticipant defender,
-            CombatTeam defendersTeam,
-            World world,
-            SqliteConnection conn)
+    CombatState state,
+    CombatParticipant attacker,
+    CombatParticipant defender,
+    CombatTeam defendersTeam,
+    World.World world,
+    SqliteConnection conn)
         {
             if (state == null || defender == null || world == null) return;
             if (defender.IsPlayer || defender.AsNpc == null) return;
@@ -1081,7 +1350,6 @@ namespace MudServer
                 }
                 catch { }
 
-                // Determine target player for helpers (prefer the immediate attacker if it's a player)
                 Player? targetPlayer = attacker.IsPlayer ? attacker.AsPlayer : state.Room.Players.FirstOrDefault(p => p != null && p.Health > 0);
 
                 foreach (var responder in responders)
@@ -1099,6 +1367,9 @@ namespace MudServer
                         responder.CurrentRoomID = room.RoomID;
                         room.Npcs.Add(responder);
 
+                        // NEW: mark responder NPC as in-combat so they won't wander while pathing/engaging
+                        try { responder.AddInterrupt(Npc.InterruptType.Combat, owner: null, note: "CalledToHelp", ttl: null); } catch { }
+
                         // Add to combat state defender team so they take part in following ticks
                         try
                         {
@@ -1111,13 +1382,12 @@ namespace MudServer
                         }
                         catch { /* best-effort */ }
 
-                        // Broadcast arrival to players and push a Room update so clients refresh NPC list
+                        // Broadcast arrival and push a Room update so clients refresh NPC list/state immediately
                         try
                         {
                             foreach (var p in room.Players)
                                 MessageHandler.SendSystem(p, $"{responder.DisplayName} rushes in to assist!");
 
-                            // Send authoritative room payload so clients show the new NPC immediately
                             foreach (var p in room.Players)
                                 p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
                         }
@@ -1133,7 +1403,6 @@ namespace MudServer
 
                                 var (rdmg, rcrit) = Combat.CalculateDamage(responder, targetPlayer);
 
-                                // use Messaging.Attack (attackerPlayer=null)
                                 Combat.Messaging.Attack(room, null, responder.DisplayName, targetPlayer.Name, rdmg, targetPlayer.Health, targetPlayer.MaxHealth, targetPlayer);
 
                                 if (rcrit)
@@ -1141,7 +1410,6 @@ namespace MudServer
                                     MessageHandler.SendSystem(targetPlayer, $"{responder.DisplayName} lands a critical strike on you!");
                                 }
 
-                                // Ensure target player's authoritative update is sent
                                 try { if (conn != null) PlayerPersistence.LoadExtendedCombat(conn, targetPlayer); } catch { }
                                 try { MessageHandler.EnqueuePlayerUpdate(targetPlayer); } catch { }
                             }

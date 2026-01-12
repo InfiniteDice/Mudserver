@@ -1,0 +1,14 @@
+{
+  "Id": "grist_wheat",
+  "Name": "Wheat Grist",
+  "ItemCategory": "Food",
+  "Weight": 0.1,
+  "Value": 2,
+  "ShortDesc": "Grist of wheat",
+  "LongDesc": "Some grist made from wheat grain, I bet you could feed something with this, or make something else with it.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "true"
+}

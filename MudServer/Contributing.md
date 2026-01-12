@@ -25,11 +25,14 @@ Scope:
 Use the following when applying fixes to large files.
 Every contributor and every AI assistant must follow this exact procedure when proposing code changes or patches that modify large classes. Failing to follow this format will cause the patch to be rejected.
 
-1) Always provide the smallest syntactic unit that fully contains all modifications: a Try/Catch block, an IF/ELSE block (including its else-if/else
+1) Always search for the canonical handler for any requested patch flow (example: AdminService.HandlePendingAction / pa.Command checks), ask for confirmation
+- if multiple plausible locations exist. We want to avoid duplicating code elsewhere when handlers already exist.
+
+2) Always provide the smallest syntactic unit that fully contains all modifications: a Try/Catch block, an IF/ELSE block (including its else-if/else
 branches), a single CASE block, or — when changes touch multiple such blocks — the entire METHOD (signature and body). If you change a declaration
 (field/property/method signature), include the whole declaration. This ensures deterministic, machine-applicable patches.
 
-2) Provide explicit, machine-findable replacement instructions
+3) Provide explicit, machine-findable replacement instructions
 - For each changed 'unit' include a 4 word search-start and a 4 word search-end marker in plain text so the patch can be applied with two simple text searches.
 - Format (required):
   - Search start keyword: "REPLACE FROM: <exact search string of 4 words>"
@@ -40,27 +43,27 @@ branches), a single CASE block, or — when changes touch multiple such blocks �
   REPLACE TO:   "} // end TransferFromContainer"
 - Do not provide the entire pre-existing method or class. Only provide the exact search strings and the full replacement block.
 
-3) Include short explicit apply instructions for humans
+4) Include short explicit apply instructions for humans
 - After the code block include exact steps (3–4 lines) describing how to apply the patch in Visual Studio 2022, e.g.:
  1. Open `MudServer/MudCore/Entities/Inventory.cs` in Visual Studio.
  2. Find the line that contains the SEARCH START string you were given (use __Edit__ > __Find and Replace__ > __Quick Find__).
  3. Replace from that line through the line that matches the SEARCH END string with the provided block.
  4. Save, __Format Document__ and __Build Solution__.
 
-4) Show the full replacement block as a single code block and the target file path
+5) Show the full replacement block as a single code block and the target file path
 - Provide the complete replacement code block
 - Example (required format):
 - - This must be the only code block describing the replacement for that method.
 
-5) Provide a brief test checklist
+6) Provide a brief test checklist
 - At minimum: build the solution and run a focused manual test that exercises the changed method. Provide the specific in-game commands to run (e.g., `drop 30 copper`, `get 30 copper`).
 
-6) When changing multiple units of code, repeat steps 1–5 for each method in the same message.
+7) When changing multiple units of code, repeat steps 1–5 for each method in the same message.
 
-7) Flags and JSON normalization recommendation
+8) Flags and JSON normalization recommendation
 - If your change affects Flags/FlagsJson semantics ensure flags are serialized deterministically (for example: sort the flag list before calling `JsonSerializer.Serialize`) and document that in the patch notes.
 
-8) Commit message and PR guidelines
+9) Commit message and PR guidelines
 - Suggested commit message prefix: `fix(inv):` or `feat(inv):` followed by a short description.
 - In the PR description repeat the replacement instructions and test checklist so reviewers can quickly apply or test locally.
 

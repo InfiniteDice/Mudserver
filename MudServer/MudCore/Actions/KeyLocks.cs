@@ -6,7 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace MudServer
+namespace MudCore.Actions
 {
     /// <summary>
     /// Centralized lock & key mechanics.

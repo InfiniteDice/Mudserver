@@ -1,0 +1,14 @@
+{
+  "Id": "flour_wheat",
+  "Name": "Wheat Flour",
+  "ItemCategory": "Food",
+  "Weight": 0.2,
+  "Value": 4,
+  "ShortDesc": "Flour of wheat",
+  "LongDesc": "Some flour made from wheat, I bet you could make something with this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "true"
+}

@@ -3,7 +3,7 @@ using MudCore.World;
 using MudNetworking;
 using System.Linq;
 
-namespace MudServer
+namespace MudCore.Actions
 {
     public static class Chat
     {
@@ -31,7 +31,7 @@ namespace MudServer
             }
         }
 
-        public static void Yell(Player player, string text, World world)
+        public static void Yell(Player player, string text, World.World world)
         {
             if (player.CurrentRoom == null)
             {

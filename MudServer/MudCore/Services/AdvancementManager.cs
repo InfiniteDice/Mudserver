@@ -10,7 +10,7 @@ using MudCore.World;
 using MudPersistence;
 using MudNetworking;
 
-namespace MudServer.MudCore.Services
+namespace MudCore.Services
 {
     public sealed class LevelEntry
     {
@@ -165,7 +165,7 @@ namespace MudServer.MudCore.Services
         // - world is used for room/world context when announcing.
         // Returns a System Message intended for the actor (or null if nothing to report).
 
-        public static Message? CheckAndNotifyLevelFromXp(Player player, SqliteConnection conn, World world)
+        public static Message? CheckAndNotifyLevelFromXp(Player player, SqliteConnection conn, World.World world)
         {
             if (player == null) return null;
             if (!_initialized) Initialize();
@@ -246,7 +246,7 @@ namespace MudServer.MudCore.Services
         // Public helper to award XP programmatically (for non-combat systems).
         // Adds XP to the player, persists, then runs the level-check/notify pass.
         // Returns the message produced (level-up message when occurred) or an informational XP-gain message.
-        public static Message GainXp(Player player, long xpGained, World world, SqliteConnection conn)
+        public static Message GainXp(Player player, long xpGained, World.World world, SqliteConnection conn)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
             if (xpGained <= 0) return MessageHandler.System("No XP awarded.");

@@ -8,8 +8,10 @@ using MudCore.Entities;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
+using MudUtils;
 
-namespace MudServer.MudCore.AI
+
+namespace MudCore.AI
 {
     // Lightweight strongly-typed view of the JSON AiBehavior object for ItemTrader.
     // Fields are permissive and defaulted so missing properties in template JSON are tolerated.
@@ -64,7 +66,7 @@ namespace MudServer.MudCore.AI
     public sealed class ItemTrader
     {
         private readonly Npc _npc;
-        private readonly World _world;
+        private readonly World.World _world;
         private readonly TraderConfig _cfg;
         private TraderState _state;
         
@@ -124,7 +126,7 @@ namespace MudServer.MudCore.AI
 
         private const string TraderStateFlagPrefix = "TraderState:";
 
-        private ItemTrader(Npc npc, World world, TraderConfig cfg)
+        private ItemTrader(Npc npc, World.World world, TraderConfig cfg)
         {
             _npc = npc ?? throw new ArgumentNullException(nameof(npc));
             _world = world ?? throw new ArgumentNullException(nameof(world));
@@ -135,7 +137,7 @@ namespace MudServer.MudCore.AI
 
         // Factory: create an ItemTrader from Npc.Template.AiBehaviorsRaw when an ItemTrader behavior object exists.
         // Returns null when no ItemTrader behavior declared.
-        public static ItemTrader? CreateIfConfigured(Npc npc, World world)
+        public static ItemTrader? CreateIfConfigured(Npc npc, World.World world)
         {
             try
             {
@@ -402,7 +404,6 @@ namespace MudServer.MudCore.AI
                         {
                             Command = "TraderSession",
                             Step = "Active",
-                            // Keep minimal data: NpcId and display name for helpful messages
                             Data = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
                             {
                                 ["NpcId"] = _npc.NpcID,
@@ -411,7 +412,13 @@ namespace MudServer.MudCore.AI
                         };
 
                         // Lock this NPC in-memory to prevent wandering/auto-moving while session is active.
-                        try { _npc.IsTradeLocked = true; } catch { /* best-effort */ }
+                        try
+                        {
+                            _npc.IsTradeLocked = true;
+                            // NEW: also add an owner-scoped interrupt so scheduler/executor suppress movement.
+                            _npc.AddInterrupt(Npc.InterruptType.Trade, owner: player.PlayerID, note: "TraderSession", ttl: null);
+                        }
+                        catch { /* best-effort */ }
                     }
                     catch { /* best-effort; do not block showing summary */ }
 
@@ -429,7 +436,6 @@ namespace MudServer.MudCore.AI
                     case "buy":
                         if (!_cfg.Sell) return MessageHandler.System("I am not selling at this time.");
                         if (string.IsNullOrWhiteSpace(payload)) return MessageHandler.System("Usage: buy <item name>");
-                        // HandleBuy already matches by template id or item name. It will reserve the item and prompt for payment.
                         return HandleBuy(player, payload, conn);
                     case "sell":
                         if (!_cfg.Buy) return MessageHandler.System("I am not buying at this time.");
@@ -444,10 +450,8 @@ namespace MudServer.MudCore.AI
                     case "cancel":
                     case "quit":
                     case "end":
-                        // End session or pending purchase
                         try
                         {
-                            // If a purchase pending, HandlePlayerTerminationInternal will refund; otherwise just clear session.
                             if (player.PendingAction != null && string.Equals(player.PendingAction.Command, "TraderBuy", StringComparison.OrdinalIgnoreCase))
                             {
                                 HandlePlayerTerminationInternal(player, "cancel", conn);
@@ -931,15 +935,13 @@ namespace MudServer.MudCore.AI
             if (!string.Equals(pa.Command, "TraderBuy", StringComparison.OrdinalIgnoreCase)) return;
             if (!(pa.Data is Dictionary<string, object> dict)) { player.PendingAction = null; return; }
 
-            // Ensure NPC lock released for trade sessions when player terminates
-            try { _npc.IsTradeLocked = false; } catch { /* best-effort */ }
-
-            // Validate pending is for this trader
-            if (!dict.TryGetValue("NpcId", out var npcObj) || Convert.ToInt32(npcObj) != _npc.NpcID)
+            // NEW: remove Trade interrupt for this owning player so NPC can resume movement
+            try
             {
-                // Not for this trader - ignore
-                return;
+                try { _npc.RemoveInterrupt(Npc.InterruptType.Trade, owner: player.PlayerID); } catch { }
+                _npc.IsTradeLocked = false;
             }
+            catch { /* best-effort */ }
 
             long paid = 0;
             try { paid = dict.ContainsKey("Paid") ? Convert.ToInt64(dict["Paid"]) : 0L; } catch { paid = 0; }
@@ -957,7 +959,6 @@ namespace MudServer.MudCore.AI
                 {
                     if (string.Equals(reason, "leave", StringComparison.OrdinalIgnoreCase))
                     {
-                        // Trader yells to room
                         var yell = $"{_npc.DisplayName} yells: \"Ok, see you another time then!\"";
                         foreach (var p in _npc.CurrentRoom?.Players ?? new List<Player>()) MessageHandler.SendSystem(p, yell);
                     }
@@ -1014,7 +1015,6 @@ namespace MudServer.MudCore.AI
             catch (Exception ex)
             {
                 Console.WriteLine($"[ItemTrader] Refund enqueue failed: {ex.Message}");
-                // Best-effort fallback: try direct DB path if conn provided
                 if (conn != null)
                 {
                     try
@@ -1024,7 +1024,6 @@ namespace MudServer.MudCore.AI
                         {
                             _state.CopperTradePool = Math.Max(0, _state.CopperTradePool - paid);
 
-                            // persist flags
                             _npc.Flags = _npc.Flags ?? new List<string>();
                             var json = JsonSerializer.Serialize(_state, _jsonOpts);
                             _npc.Flags.RemoveAll(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith(TraderStateFlagPrefix, StringComparison.OrdinalIgnoreCase));
@@ -1181,14 +1180,11 @@ namespace MudServer.MudCore.AI
 
                 if (lines.Count == 0)
                 {
-                    // Nothing to transfer
                     Console.WriteLine($"[ItemTrader] No line items found in pending for NpcID={_npc.NpcID}");
                 }
 
-                // Accumulate transferred descriptions for messaging
                 var transferredSummaries = new List<string>();
 
-                // Iterate lines and transfer requested quantities
                 foreach (var (itemId, takeQty) in lines)
                 {
                     if (takeQty <= 0) continue;
@@ -1196,25 +1192,15 @@ namespace MudServer.MudCore.AI
                     var itemRow = _npc.Inventory?.FirstOrDefault(i => i != null && i.ItemID == itemId);
                     if (itemRow == null)
                     {
-                        // Race condition: missing item - refund entire paidNow and notify
                         Console.WriteLine($"[ItemTrader] Candidate item missing for NpcID={_npc.NpcID} ItemID={itemId}");
-
                         RefundPaidToPlayerInTx(player, paidNow, wConn, wTx);
-
                         try { ReleaseReservationForItem(itemId); } catch { }
-
                         try
                         {
                             MessageHandler.SendSystem(player, $"Sorry — some items were no longer available. Your payment of {FormatCopper(paidNow)} has been refunded.");
-                            foreach (var p in _npc.CurrentRoom?.Players ?? new List<Player>())
-                            {
-                                if (p == player) continue;
-                                try { MessageHandler.SendSystem(p, $"{_npc.DisplayName}: Sorry, some items were just sold to someone else."); } catch { }
-                            }
+                            foreach (var p in _npc.CurrentRoom?.Players ?? new List<Player>()) if (p != player) try { MessageHandler.SendSystem(p, $"{_npc.DisplayName}: Sorry, some items were just sold to someone else."); } catch { }
                         }
                         catch { }
-
-                        // Abort rest of processing
                         return;
                     }
 
@@ -1224,13 +1210,10 @@ namespace MudServer.MudCore.AI
 
                         if (takeQty < availableInRow)
                         {
-                            // Reduce NPC stack and create a new item row for player of takeQty
                             itemRow.Quantity = availableInRow - takeQty;
                             ItemPersistence.SaveItem(wConn, itemRow, wTx);
 
-                            // Create new item for player
                             var newItem = _world.ItemFactory.CreateItem(itemRow.TemplateID ?? itemRow.Name ?? "", "Player", player.DbPlayerID, player.CurrentRoom?.RoomID ?? 0, takeQty);
-                            // Preserve name/category where possible
                             newItem.Name = itemRow.Name;
                             newItem.ItemCategory = itemRow.ItemCategory;
                             ItemPersistence.SaveItem(wConn, newItem, wTx);
@@ -1238,28 +1221,23 @@ namespace MudServer.MudCore.AI
 
                             transferredSummaries.Add($"{takeQty} {(newItem.Name ?? newItem.TemplateID)}");
 
-                            // Release reservation for the original row (we reserved the row)
                             try { ReleaseReservationForItem(itemRow.ItemID); } catch { }
                         }
                         else
                         {
-                            // Transfer whole row ownership to player
                             itemRow.OwnerType = "Player";
                             itemRow.OwnerID = player.DbPlayerID;
                             itemRow.RoomID = 0;
                             ItemPersistence.SaveItem(wConn, itemRow, wTx);
 
-                            // Update in-memory lists: remove from NPC, add to player
                             try { _npc.Inventory.RemoveAll(i => i != null && i.ItemID == itemRow.ItemID); } catch { }
                             player.Inventory.Add(itemRow);
 
                             transferredSummaries.Add($"{availableInRow} {(itemRow.Name ?? itemRow.TemplateID)}");
 
-                            // Release reservation for this item id
                             try { ReleaseReservationForItem(itemRow.ItemID); } catch { }
                         }
 
-                        // Release trade lock once all done (will also be done after loop)
                         try { _npc.IsTradeLocked = false; } catch { }
                     }
                     catch (Exception ex)
@@ -1270,27 +1248,13 @@ namespace MudServer.MudCore.AI
                     }
                 }
 
-                // 2) Give change to player if any (create coin item stacks)
                 if (changeCopper > 0)
                 {
                     RefundPaidToPlayerInTx(player, changeCopper, wConn, wTx);
-
                     try { MessageHandler.SendSystem(player, $"You get {FormatCopper(changeCopper)} in change."); } catch { }
-
-                    try
-                    {
-                        if (room != null)
-                        {
-                            foreach (var p in room.Players.Where(p => p != player))
-                            {
-                                try { MessageHandler.SendSystem(p, $"{_npc.DisplayName} returns change to {player.Name} ({FormatCopper(changeCopper)})."); } catch { }
-                            }
-                        }
-                    }
-                    catch { /* best-effort */ }
+                    try { if (room != null) foreach (var p in room.Players.Where(p => p != player)) try { MessageHandler.SendSystem(p, $"{_npc.DisplayName} returns change to {player.Name} ({FormatCopper(changeCopper)})."); } catch { } } catch { }
                 }
 
-                // 3) Persist updated TraderState into Npc.Flags column inside tx (best-effort)
                 try
                 {
                     _npc.Flags = _npc.Flags ?? new List<string>();
@@ -1311,7 +1275,6 @@ namespace MudServer.MudCore.AI
                     Console.WriteLine($"[ItemTrader] Failed to persist TraderState inside tx: {ex.Message}");
                 }
 
-                // Notify buyer and observers about transferred items
                 try
                 {
                     if (transferredSummaries.Count > 0)
@@ -1338,6 +1301,10 @@ namespace MudServer.MudCore.AI
             {
                 // Clear player's pending action now that purchase completed
                 try { player.PendingAction = null; } catch { }
+
+                // NEW: remove Trade interrupt when transaction finalizes
+                try { _npc.RemoveInterrupt(Npc.InterruptType.Trade, owner: player.PlayerID); } catch { }
+                try { _npc.IsTradeLocked = false; } catch { }
             }
         }//end CommitPurchaseFinalizeInTx
 

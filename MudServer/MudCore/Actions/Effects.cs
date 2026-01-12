@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using MudCore.Entities;
 
-namespace MudServer
+namespace MudCore.Actions
 {
     /// <summary>
     /// Small, focused Effects helper.

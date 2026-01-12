@@ -1,0 +1,14 @@
+{
+  "Id": "tool_temse",
+  "Name": "Milling Temse",
+  "ItemCategory": "Handheld",
+  "Weight": 0.1,
+  "Value": 3,
+  "ShortDesc": "A milling temse",
+  "LongDesc": "A sifter of oaken wood, you need to hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": [],
+  "Material": "Oak",
+  "DmgDiceMult": 1.1
+}

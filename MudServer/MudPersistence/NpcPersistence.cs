@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Data;
+using MudCore.Actions;
 
 namespace MudPersistence
 {
@@ -140,7 +141,6 @@ namespace MudPersistence
                     Console.WriteLine($"[NpcPersistence][DBG] HealthMax={npc.HealthMax} Health={npc.Health} RoomID={npc.CurrentRoomID} AreaID={npc.CurrentAreaID} IsPersistent={npc.IsPersistent}");
                     Console.WriteLine($"[NpcPersistence][DBG] VisualTrait='{npc.VisualTrait}' DescriptionPresent={(string.IsNullOrEmpty(npc.Description) ? "no" : "yes")}");
                     Console.WriteLine($"[NpcPersistence][DBG] IsHumanoid={npc.IsHumanoid} WanderChance={npc.WanderChance} Level={npc.Level}");
-                    Console.WriteLine($"[NpcPersistence][DBG] CombatSkill={npc.CombatSkill} EffCombatSkill={npc.EffCombatSkill}");
                     try
                     {
                         Console.WriteLine($"[NpcPersistence][DBG] Flags(list) count={(npc.Flags?.Count ?? 0)} FlagsJson={(npc.FlagsJson ?? "")}");
@@ -167,23 +167,25 @@ namespace MudPersistence
             // Include optional columns when present
             cmd.CommandText = @"
         INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID"
-                            + (Has("Description") ? ", Description" : "")
-                            + (Has("IsHumanoid") ? ", IsHumanoid" : "")
-                            + (Has("WanderChance") ? ", WanderChance" : "")
-                            + (Has("Level") ? ", Level" : "")
-                            + (Has("CombatSkill") ? ", CombatSkill" : "")
-                            + (Has("EffCombatSkill") ? ", EffCombatSkill" : "")
-                            + (Has("Flags") ? ", Flags" : "")
-                            + (Has("Hunger") ? ", Hunger" : "") + @")
+                                + (Has("Description") ? ", Description" : "")
+                                + (Has("IsHumanoid") ? ", IsHumanoid" : "")
+                                + (Has("WanderChance") ? ", WanderChance" : "")
+                                + (Has("Level") ? ", Level" : "")
+                                + (Has("CombatSkill") ? ", CombatSkill" : "")
+                                + (Has("EffCombatSkill") ? ", EffCombatSkill" : "")
+                                + (Has("Flags") ? ", Flags" : "")
+                                + (Has("Hunger") ? ", Hunger" : "")
+                                + (Has("AiBehaviors") ? ", AiBehaviors" : "") + @")
         VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area"
-                            + (Has("Description") ? ", @desc" : "")
-                            + (Has("IsHumanoid") ? ", @isHumanoid" : "")
-                            + (Has("WanderChance") ? ", @wc" : "")
-                            + (Has("Level") ? ", @lvl" : "")
-                            + (Has("CombatSkill") ? ", @cs" : "")
-                            + (Has("EffCombatSkill") ? ", @ecs" : "")
-                            + (Has("Flags") ? ", @flags" : "")
-                            + (Has("Hunger") ? ", @hunger" : "") + @");
+                                + (Has("Description") ? ", @desc" : "")
+                                + (Has("IsHumanoid") ? ", @isHumanoid" : "")
+                                + (Has("WanderChance") ? ", @wc" : "")
+                                + (Has("Level") ? ", @lvl" : "")
+                                + (Has("CombatSkill") ? ", @cs" : "")
+                                + (Has("EffCombatSkill") ? ", @ecs" : "")
+                                + (Has("Flags") ? ", @flags" : "")
+                                + (Has("Hunger") ? ", @hunger" : "")
+                                + (Has("AiBehaviors") ? ", @aibehaviors" : "") + @");
         SELECT last_insert_rowid();";
 
             cmd.Parameters.AddWithValue("@tid", npc.TemplateID ?? "");
@@ -236,6 +238,36 @@ namespace MudPersistence
                 catch
                 {
                     cmd.Parameters.AddWithValue("@hunger", 0);
+                }
+            }
+
+            // Persist per-NPC AiBehaviors (JSON serialized) when DB supports it.
+            if (Has("AiBehaviors"))
+            {
+                try
+                {
+                    string ajson = "[]";
+                    var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                    if (npc.Template != null)
+                    {
+                        // Prefer the raw JSON representation (AiBehaviorsRaw) to preserve nested arrays exactly
+                        if (npc.Template.AiBehaviorsRaw != null && npc.Template.AiBehaviorsRaw.Count > 0)
+                        {
+                            ajson = System.Text.Json.JsonSerializer.Serialize(npc.Template.AiBehaviorsRaw, opts);
+                        }
+                        else
+                        {
+                            // Fallback: serialize structured configs (keeps nested lists too)
+                            var ab = npc.Template.AiBehaviorConfigs ?? new System.Collections.Generic.List<NpcTemplate.AiBehaviorConfig>();
+                            ajson = System.Text.Json.JsonSerializer.Serialize(ab, opts);
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@aibehaviors", ajson);
+                }
+                catch
+                {
+                    cmd.Parameters.AddWithValue("@aibehaviors", "[]");
                 }
             }
 
@@ -318,7 +350,7 @@ namespace MudPersistence
             }
 
             return newId;
-        }//end InsertNpcInternal
+        } //end InsertNpcInternal
 
         // Updated UpdateNpc to call SaveNpcCombat with optional transaction null to preserve behavior.
         // Internal transactional update used by the writer queue or direct callers.
@@ -334,26 +366,33 @@ namespace MudPersistence
             using var cmd = conn.CreateCommand();
             if (tx != null) cmd.Transaction = tx;
 
+            // NOTE: Name column WAS missing from UPDATE previously which prevented admin name edits
+            // from persisting. Add Name = @name into the SET list and bind @name below.
             cmd.CommandText = @"
         UPDATE Npc SET
             Health = @hp,
             MaxHealth = @maxhp,
+            Name = @name,
             CurrentRoomID = @room,
             VisualTrait = @trait,
             CurrentAreaID = @area"
-                    + (Has("Description") ? ", Description = @desc" : "")
-                    + (Has("IsHumanoid") ? ", IsHumanoid = @isHumanoid" : "")
-                    + (Has("WanderChance") ? ", WanderChance = @wc" : "")
-                    + (Has("Level") ? ", Level = @lvl" : "")
-                    + (Has("CombatSkill") ? ", CombatSkill = @cs" : "")
-                    + (Has("EffCombatSkill") ? ", EffCombatSkill = @ecs" : "")
-                    + (Has("Flags") ? ", Flags = @flags" : "") + @"
+                        + (Has("Description") ? ", Description = @desc" : "")
+                        + (Has("IsHumanoid") ? ", IsHumanoid = @isHumanoid" : "")
+                        + (Has("WanderChance") ? ", WanderChance = @wc" : "")
+                        + (Has("Level") ? ", Level = @lvl" : "")
+                        + (Has("CombatSkill") ? ", CombatSkill = @cs" : "")
+                        + (Has("EffCombatSkill") ? ", EffCombatSkill = @ecs" : "")
+                        + (Has("Flags") ? ", Flags = @flags" : "")
+                        + (Has("AiBehaviors") ? ", AiBehaviors = @aibehaviors" : "") + @"
         WHERE NpcID = @id;";
 
             cmd.Parameters.AddWithValue("@hp", npc.Health);
             cmd.Parameters.AddWithValue("@maxhp", npc.HealthMax);
+            // Bind new @name parameter so Name updates persist
+            cmd.Parameters.AddWithValue("@name", npc.Name ?? "");
             cmd.Parameters.AddWithValue("@room", npc.CurrentRoomID);
             cmd.Parameters.AddWithValue("@trait", npc.VisualTrait ?? "");
+            // Preserve existing behavior: use current room's AreaID if available
             cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
             cmd.Parameters.AddWithValue("@id", npc.NpcID);
             if (Has("Description")) cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
@@ -367,7 +406,7 @@ namespace MudPersistence
             {
                 try
                 {
-                    var flagsList = npc.Flags ?? new List<string>();
+                    var flagsList = npc.Flags ?? new System.Collections.Generic.List<string>();
                     flagsList.Sort(System.StringComparer.OrdinalIgnoreCase);
                     var flagsJson = System.Text.Json.JsonSerializer.Serialize(flagsList);
                     cmd.Parameters.AddWithValue("@flags", flagsJson);
@@ -375,6 +414,36 @@ namespace MudPersistence
                 catch
                 {
                     cmd.Parameters.AddWithValue("@flags", "[]");
+                }
+            }
+
+            // Persist per-NPC AiBehaviors (JSON serialized) when DB supports it.
+            if (Has("AiBehaviors"))
+            {
+                try
+                {
+                    string ajson = "[]";
+                    var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                    if (npc.Template != null)
+                    {
+                        // Prefer the raw JSON representation (AiBehaviorsRaw) to preserve nested arrays exactly
+                        if (npc.Template.AiBehaviorsRaw != null && npc.Template.AiBehaviorsRaw.Count > 0)
+                        {
+                            ajson = System.Text.Json.JsonSerializer.Serialize(npc.Template.AiBehaviorsRaw, opts);
+                        }
+                        else
+                        {
+                            // Fallback: serialize structured configs (keeps nested lists too)
+                            var ab = npc.Template.AiBehaviorConfigs ?? new System.Collections.Generic.List<NpcTemplate.AiBehaviorConfig>();
+                            ajson = System.Text.Json.JsonSerializer.Serialize(ab, opts);
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@aibehaviors", ajson);
+                }
+                catch
+                {
+                    cmd.Parameters.AddWithValue("@aibehaviors", "[]");
                 }
             }
 
@@ -388,7 +457,7 @@ namespace MudPersistence
                     using var upWander = conn.CreateCommand();
                     if (tx != null) upWander.Transaction = tx;
                     upWander.CommandText = "UPDATE Npc SET WanderAreas = @wander WHERE NpcID = @id;";
-                    var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>());
+                    var wanderJson = System.Text.Json.JsonSerializer.Serialize(npc.WanderAreas ?? new System.Collections.Generic.List<int>());
                     upWander.Parameters.AddWithValue("@wander", wanderJson);
                     upWander.Parameters.AddWithValue("@id", npc.NpcID);
                     upWander.ExecuteNonQuery();
@@ -416,10 +485,8 @@ namespace MudPersistence
 
             // Persist combat-related fields inside provided tx (if any)
             SaveNpcCombat(conn, npc, tx);
-        }
+        } // end UpdateNpcInternal
 
-        // Public UpdateNpc now routes through the writer queue when available to provide
-        // atomic, serialized updates. Falls back to direct UpdateNpcInternal when queue not running.
         public static void UpdateNpc(SqliteConnection conn, Npc npc)
         {
             if (conn == null) throw new ArgumentNullException(nameof(conn));
@@ -432,6 +499,10 @@ namespace MudPersistence
                     UpdateNpcInternal(wConn, npc, wTx);
                     return (object?)null;
                 }, timeout: TimeSpan.FromSeconds(5));
+
+                // After a queued update, ensure transient runtime fields derived from Flags are refreshed
+                try { HydrateRuntimeFlags(npc); } catch { /* best-effort */ }
+
                 return;
             }
             catch (InvalidOperationException)
@@ -445,7 +516,144 @@ namespace MudPersistence
 
             // Direct update path (no external transaction)
             UpdateNpcInternal(conn, npc, null);
+
+            // Refresh transient runtime fields so callers (AI, rendering) immediately see new flag-derived state.
+            try { HydrateRuntimeFlags(npc); } catch { /* best-effort */ }
         } // end UpdateNpc
+
+
+        
+        // NEW: Rehydrate runtime-only fields (Sleep/Move) from the instance's Flags list.
+        // This mirrors the parsing logic used at load-time so runtime edits take effect immediately.
+        // IMPORTANT: Do NOT set transient "IsOnMove" simply because Move: flags exist. That must be
+        // controlled by runtime executor logic. Similarly, IsSleeping is owned by runtime executor.
+        public static void HydrateRuntimeFlags(Npc npc)
+        {
+            if (npc == null) return;
+
+            try
+            {
+                // Sleep defaults
+                npc.SleepRoomId = -1;
+                npc.SleepStartPeriod = "Midnight";
+                npc.SleepEndPeriod = "Dawn";
+                // Do NOT mark IsSleeping true here; executor owns sleep lifecycle.
+                npc.IsSleeping = false;
+                npc.SleepBlockedAtRoomId = null;
+
+                // Move defaults
+                npc.MoveRoomId = 0;
+                npc.MovePeriod = "";
+                // Do NOT set IsOnMove true simply because Move: schedules exist; executor will set it when movement actually starts.
+                npc.IsOnMove = false;
+                npc.MoveBlockedAtRoomId = null;
+
+                // Clear existing schedule list
+                try { npc.MoveSchedules = new System.Collections.Generic.List<Npc.MoveSchedule>(); } catch { npc.MoveSchedules = new System.Collections.Generic.List<Npc.MoveSchedule>(); }
+
+                if (npc.Flags == null) return;
+
+                // Parse Sleep: flag (Sleep:<roomId>:<start>:<end>)
+                string sleepFlag = null!;
+                foreach (var f in npc.Flags)
+                {
+                    try
+                    {
+                        if (string.IsNullOrWhiteSpace(f)) continue;
+                        if (f.StartsWith("Sleep:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            sleepFlag = f;
+                            break;
+                        }
+                    }
+                    catch { /* best-effort */ }
+                }
+
+                if (!string.IsNullOrWhiteSpace(sleepFlag))
+                {
+                    var parts = sleepFlag.Split(':');
+                    if (parts.Length >= 2 && int.TryParse(parts[1].Trim(), out var rid))
+                        npc.SleepRoomId = Math.Max(0, rid);
+                    if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]))
+                        npc.SleepStartPeriod = parts[2].Trim();
+                    if (parts.Length >= 4 && !string.IsNullOrWhiteSpace(parts[3]))
+                        npc.SleepEndPeriod = parts[3].Trim();
+                }
+
+                // IMPORTANT: Do NOT set IsSleeping based solely on a "Sleeping" flag during hydration.
+                // The runtime executor should control entering/exiting sleep so that behavior is consistent with clock.
+                // If you have a special persistent 'Sleeping' marker you truly want respected across restarts,
+                // implement that explicitly. For now, leave IsSleeping=false to let the scheduler/executor decide.
+
+                // Parse Move: flags - collect all occurrences into MoveSchedules
+                try
+                {
+                    var moveFlags = new System.Collections.Generic.List<string>();
+                    foreach (var f in npc.Flags)
+                    {
+                        try
+                        {
+                            if (string.IsNullOrWhiteSpace(f)) continue;
+                            if (f.StartsWith("Move:", StringComparison.OrdinalIgnoreCase))
+                                moveFlags.Add(f);
+                        }
+                        catch { /* per-flag best-effort */ }
+                    }
+
+                    if (moveFlags.Count > 0)
+                    {
+                        foreach (var mf in moveFlags)
+                        {
+                            try
+                            {
+                                var parts = mf.Split(':');
+                                if (parts.Length >= 2 && int.TryParse(parts[1].Trim(), out var rid))
+                                {
+                                    var period = parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]) ? parts[2].Trim() : "";
+                                    npc.MoveSchedules.Add(new Npc.MoveSchedule { RoomId = Math.Max(0, rid), Period = period });
+                                }
+                            }
+                            catch { /* best-effort per entry */ }
+                        }
+
+                        // Backwards compatibility: set primary MoveRoomId/MovePeriod to first schedule when available
+                        if (npc.MoveSchedules.Count > 0)
+                        {
+                            var first = npc.MoveSchedules[0];
+                            npc.MoveRoomId = first.RoomId;
+                            npc.MovePeriod = first.Period ?? "";
+                        }
+                    }
+                }
+                catch { /* best-effort */ }
+
+                // Hydrate IsOnMove transient marker:
+                // Only set IsOnMove true here when an explicit "Moving" runtime flag is present.
+                // Do NOT set it merely because MoveSchedules exists.
+                try
+                {
+                    bool movingFound = false;
+                    foreach (var f in npc.Flags)
+                    {
+                        if (string.IsNullOrWhiteSpace(f)) continue;
+                        if (string.Equals(f, "Moving", StringComparison.OrdinalIgnoreCase))
+                        {
+                            movingFound = true;
+                            break;
+                        }
+                    }
+                    npc.IsOnMove = movingFound;
+                }
+                catch
+                {
+                    npc.IsOnMove = false;
+                }
+            }
+            catch
+            {
+                // best-effort; do not throw while trying to hydrate runtime fields
+            }
+        } // end HydrateRuntimeFlags
 
         public static void DeleteNpc(SqliteConnection conn, int npcId)
         {
@@ -707,10 +915,8 @@ namespace MudPersistence
                     }
 
                     // NEW: Parse Sleep: flag into runtime fields (SleepRoomId, SleepStartPeriod, SleepEndPeriod).
-                    // Expected format: Sleep:<roomId>:<startPeriod>:<endPeriod>
                     try
                     {
-                        // defaults
                         npc.SleepRoomId = -1;
                         npc.SleepStartPeriod = "Midnight";
                         npc.SleepEndPeriod = "Dawn";
@@ -736,24 +942,15 @@ namespace MudPersistence
 
                             if (!string.IsNullOrWhiteSpace(sleepFlag))
                             {
-                                // split and trim parts
                                 var parts = sleepFlag.Split(':');
-                                if (parts.Length >= 2)
-                                {
-                                    if (int.TryParse(parts[1].Trim(), out var rid))
-                                        npc.SleepRoomId = Math.Max(0, rid);
-                                }
+                                if (parts.Length >= 2 && int.TryParse(parts[1].Trim(), out var rid))
+                                    npc.SleepRoomId = Math.Max(0, rid);
                                 if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]))
-                                {
-                                    try { npc.SleepStartPeriod = parts[2].Trim(); } catch { npc.SleepStartPeriod = "Midnight"; }
-                                }
+                                    npc.SleepStartPeriod = parts[2].Trim();
                                 if (parts.Length >= 4 && !string.IsNullOrWhiteSpace(parts[3]))
-                                {
-                                    try { npc.SleepEndPeriod = parts[3].Trim(); } catch { npc.SleepEndPeriod = "Dawn"; }
-                                }
+                                    npc.SleepEndPeriod = parts[3].Trim();
                             }
 
-                            // Hydrate IsSleeping transient marker if Flags contains explicit "Sleeping"
                             try
                             {
                                 bool sleepingFound = false;
@@ -774,7 +971,6 @@ namespace MudPersistence
                     catch (Exception exSleep)
                     {
                         Console.WriteLine($"[NpcPersistence][WARN] Failed to parse Sleep flag for NpcID={npc.NpcID}: {exSleep.Message}");
-                        // keep defaults on failure
                         npc.SleepRoomId = -1;
                         npc.SleepStartPeriod = "Midnight";
                         npc.SleepEndPeriod = "Dawn";
@@ -782,79 +978,241 @@ namespace MudPersistence
                         npc.SleepBlockedAtRoomId = null;
                     }
 
-                    // NEW: Parse Move: flag into runtime fields (MoveRoomId, MovePeriod).
-                    // Expected format: Move:<roomId>:<TimePeriod>
+                    // NEW: Parse Move: flags into runtime MoveSchedules (collect all Move: entries).
                     try
                     {
-                        // defaults
                         npc.MoveRoomId = 0;
                         npc.MovePeriod = "";
                         npc.IsOnMove = false;
                         npc.MoveBlockedAtRoomId = null;
+                        npc.MoveSchedules = new List<Npc.MoveSchedule>();
 
                         if (npc.Flags != null)
                         {
-                            string moveFlag = null!;
+                            var moveFlagList = new List<string>();
                             foreach (var f in npc.Flags)
                             {
                                 try
                                 {
                                     if (string.IsNullOrWhiteSpace(f)) continue;
                                     if (f.StartsWith("Move:", StringComparison.OrdinalIgnoreCase))
+                                        moveFlagList.Add(f);
+                                }
+                                catch { /* best-effort per-move */ }
+                            }
+
+                            if (moveFlagList.Count > 0)
+                            {
+                                foreach (var mf in moveFlagList)
+                                {
+                                    try
                                     {
-                                        moveFlag = f;
+                                        var parts = mf.Split(':');
+                                        if (parts.Length >= 2 && int.TryParse(parts[1].Trim(), out var rid))
+                                        {
+                                            var period = parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]) ? parts[2].Trim() : "";
+                                            npc.MoveSchedules.Add(new Npc.MoveSchedule { RoomId = Math.Max(0, rid), Period = period });
+                                        }
+                                    }
+                                    catch { /* best-effort per-move */ }
+                                }
+
+                                if (npc.MoveSchedules.Count > 0)
+                                {
+                                    var first = npc.MoveSchedules[0];
+                                    npc.MoveRoomId = first.RoomId;
+                                    npc.MovePeriod = first.Period ?? "";
+                                }
+                            }
+                        }
+
+                        // Hydrate IsOnMove only when explicit "Moving" runtime flag is present.
+                        try
+                        {
+                            bool movingFound = false;
+                            if (npc.Flags != null)
+                            {
+                                foreach (var f in npc.Flags)
+                                {
+                                    if (string.IsNullOrWhiteSpace(f)) continue;
+                                    if (string.Equals(f, "Moving", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        movingFound = true;
                                         break;
                                     }
                                 }
-                                catch { /* best-effort */ }
                             }
-
-                            if (!string.IsNullOrWhiteSpace(moveFlag))
-                            {
-                                var parts = moveFlag.Split(':');
-                                if (parts.Length >= 2)
-                                {
-                                    if (int.TryParse(parts[1].Trim(), out var rid))
-                                        npc.MoveRoomId = Math.Max(0, rid);
-                                }
-                                if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]))
-                                {
-                                    try { npc.MovePeriod = parts[2].Trim(); } catch { npc.MovePeriod = ""; }
-                                }
-                            }
+                            npc.IsOnMove = movingFound;
+                        }
+                        catch
+                        {
+                            npc.IsOnMove = false;
                         }
                     }
                     catch (Exception exMove)
                     {
-                        Console.WriteLine($"[NpcPersistence][WARN] Failed to parse Move flag for NpcID={npc.NpcID}: {exMove.Message}");
+                        Console.WriteLine($"[NpcPersistence][WARN] Failed to parse Move flag(s) for NpcID={npc.NpcID}: {exMove.Message}");
                         npc.MoveRoomId = 0;
                         npc.MovePeriod = "";
                         npc.IsOnMove = false;
                         npc.MoveBlockedAtRoomId = null;
+                        npc.MoveSchedules = new List<Npc.MoveSchedule>();
                     }
 
                     npc.Description = Has("Description") ? GetString(rdr, "Description", "") : npc.Description;
 
                     npc.CurrentRoom = world.Rooms.Find(r => r.RoomID == npc.CurrentRoomID);
 
-                    // Attach template from world's TemplateManager so AI has behaviors
+                    // -------------------------
+                    // Attach template and apply overrides from DB if present (robust AiBehaviors parsing)
+                    // -------------------------
                     try
                     {
                         if (!string.IsNullOrWhiteSpace(npc.TemplateID) && world?.TemplateManager != null)
                         {
                             if (world.TemplateManager.TryGet(npc.TemplateID, out var tmpl))
                             {
-                                npc.Template = tmpl;
-                                if (string.IsNullOrWhiteSpace(npc.Name) && !string.IsNullOrWhiteSpace(tmpl.Name))
-                                    npc.Name = tmpl.Name;
+                                // Attempt to read per-NPC AiBehavior override column (supports either 'AiBehaviors' or 'AiBehaviorConfigs')
+                                string? aiBehJson = null;
+                                try
+                                {
+                                    if (Has("AiBehaviors")) aiBehJson = GetStringOrNull(rdr, "AiBehaviors");
+                                    if (string.IsNullOrWhiteSpace(aiBehJson) && Has("AiBehaviorConfigs"))
+                                        aiBehJson = GetStringOrNull(rdr, "AiBehaviorConfigs");
+                                }
+                                catch { aiBehJson = null; }
+
+                                if (!string.IsNullOrWhiteSpace(aiBehJson))
+                                {
+                                    try
+                                    {
+                                        var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                                        List<NpcTemplate.AiBehaviorConfig>? configs = null;
+
+                                        // Try direct deserialization into structured configs first
+                                        try
+                                        {
+                                            configs = JsonSerializer.Deserialize<List<NpcTemplate.AiBehaviorConfig>>(aiBehJson, opts);
+                                        }
+                                        catch
+                                        {
+                                            configs = null;
+                                        }
+
+                                        // If direct failed, parse manually via JsonDocument to handle mixed forms robustly
+                                        if (configs == null)
+                                        {
+                                            try
+                                            {
+                                                var docs = JsonDocument.Parse(aiBehJson);
+                                                if (docs.RootElement.ValueKind == JsonValueKind.Array)
+                                                {
+                                                    configs = new List<NpcTemplate.AiBehaviorConfig>();
+                                                    foreach (var el in docs.RootElement.EnumerateArray())
+                                                    {
+                                                        try
+                                                        {
+                                                            if (el.ValueKind == JsonValueKind.Object)
+                                                            {
+                                                                var raw = el.GetRawText();
+                                                                var cfg = JsonSerializer.Deserialize<NpcTemplate.AiBehaviorConfig>(raw, opts);
+                                                                if (cfg != null) configs.Add(cfg);
+                                                            }
+                                                            else if (el.ValueKind == JsonValueKind.String)
+                                                            {
+                                                                var s = el.GetString();
+                                                                if (!string.IsNullOrWhiteSpace(s))
+                                                                {
+                                                                    // Some templates may have stringified JSON inside the array; try to parse it
+                                                                    var trimmed = s.Trim();
+                                                                    if ((trimmed.StartsWith("{") && trimmed.EndsWith("}")) || (trimmed.StartsWith("[") && trimmed.EndsWith("]")))
+                                                                    {
+                                                                        try
+                                                                        {
+                                                                            var inner = JsonDocument.Parse(trimmed);
+                                                                            if (inner.RootElement.ValueKind == JsonValueKind.Object)
+                                                                            {
+                                                                                var cfg = JsonSerializer.Deserialize<NpcTemplate.AiBehaviorConfig>(trimmed, opts);
+                                                                                if (cfg != null) configs.Add(cfg);
+                                                                            }
+                                                                            // else: skip arrays of primitives as legacy – not supported to structured config
+                                                                        }
+                                                                        catch
+                                                                        {
+                                                                            // ignore inner parse failures
+                                                                        }
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        // Legacy simple string behavior token (e.g., "ItemMover") — synthesize minimal config
+                                                                        var cfg = new NpcTemplate.AiBehaviorConfig { Behavior = s };
+                                                                        configs.Add(cfg);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        catch { /* best-effort per-element */ }
+                                                    }
+                                                }
+                                            }
+                                            catch { configs = null; }
+                                        }
+
+                                        // If we got structured configs, clone template and attach them; else fallback to shared template
+                                        if (configs != null && configs.Count > 0)
+                                        {
+                                            // Deep-clone the template so we don't mutate the shared template instance in TemplateManager.
+                                            var cloneJson = JsonSerializer.Serialize(tmpl, new JsonSerializerOptions { WriteIndented = false });
+                                            var tmplClone = JsonSerializer.Deserialize<NpcTemplate>(cloneJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                                            if (tmplClone != null)
+                                            {
+                                                tmplClone.AiBehaviorConfigs = configs;
+                                                // Also preserve raw AiBehaviorsRaw if db contained objects/strings – keep both representations for fidelity
+                                                try
+                                                {
+                                                    var rawList = JsonSerializer.Deserialize<List<JsonElement>>(aiBehJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                                                    if (rawList != null && rawList.Count > 0)
+                                                        tmplClone.AiBehaviorsRaw = rawList;
+                                                }
+                                                catch { /* best-effort */ }
+
+                                                npc.Template = tmplClone;
+                                            }
+                                            else
+                                            {
+                                                npc.Template = tmpl; // fallback
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Could not parse structured configs – keep shared template and log for diagnosis
+                                            Console.WriteLine($"[NpcPersistence][WARN] AiBehaviors JSON present but could not be parsed into configs for NpcID={npc.NpcID}. Raw length={aiBehJson.Length}");
+                                            // preserve raw on the shared template only for visibility (do not mutate global object)
+                                            npc.Template = tmpl;
+                                        }
+                                    }
+                                    catch (Exception exDes)
+                                    {
+                                        Console.WriteLine($"[NpcPersistence][WARN] Failed to deserialize AiBehaviors for NpcID={npc.NpcID}: {exDes.Message}");
+                                        npc.Template = tmpl;
+                                    }
+                                }
+                                else
+                                {
+                                    // No per-NPC override → use shared template
+                                    npc.Template = tmpl;
+                                }
+
+                                if (string.IsNullOrWhiteSpace(npc.Name) && npc.Template != null && !string.IsNullOrWhiteSpace(npc.Template.Name))
+                                    npc.Name = npc.Template.Name;
 
                                 // If DB had 0 WanderChance, hydrate from template
-                                if (npc.WanderChance <= 0)
-                                    npc.WanderChance = tmpl.WanderChance;
+                                if (npc.WanderChance <= 0 && npc.Template != null)
+                                    npc.WanderChance = npc.Template.WanderChance;
 
                                 // NEW: hydrate Level from template if missing/invalid
                                 if (npc.Level == null || npc.Level <= 0)
-                                    npc.Level = tmpl.Level ?? 1;
+                                    npc.Level = npc.Template?.Level ?? 1;
 
                                 // Apply template defaults so Description, IdleActions, etc. are populated when DB row omitted them.
                                 try { npc.ApplyTemplateDefaults(); } catch { /* best-effort */ }
@@ -878,8 +1236,33 @@ namespace MudPersistence
                     if ((npc.WanderAreas == null || npc.WanderAreas.Count == 0) && npc.CurrentRoom != null && npc.CurrentRoom.AreaID > 0)
                         npc.WanderAreas = new List<int> { npc.CurrentRoom.AreaID };
 
-                    MudServer.Combat.InitializeSizeDefaults(npc);
-                    MudServer.Combat.UpdateEffectiveStats(npc);
+                    Combat.InitializeSizeDefaults(npc);
+                    Combat.UpdateEffectiveStats(npc);
+
+                    // --- after parsing Move flags into npc.MoveSchedules (existing code) ---
+                    // Add conditional debug output so we can confirm DB->runtime mapping for Move schedules.
+                    try
+                    {
+                        var dbg = Environment.GetEnvironmentVariable("NPC_PERSISTENCE_DEBUG");
+                        if (!string.IsNullOrEmpty(dbg) && dbg.Trim() == "1")
+                        {
+                            try
+                            {
+                                if (npc.MoveSchedules != null && npc.MoveSchedules.Count > 0)
+                                {
+                                    var sb = new System.Text.StringBuilder();
+                                    sb.Append($"[NpcPersistence][DBG-MOVE] NpcID={npc.NpcID} MoveSchedules:");
+                                    foreach (var ms in npc.MoveSchedules)
+                                    {
+                                        sb.Append($" {{RoomId={ms.RoomId},Period='{ms.Period}'}}");
+                                    }
+                                    Console.WriteLine(sb.ToString());
+                                }
+                            }
+                            catch { /* best-effort */ }
+                        }
+                    }
+                    catch { /* best-effort */ }
 
                     if (npc.CurrentRoom != null)
                         npc.CurrentRoom.Npcs.Add(npc);
@@ -888,10 +1271,10 @@ namespace MudPersistence
                     // Register ItemTrader if template includes behavior config (best-effort)
                     try
                     {
-                        var trader = MudServer.MudCore.AI.ItemTrader.CreateIfConfigured(npc, world);
+                        var trader = MudCore.AI.ItemTrader.CreateIfConfigured(npc, world);
                         if (trader != null)
                         {
-                            MudServer.MudCore.AI.ItemTraderManager.Register(npc, trader);
+                            MudCore.AI.ItemTraderManager.Register(npc, trader);
                         }
                     }
                     catch (Exception exReg)

@@ -71,6 +71,8 @@
                     <thead>
                         <tr>
                             <th>Name</th>
+                            <th>Descriptor</th>
+                            <th>Material</th>
                             <th>Weight</th>
                             <th>Condition</th>
                             <th>Category</th>
@@ -169,16 +171,20 @@
                 }
 
                 const displayName = qty > 1 ? `${qty} x ${escapeHtml(it.name)}` : escapeHtml(it.name);
+                const descriptor = escapeHtml(it.descriptor || '');
+                const material = escapeHtml(it.material || '');
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                          <td>${displayName}</td>
-                          <td>${escapeHtml(String(it.weight ?? ''))}</td>
-                          <td>${escapeHtml(String(it.condition ?? ''))}</td>
-                          <td>${escapeHtml(it.itemCategory ?? '')}</td>
-                          <td>${escapeHtml(it.shortDesc ?? '')}</td>
-                          <td>${escapeHtml(status)}</td>
-                        `;
+                              <td>${displayName}</td>
+                              <td>${descriptor}</td>
+                              <td>${material}</td>
+                              <td>${escapeHtml(String(it.weight ?? ''))}</td>
+                              <td>${escapeHtml(String(it.condition ?? ''))}</td>
+                              <td>${escapeHtml(it.itemCategory ?? '')}</td>
+                              <td>${escapeHtml(it.shortDesc ?? '')}</td>
+                              <td>${escapeHtml(status)}</td>
+                            `;
                 invTableBody.appendChild(tr);
             });
         }
@@ -284,10 +290,11 @@
                             const doorState = (e.doorState ?? e.DoorState ?? '').toString();
 
                             if (hasDoor) {
+                                const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
                                 const stateLower = doorState.toLowerCase();
                                 const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
-                                const titleAttr = `Door to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
-                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">Door: ${escapeHtml(doorState)}</span>`;
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
                             }
 
                             html += `</span>`;
@@ -344,10 +351,11 @@
                             const doorState = (e.doorState ?? e.DoorState ?? '').toString();
 
                             if (hasDoor) {
+                                const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
                                 const stateLower = doorState.toLowerCase();
                                 const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
-                                const titleAttr = `Door to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
-                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">Door: ${escapeHtml(doorState)}</span>`;
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
                             }
 
                             html += `</span>`;

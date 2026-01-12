@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.IO;
 using System.Data;
+using MudCore;
+using MudPersistence; 
 
 namespace MudPersistence
 {
@@ -17,6 +19,8 @@ namespace MudPersistence
                 conn.Open();
         }
 
+
+        
         public static World LoadFromDatabase(SqliteConnection conn)
         {
             EnsureOpen(conn);
@@ -56,10 +60,10 @@ namespace MudPersistence
                             opts.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
 
                             // Primary attempt: deserialize into NpcTemplate
-                            MudCore.Templates.NpcTemplate? tmpl = null;
+                            NpcTemplate? tmpl = null;
                             try
                             {
-                                tmpl = System.Text.Json.JsonSerializer.Deserialize<MudCore.Templates.NpcTemplate>(json, opts);
+                                tmpl = System.Text.Json.JsonSerializer.Deserialize<NpcTemplate>(json, opts);
                             }
                             catch
                             {
@@ -90,7 +94,7 @@ namespace MudPersistence
                                         if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(name))
                                         {
                                             if (tmpl == null)
-                                                tmpl = new MudCore.Templates.NpcTemplate { Id = id, Name = name };
+                                                tmpl = new NpcTemplate { Id = id, Name = name };
                                             else
                                             {
                                                 // ensure required identity fields are present
@@ -106,11 +110,119 @@ namespace MudPersistence
                                                 {
                                                     try
                                                     {
-                                                        var configs = JsonSerializer.Deserialize<List<MudCore.Templates.NpcTemplate.AiBehaviorConfig>>(abNode.GetRawText(), opts);
-                                                        if (configs != null)
+                                                        // Normalize each element into AiBehaviorConfig safely (handles legacy forms)
+                                                        var configs = new List<NpcTemplate.AiBehaviorConfig>();
+                                                        foreach (var el in abNode.EnumerateArray())
                                                         {
-                                                            tmpl.AiBehaviorConfigs = configs;
+                                                            if (el.ValueKind != JsonValueKind.Object) continue;
+                                                            var cfg = new NpcTemplate.AiBehaviorConfig();
+
+                                                            // Safe property extraction helpers
+                                                            string TryGetString(string prop)
+                                                            {
+                                                                if (el.TryGetProperty(prop, out var p) && p.ValueKind == JsonValueKind.String)
+                                                                    return p.GetString() ?? "";
+                                                                return "";
+                                                            }
+                                                            double TryGetDouble(string prop, double def)
+                                                            {
+                                                                if (el.TryGetProperty(prop, out var p))
+                                                                {
+                                                                    if (p.ValueKind == JsonValueKind.Number && p.TryGetDouble(out var d)) return d;
+                                                                    if (p.ValueKind == JsonValueKind.String && double.TryParse(p.GetString(), out var ds)) return ds;
+                                                                }
+                                                                return def;
+                                                            }
+                                                            int TryGetInt(string prop, int def)
+                                                            {
+                                                                if (el.TryGetProperty(prop, out var p))
+                                                                {
+                                                                    if (p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var iv)) return iv;
+                                                                    if (p.ValueKind == JsonValueKind.String && int.TryParse(p.GetString(), out var isv)) return isv;
+                                                                }
+                                                                return def;
+                                                            }
+                                                            bool TryGetBoolLenient(string prop, bool def)
+                                                            {
+                                                                if (!el.TryGetProperty(prop, out var p)) return def;
+                                                                if (p.ValueKind == JsonValueKind.True) return true;
+                                                                if (p.ValueKind == JsonValueKind.False) return false;
+                                                                if (p.ValueKind == JsonValueKind.String)
+                                                                {
+                                                                    var s = p.GetString() ?? "";
+                                                                    s = s.Trim().ToLowerInvariant();
+                                                                    return (s == "true" || s == "1" || s == "yes" || s == "y");
+                                                                }
+                                                                return def;
+                                                            }
+
+                                                            cfg.Behavior = TryGetString("Behavior");
+                                                            cfg.TimePeriod = TryGetString("TimePeriod");
+                                                            cfg.Chance = TryGetDouble("Chance", 0.0);
+                                                            cfg.CreatedPerChance = TryGetInt("CreatedPerChance", 1);
+                                                            cfg.Max = TryGetInt("Max", 1);
+                                                            cfg.ItemTemplate = TryGetString("ItemTemplate");
+                                                            cfg.Location = TryGetString("Location");
+                                                            // Normalize RequiresTool and RequiresRoomFlag (string or missing) — use "None" sentinel per Option B
+                                                            var rtool = TryGetString("RequiresTool");
+                                                            cfg.RequiresTool = string.IsNullOrWhiteSpace(rtool) ? "None" : rtool;
+                                                            var rrflag = TryGetString("RequiresRoomFlag");
+                                                            cfg.RequiresRoomFlag = string.IsNullOrWhiteSpace(rrflag) ? "None" : rrflag;
+
+                                                            // Normalize ConsumesReqs / ConsumeReqs leniently
+                                                            if (el.TryGetProperty("ConsumesReqs", out var pcons))
+                                                            {
+                                                                if (pcons.ValueKind == JsonValueKind.String)
+                                                                    cfg.ConsumesReqsRaw = pcons.GetString() ?? "false";
+                                                                else if (pcons.ValueKind == JsonValueKind.True || pcons.ValueKind == JsonValueKind.False)
+                                                                    cfg.ConsumeReqs = pcons.ValueKind == JsonValueKind.True;
+                                                            }
+                                                            else if (el.TryGetProperty("ConsumeReqs", out var pcons2))
+                                                            {
+                                                                if (pcons2.ValueKind == JsonValueKind.String)
+                                                                    cfg.ConsumesReqsRaw = pcons2.GetString() ?? "false";
+                                                                else if (pcons2.ValueKind == JsonValueKind.True || pcons2.ValueKind == JsonValueKind.False)
+                                                                    cfg.ConsumeReqs = pcons2.ValueKind == JsonValueKind.True;
+                                                            }
+
+                                                            // Normalize RequiresItem: allow string or array of strings
+                                                            cfg.RequiresItem = new List<string>();
+                                                            if (el.TryGetProperty("RequiresItem", out var preq))
+                                                            {
+                                                                if (preq.ValueKind == JsonValueKind.String)
+                                                                {
+                                                                    var s = preq.GetString() ?? "";
+                                                                    if (!string.IsNullOrWhiteSpace(s)) cfg.RequiresItem.Add(s.Trim());
+                                                                }
+                                                                else if (preq.ValueKind == JsonValueKind.Array)
+                                                                {
+                                                                    foreach (var it in preq.EnumerateArray())
+                                                                    {
+                                                                        if (it.ValueKind == JsonValueKind.String)
+                                                                        {
+                                                                            var s = it.GetString() ?? "";
+                                                                            if (!string.IsNullOrWhiteSpace(s)) cfg.RequiresItem.Add(s.Trim());
+                                                                        }
+                                                                        else
+                                                                        {
+                                                                            // best-effort: get raw text
+                                                                            var raw = it.GetRawText();
+                                                                            if (!string.IsNullOrWhiteSpace(raw)) cfg.RequiresItem.Add(raw.Trim());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Ensure default values if absent
+                                                            if (string.IsNullOrWhiteSpace(cfg.Location)) cfg.Location = "Room";
+                                                            if (string.IsNullOrWhiteSpace(cfg.RequiresTool)) cfg.RequiresTool = "None";
+                                                            if (string.IsNullOrWhiteSpace(cfg.RequiresRoomFlag)) cfg.RequiresRoomFlag = "None";
+
+                                                            configs.Add(cfg);
                                                         }
+
+                                                        if (configs.Count > 0)
+                                                            tmpl.AiBehaviorConfigs = configs;
                                                     }
                                                     catch (Exception exc)
                                                     {
@@ -152,8 +264,101 @@ namespace MudPersistence
                                         {
                                             try
                                             {
-                                                var configs = JsonSerializer.Deserialize<List<MudCore.Templates.NpcTemplate.AiBehaviorConfig>>(abNode.GetRawText(), opts);
-                                                if (configs != null)
+                                                // Normalize into configs safely (handles array/string RequiresItem and legacy forms)
+                                                var configs = new List<NpcTemplate.AiBehaviorConfig>();
+                                                foreach (var el in abNode.EnumerateArray())
+                                                {
+                                                    if (el.ValueKind != JsonValueKind.Object) continue;
+                                                    var cfg = new NpcTemplate.AiBehaviorConfig();
+
+                                                    string TryGetString(string prop)
+                                                    {
+                                                        if (el.TryGetProperty(prop, out var p) && p.ValueKind == JsonValueKind.String)
+                                                            return p.GetString() ?? "";
+                                                        return "";
+                                                    }
+                                                    double TryGetDouble(string prop, double def)
+                                                    {
+                                                        if (el.TryGetProperty(prop, out var p))
+                                                        {
+                                                            if (p.ValueKind == JsonValueKind.Number && p.TryGetDouble(out var d)) return d;
+                                                            if (p.ValueKind == JsonValueKind.String && double.TryParse(p.GetString(), out var ds)) return ds;
+                                                        }
+                                                        return def;
+                                                    }
+                                                    int TryGetInt(string prop, int def)
+                                                    {
+                                                        if (el.TryGetProperty(prop, out var p))
+                                                        {
+                                                            if (p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var iv)) return iv;
+                                                            if (p.ValueKind == JsonValueKind.String && int.TryParse(p.GetString(), out var isv)) return isv;
+                                                        }
+                                                        return def;
+                                                    }
+
+                                                    cfg.Behavior = TryGetString("Behavior");
+                                                    cfg.TimePeriod = TryGetString("TimePeriod");
+                                                    cfg.Chance = TryGetDouble("Chance", 0.0);
+                                                    cfg.CreatedPerChance = TryGetInt("CreatedPerChance", 1);
+                                                    cfg.Max = TryGetInt("Max", 1);
+                                                    cfg.ItemTemplate = TryGetString("ItemTemplate");
+                                                    cfg.Location = TryGetString("Location");
+                                                    var rtool = TryGetString("RequiresTool");
+                                                    cfg.RequiresTool = string.IsNullOrWhiteSpace(rtool) ? "None" : rtool;
+                                                    var rrflag = TryGetString("RequiresRoomFlag");
+                                                    cfg.RequiresRoomFlag = string.IsNullOrWhiteSpace(rrflag) ? "None" : rrflag;
+
+                                                    // Consumes/Consume normalization
+                                                    if (el.TryGetProperty("ConsumesReqs", out var pcons))
+                                                    {
+                                                        if (pcons.ValueKind == JsonValueKind.String)
+                                                            cfg.ConsumesReqsRaw = pcons.GetString() ?? "false";
+                                                        else if (pcons.ValueKind == JsonValueKind.True || pcons.ValueKind == JsonValueKind.False)
+                                                            cfg.ConsumeReqs = pcons.ValueKind == JsonValueKind.True;
+                                                    }
+                                                    else if (el.TryGetProperty("ConsumeReqs", out var pcons2))
+                                                    {
+                                                        if (pcons2.ValueKind == JsonValueKind.String)
+                                                            cfg.ConsumesReqsRaw = pcons2.GetString() ?? "false";
+                                                        else if (pcons2.ValueKind == JsonValueKind.True || pcons2.ValueKind == JsonValueKind.False)
+                                                            cfg.ConsumeReqs = pcons2.ValueKind == JsonValueKind.True;
+                                                    }
+
+                                                    // RequiresItem normalization
+                                                    cfg.RequiresItem = new List<string>();
+                                                    if (el.TryGetProperty("RequiresItem", out var preq))
+                                                    {
+                                                        if (preq.ValueKind == JsonValueKind.String)
+                                                        {
+                                                            var s = preq.GetString() ?? "";
+                                                            if (!string.IsNullOrWhiteSpace(s)) cfg.RequiresItem.Add(s.Trim());
+                                                        }
+                                                        else if (preq.ValueKind == JsonValueKind.Array)
+                                                        {
+                                                            foreach (var it in preq.EnumerateArray())
+                                                            {
+                                                                if (it.ValueKind == JsonValueKind.String)
+                                                                {
+                                                                    var s = it.GetString() ?? "";
+                                                                    if (!string.IsNullOrWhiteSpace(s)) cfg.RequiresItem.Add(s.Trim());
+                                                                }
+                                                                else
+                                                                {
+                                                                    var raw = it.GetRawText();
+                                                                    if (!string.IsNullOrWhiteSpace(raw)) cfg.RequiresItem.Add(raw.Trim());
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if (string.IsNullOrWhiteSpace(cfg.Location)) cfg.Location = "Room";
+                                                    if (string.IsNullOrWhiteSpace(cfg.RequiresTool)) cfg.RequiresTool = "None";
+                                                    if (string.IsNullOrWhiteSpace(cfg.RequiresRoomFlag)) cfg.RequiresRoomFlag = "None";
+
+                                                    configs.Add(cfg);
+                                                }
+
+                                                if (configs.Count > 0)
                                                     tmpl.AiBehaviorConfigs = configs;
                                             }
                                             catch (Exception exc)
@@ -193,6 +398,28 @@ namespace MudPersistence
 
                 world.InitializeTemplates(tmplMgr);
                 Console.WriteLine($"[TEMPLATE] Loaded {loaded} NPC template(s).");
+
+                // NEW: run orphan NPC-owned item cleanup dry-run at startup and optionally execute real cleanup.
+                try
+                {
+                    if (conn != null)
+                    {
+                        int dryCount = MudPersistence.ItemPersistence.CleanOrphanNpcItems(conn, dryRun: true);
+                        Console.WriteLine($"[ItemPersistence][CLEAN] Startup dry-run orphaned NPC items: {dryCount} rows would be deleted.");
+
+                        // Optional real cleanup at startup controlled via environment variable.
+                        var runReal = (Environment.GetEnvironmentVariable("CLEAN_ORPHAN_NPC_ITEMS_AT_STARTUP") ?? "false").Trim();
+                        if (string.Equals(runReal, "true", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int deleted = MudPersistence.ItemPersistence.CleanOrphanNpcItems(conn, dryRun: false);
+                            Console.WriteLine($"[ItemPersistence][CLEAN] Startup executed deletion: {deleted} rows deleted.");
+                        }
+                    }
+                }
+                catch (Exception exClean)
+                {
+                    Console.WriteLine($"[ItemPersistence][CLEAN][WARN] Startup cleanup failed: {exClean.Message}");
+                }
             }
             catch (Exception ex)
             {
@@ -208,7 +435,7 @@ namespace MudPersistence
                 // Load RoomExits, Keywords, Inventory for each room
                 foreach (var room in area.Rooms)
                 {
-                    room.Exits = LoadRoomExits(conn, room.RoomID);
+                    LoadRoomExits(conn, room);
                     room.Keywords = LoadRoomKeywords(conn, room.RoomID);
 
                     // IMPORTANT: load full item records for room inventory to avoid partial object overwrites.
@@ -481,78 +708,116 @@ WHERE AreaID = @aid";
             return rooms;
         }
 
-        private static List<Room.RoomExit> LoadRoomExits(SqliteConnection conn, int roomID)
+        /// <summary>
+        /// Load exits for a room and hydrate door metadata (DoorType, Flags) from Doors table.
+        /// </summary>
+        private static void LoadRoomExits(SqliteConnection conn, Room room)
         {
-            var exits = new List<Room.RoomExit>();
-            var cmd = conn.CreateCommand();
-            // Load DoorId (nullable) instead of deprecated HasDoor/DoorState columns
-            cmd.CommandText = "SELECT Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId FROM RoomExit WHERE RoomID = @rid";
-            cmd.Parameters.AddWithValue("@rid", roomID);
-
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            try
             {
-                var direction = reader.IsDBNull(0) ? "" : reader.GetString(0);
-                var toRoom = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
-                var isHidden = !reader.IsDBNull(2) && reader.GetInt32(2) != 0;
-                var keyword = reader.IsDBNull(3) ? null : reader.GetString(3);
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT Direction, ToRoomID, IsHidden, DiscoverKeyword, DoorId FROM RoomExit WHERE RoomID = @rid";
+                cmd.Parameters.AddWithValue("@rid", room.RoomID);
 
-                int? doorId = null;
-                try
-                {
-                    if (!reader.IsDBNull(4))
-                        doorId = reader.GetInt32(4);
-                }
-                catch
-                {
-                    doorId = null;
-                }
-
-                var exit = new Room.RoomExit(
-                    direction,
-                    toRoom,
-                    isHidden,
-                    keyword,
-                    doorId
-                );
-
-                // Initialize in-memory cached door state from authoritative Doors table when available.
-                // If the DoorId references no row in Doors, clear the DoorId so renderers/clients do not show a ghost door.
-                if (doorId.HasValue)
+                using var rdr = cmd.ExecuteReader();
+                while (rdr.Read())
                 {
                     try
                     {
-                        EnsureOpen(conn);
-                        using var dq = conn.CreateCommand();
-                        dq.CommandText = "SELECT IsOpen FROM Doors WHERE DoorId = @did";
-                        dq.Parameters.AddWithValue("@did", doorId.Value);
-                        var obj = dq.ExecuteScalar();
-                        if (obj != null && !(obj is DBNull))
+                        var direction = rdr.IsDBNull(0) ? "" : rdr.GetString(0);
+                        var toRoomID = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1);
+                        var isHidden = rdr.IsDBNull(2) ? false : rdr.GetInt32(2) != 0;
+                        var keyword = rdr.IsDBNull(3) ? null : rdr.GetString(3);
+
+                        // Load DoorId (convert 0 to null for backward compatibility)
+                        int? doorId = null;
+                        if (!rdr.IsDBNull(4))
                         {
-                            exit.DoorIsOpen = Convert.ToInt32(obj) != 0;
+                            var doorVal = rdr.GetInt32(4);
+                            doorId = doorVal == 0 ? null : (int?)doorVal;
                         }
-                        else
+
+                        var exit = new Room.RoomExit(direction, toRoomID, isHidden, keyword, doorId);
+
+                        // NEW: If exit has a door, load DoorType and Flags from Doors table
+                        if (doorId.HasValue && doorId.Value > 0)
                         {
-                            // Authoritative Doors row missing -> clear the stale reference.
-                            // Previously we left DoorIsOpen=null which left DoorId populated and caused the client to render a door.
-                            //Console.WriteLine($"[WorldLoader] Warning: RoomExit (RoomID={roomID}, Dir='{direction}') references missing DoorId={doorId.Value}; clearing reference.");
-                            exit.DoorId = null;
-                            exit.DoorIsOpen = null;
+                            try
+                            {
+                                using var doorCmd = conn.CreateCommand();
+                                doorCmd.CommandText = "SELECT IsOpen, DoorType, Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                                doorCmd.Parameters.AddWithValue("@did", doorId.Value);
+
+                                using var doorRdr = doorCmd.ExecuteReader();
+                                if (doorRdr.Read())
+                                {
+                                    // Load IsOpen state
+                                    if (!doorRdr.IsDBNull(0))
+                                        exit.DoorIsOpen = doorRdr.GetInt32(0) != 0;
+
+                                    // Load DoorType (default "Door" if null/empty)
+                                    if (!doorRdr.IsDBNull(1))
+                                    {
+                                        var dt = doorRdr.GetString(1);
+                                        if (!string.IsNullOrWhiteSpace(dt))
+                                            exit.DoorType = dt;
+                                    }
+
+                                    // Load Flags (parse JSON array, default ["Close:30"] if null/empty)
+                                    if (!doorRdr.IsDBNull(2))
+                                    {
+                                        var flagsJson = doorRdr.GetString(2);
+                                        if (!string.IsNullOrWhiteSpace(flagsJson))
+                                        {
+                                            try
+                                            {
+                                                var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string>>(flagsJson);
+                                                if (parsed != null && parsed.Count > 0)
+                                                    exit.DoorFlags = parsed;
+                                                else
+                                                    exit.DoorFlags = new List<string> { "Close:30" }; // default when parsed empty
+                                            }
+                                            catch (Exception exJson)
+                                            {
+                                                Console.WriteLine($"[WorldLoader] Failed to parse Doors.Flags JSON for DoorId={doorId.Value}: {exJson.Message}");
+                                                exit.DoorFlags = new List<string> { "Close:30" }; // fallback default
+                                            }
+                                        }
+                                        else
+                                        {
+                                            exit.DoorFlags = new List<string> { "Close:30" }; // default when empty string
+                                        }
+                                    }
+                                    else
+                                    {
+                                        exit.DoorFlags = new List<string> { "Close:30" }; // default when NULL
+                                    }
+                                }
+                                else
+                                {
+                                    // No Doors row found for this DoorId - use defaults
+                                    Console.WriteLine($"[WorldLoader] Warning: DoorId={doorId.Value} not found in Doors table for exit {direction} in RoomID={room.RoomID}");
+                                }
+                            }
+                            catch (Exception exDoor)
+                            {
+                                Console.WriteLine($"[WorldLoader] Failed to load door metadata for DoorId={doorId.Value}: {exDoor.Message}");
+                                // Keep defaults: DoorType="Door", DoorFlags=empty
+                            }
                         }
+
+                        room.Exits.Add(exit);
                     }
                     catch (Exception ex)
                     {
-                        // best-effort: on error, clear the reference so we don't display a phantom door
-                        Console.WriteLine($"[WorldLoader] Error resolving DoorId {doorId.Value} for Room {roomID}, Dir '{direction}': {ex.Message}. Clearing reference.");
-                        exit.DoorId = null;
-                        exit.DoorIsOpen = null;
+                        Console.WriteLine($"[WorldLoader] Failed to load exit for RoomID={room.RoomID}: {ex.Message}");
                     }
                 }
-
-                exits.Add(exit);
             }
-
-            return exits;
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WorldLoader] Failed to load exits for RoomID={room.RoomID}: {ex.Message}");
+            }
         } // end LoadRoomExits
 
         private static List<string> LoadRoomKeywords(SqliteConnection conn, int roomID)

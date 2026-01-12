@@ -10,7 +10,7 @@ using MudCore.World;
 using MudPersistence;
 using MudNetworking;
 
-namespace MudServer.MudCore.Actions
+namespace MudCore.Actions
 {
     /// <summary>
     /// Lightweight manager for timed digging/mining actions.
@@ -25,7 +25,7 @@ namespace MudServer.MudCore.Actions
 
         private static string KeyFor(Player p) => string.IsNullOrWhiteSpace(p?.PlayerID) ? (p?.Name ?? Guid.NewGuid().ToString()) : p.PlayerID;
 
-        public static Message? StartDigging(Player player, string action, string targetExpr, string toolName, World world, SqliteConnection db)
+        public static Message? StartDigging(Player player, string action, string targetExpr, string toolName, World.World world, SqliteConnection db)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
             if (player.CurrentRoom == null) return MessageHandler.System("You are not in a location where you can dig or mine.");
@@ -47,7 +47,7 @@ namespace MudServer.MudCore.Actions
                 return MessageHandler.System($"Usage: {action} <item> with <tool>");
 
             // Resolve the target in the room and include buried items
-            var opts = new MudServer.MudUtils.ItemParserOptions
+            var opts = new MudUtils.ItemParserOptions
             {
                 IncludeBuried = true,
                 AllowStartsWith = true,
@@ -55,14 +55,14 @@ namespace MudServer.MudCore.Actions
                 IncludeMaterialTokens = false
             };
 
-            MudServer.MudUtils.ItemResolutionResult pres;
+            MudUtils.ItemResolutionResult pres;
             try
             {
-                pres = MudServer.MudUtils.ItemParser.ResolveForGet(player, targetExpr, opts);
+                pres = MudUtils.ItemParser.ResolveForGet(player, targetExpr, opts);
             }
             catch
             {
-                pres = new MudServer.MudUtils.ItemResolutionResult { Reason = "Parser failure." };
+                pres = new MudUtils.ItemResolutionResult { Reason = "Parser failure." };
             }
 
             if (pres.Winner == null)
@@ -179,7 +179,7 @@ namespace MudServer.MudCore.Actions
             try { if (player.PendingAction != null && (player.PendingAction.Command == "Dig" || player.PendingAction.Command == "Mine")) player.PendingAction = null; } catch { }
         }
 
-        private static async Task RunDigTask(Player player, string action, int itemId, string toolName, World world, SqliteConnection db, CancellationToken ct)
+        private static async Task RunDigTask(Player player, string action, int itemId, string toolName, World.World world, SqliteConnection db, CancellationToken ct)
         {
             Room startRoom = player.CurrentRoom;
             if (startRoom == null)
@@ -218,7 +218,7 @@ namespace MudServer.MudCore.Actions
                 // Cancel if player is in combat
                 try
                 {
-                    if (MudServer.CombatManager.IsEntityInCombat(player))
+                    if (MudCore.Actions.CombatManager.IsEntityInCombat(player))
                     {
                         MessageHandler.SendSystem(player, $"{(action == "mine" ? "Mining" : "Digging")} interrupted by combat.");
                         CancelPending(player);

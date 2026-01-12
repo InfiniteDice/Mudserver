@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using MudCore.Entities; // Item, Player types referenced in helpers
 
-namespace MudServer
+namespace MudCore.Entities
 {
     /// <summary>
     /// Value-type representation of currency: Gold / Silver / Copper.

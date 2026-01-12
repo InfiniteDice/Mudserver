@@ -39,6 +39,112 @@ namespace MudPersistence
             };
         }
 
+        
+        // Remove orphaned items owned by non-existent NPCs.
+        // - dryRun: when true, returns the count only and performs no deletes.
+        // - batchSize: number of rows to delete per writer transaction loop (keeps transactions small).
+        // Returns number of rows deleted (or would be deleted when dryRun=true).
+        public static int CleanOrphanNpcItems(SqliteConnection conn, bool dryRun = true, int batchSize = 500)
+        {
+            if (conn == null) throw new ArgumentNullException(nameof(conn));
+
+            // Normalize expected OwnerType token used in DB
+            const string ownerTypeToken = "NPC";
+
+            try
+            {
+                EnsureOpen(conn);
+
+                // Quick dry-run: count orphans without changing DB (use primary connection, no writer required)
+                if (dryRun)
+                {
+                    using var countCmd = conn.CreateCommand();
+                    countCmd.CommandText = $@"
+                        SELECT COUNT(*) FROM Item
+                        WHERE OwnerType = @otype
+                          AND OwnerID NOT IN (SELECT NpcID FROM Npc);";
+                    countCmd.Parameters.AddWithValue("@otype", ownerTypeToken);
+                    var obj = countCmd.ExecuteScalar();
+                    int count = 0;
+                    try { count = Convert.ToInt32(obj); } catch { count = 0; }
+                    if (setVerboseServerLogs) Console.WriteLine($"[ItemPersistence][CLEAN] Dry-run orphaned NPC items: {count}");
+                    return count;
+                }
+
+                // Real run: perform deletions in batches inside the writer queue for serialized safe writes.
+                int totalDeleted = 0;
+
+                // Use writer queue to ensure we hold a writer transaction for the delete loop.
+                totalDeleted = MudServer.DbWriteQueue.Instance.RunWriteAndWait<int>((wConn, wTx) =>
+                {
+                    // Ensure connection/tx are usable inside the writer
+                    if (wConn == null) return 0;
+
+                    int deletedThisRun = 0;
+                    while (true)
+                    {
+                        // Select a batch of orphan ItemIDs
+                        var ids = new List<int>();
+                        using (var sel = wConn.CreateCommand())
+                        {
+                            sel.Transaction = wTx;
+                            sel.CommandText = $@"
+                                SELECT ItemID FROM Item
+                                WHERE OwnerType = @otype
+                                  AND OwnerID NOT IN (SELECT NpcID FROM Npc)
+                                LIMIT @limit;";
+                            sel.Parameters.AddWithValue("@otype", ownerTypeToken);
+                            sel.Parameters.AddWithValue("@limit", batchSize);
+
+                            using var rdr = sel.ExecuteReader();
+                            while (rdr.Read())
+                            {
+                                if (!rdr.IsDBNull(0))
+                                    ids.Add(rdr.GetInt32(0));
+                            }
+                        }
+
+                        if (ids.Count == 0)
+                        {
+                            // nothing left to delete
+                            break;
+                        }
+
+                        // Delete the batch by ItemID
+                        using (var del = wConn.CreateCommand())
+                        {
+                            del.Transaction = wTx;
+                            // build parameterized IN clause to avoid SQL injection and to keep it explicit
+                            var paramNames = new List<string>();
+                            for (int i = 0; i < ids.Count; i++)
+                            {
+                                string pn = $"@id{i}";
+                                paramNames.Add(pn);
+                                del.Parameters.AddWithValue(pn, ids[i]);
+                            }
+                            del.CommandText = $"DELETE FROM Item WHERE ItemID IN ({string.Join(",", paramNames)});";
+                            int affected = del.ExecuteNonQuery();
+                            deletedThisRun += affected;
+                        }
+
+                        // Loop to pick next batch
+                    }
+
+                    return deletedThisRun;
+                }, timeout: TimeSpan.FromSeconds(30));
+
+                if (setVerboseServerLogs)
+                    Console.WriteLine($"[ItemPersistence][CLEAN] Deleted {totalDeleted} orphaned NPC-owned items.");
+
+                return totalDeleted;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ItemPersistence][CLEAN][ERROR] Failed cleaning orphan NPC items: {ex.Message}");
+                return 0;
+            }
+        }
+
 
         public static void SaveItem(SqliteConnection conn, Item item, SqliteTransaction? tx = null)
         {
@@ -367,6 +473,49 @@ namespace MudPersistence
             catch
             {
                 // On error enqueueing, fall back to direct delete to preserve previous behavior.
+            }
+
+            // Direct delete path (legacy)
+            DeleteItemInternal(conn, itemId, null);
+        }
+
+        public static void DeleteItem(SqliteConnection conn, int itemId, SqliteTransaction? tx = null)
+        {
+            if (itemId <= 0) return;
+
+            // If a transaction is supplied, caller is already in a writer context:
+            // perform the delete using the provided transaction (no enqueue).
+            if (tx != null)
+            {
+                try
+                {
+                    DeleteItemInternal(conn ?? throw new ArgumentNullException(nameof(conn)), itemId, tx);
+                }
+                catch
+                {
+                    // best-effort: swallow to preserve previous behavior semantics
+                    throw;
+                }
+                return;
+            }
+
+            // No transaction supplied: try to route through the single-writer queue (preferred).
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    DeleteItemInternal(wConn, itemId, wTx);
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(5));
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Queue not started — fall through to direct delete using provided connection.
+            }
+            catch
+            {
+                // On any enqueue error, fall back to direct delete to preserve prior behavior.
             }
 
             // Direct delete path (legacy)

@@ -7,7 +7,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
-using MudServer.MudUtils; // <- added
+using MudUtils; // <- added
+using MudCore.Actions;
+
 
 namespace MudServer
 {
@@ -17,7 +19,7 @@ namespace MudServer
         private readonly SqliteConnection _dbConnection;
         private readonly PlayerAuthentication _auth;
         private readonly AdminService _adminService; // new
-        private readonly MudServer.MudCore.Actions.DoorService _doorService; // door helper
+        private readonly MudCore.Actions.DoorService _doorService; // door helper
 
         private static readonly HashSet<string> AllowedWearLocs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -34,7 +36,7 @@ namespace MudServer
             _dbConnection = dbConnection;
             _auth = new PlayerAuthentication(world, dbConnection);
             _adminService = new AdminService(world, dbConnection); // initialize admin service
-            _doorService = new MudServer.MudCore.Actions.DoorService(world, dbConnection); // initialize door service
+            _doorService = new DoorService(world, dbConnection); // initialize door service
         }
 
         public Message? ProcessCommand(Player player, string rawCommand)
@@ -59,7 +61,7 @@ namespace MudServer
                             var npc = room?.Npcs.FirstOrDefault(n => n != null && n.NpcID == pendingNpcId)
                                       ?? _world.Npcs.FirstOrDefault(n => n != null && n.NpcID == pendingNpcId);
 
-                            if (npc != null && MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                            if (npc != null && MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
                             {
                                 // 'confirm' no longer performs autopay; delegate to trader.HandleConfirm which instructs the player.
                                 if (string.Equals(command, "confirm", StringComparison.OrdinalIgnoreCase))
@@ -158,7 +160,7 @@ namespace MudServer
                         var npc = matches[0];
 
                         // If NPC is a trader and the player has a TraderBuy pending for that npc, treat this as payment
-                        if (MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader)
+                        if (MudCore.AI.ItemTraderManager.TryGet(npc, out var trader)
                             && player.PendingAction != null
                             && string.Equals(player.PendingAction.Command, "TraderBuy", StringComparison.OrdinalIgnoreCase)
                             && player.PendingAction.Data is System.Collections.Generic.Dictionary<string, object> pd
@@ -174,7 +176,7 @@ namespace MudServer
                                 || whatExpr.IndexOf('s', StringComparison.OrdinalIgnoreCase) >= 0
                                 || whatExpr.IndexOf('c', StringComparison.OrdinalIgnoreCase) >= 0)
                             {
-                                copper = MudServer.MudCore.AI.ItemTrader.ParseCurrencyExpressionToCopper(whatExpr);
+                                copper = MudCore.AI.ItemTrader.ParseCurrencyExpressionToCopper(whatExpr);
                             }
                             else
                             {
@@ -394,7 +396,7 @@ namespace MudServer
                     }
 
                     var npc = matches[0];
-                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                    if (!MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
                         return MessageHandler.System($"{npc.DisplayName} does not trade.");
 
                     var args = string.IsNullOrWhiteSpace(sub) ? "trade" : sub;
@@ -439,7 +441,7 @@ namespace MudServer
                     }
 
                     var npc = matches[0];
-                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                    if (!MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
                         return MessageHandler.System($"{npc.DisplayName} does not trade.");
 
                     // Delegate to trader; ItemTrader.HandleBuy will use ItemParser to resolve item keywords.
@@ -484,7 +486,7 @@ namespace MudServer
                     }
 
                     var npc = matches[0];
-                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                    if (!MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
                         return MessageHandler.System($"{npc.DisplayName} does not trade.");
 
                     // Delegate to trader; ItemTrader uses ItemParser to resolve the actual inventory item.
@@ -511,7 +513,7 @@ namespace MudServer
                     }
 
                     var npc = matches[0];
-                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                    if (!MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
                         return MessageHandler.System($"{npc.DisplayName} does not trade.");
 
                     return trader.HandleCommand(player, $"convert {amtArg}", _dbConnection);
@@ -1106,6 +1108,21 @@ namespace MudServer
                 }
             }
 
+            // NEW: timechange admin command
+            if (command.StartsWith("timechange", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                try
+                {
+                    return _adminService.HandleTimeChange(player, command);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][TIMECHANGE] {ex}");
+                    return MessageHandler.System("Failed to change time due to a server error.");
+                }
+            }
+
             // NEW: npccounts admin command
             if (command.StartsWith("npccounts", StringComparison.OrdinalIgnoreCase))
             {
@@ -1120,6 +1137,22 @@ namespace MudServer
                     return MessageHandler.System("Failed to run npccounts due to a server error.");
                 }
             }
+
+            // NEW: time admin command
+            if (command.Equals("time", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                try
+                {
+                    return _adminService.HandleTime(player);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][TIME] {ex}");
+                    return MessageHandler.System("Failed to run time command due to a server error.");
+                }
+            }
+
 
             // NEW: dig / dig with <tool> requiring a target: "dig <item> with <tool>"
             if (command.StartsWith("dig", StringComparison.OrdinalIgnoreCase))
@@ -1136,7 +1169,7 @@ namespace MudServer
 
                 try
                 {
-                    return MudServer.MudCore.Actions.DigManager.StartDigging(player, "dig", before, tool, _world, _dbConnection);
+                    return MudCore.Actions.DigManager.StartDigging(player, "dig", before, tool, _world, _dbConnection);
                 }
                 catch (Exception ex)
                 {
@@ -1160,7 +1193,7 @@ namespace MudServer
 
                 try
                 {
-                    return MudServer.MudCore.Actions.DigManager.StartDigging(player, "mine", before, tool, _world, _dbConnection);
+                    return MudCore.Actions.DigManager.StartDigging(player, "mine", before, tool, _world, _dbConnection);
                 }
                 catch (Exception ex)
                 {
@@ -1186,7 +1219,7 @@ namespace MudServer
 
                 try
                 {
-                    return MudServer.MudCore.Actions.ProspectManager.StartProspecting(player, tool, _world, _dbConnection);
+                    return MudCore.Actions.ProspectManager.StartProspecting(player, tool, _world, _dbConnection);
                 }
                 catch (Exception ex)
                 {
@@ -1251,7 +1284,7 @@ namespace MudServer
                         return MessageHandler.System($"No container matching '{containerName}' found.");
                     }
 
-                    return MudServer.MudCore.Actions.Cooking.TryStartCooking(player, resolvedName, _world, _dbConnection);
+                    return MudCore.Actions.Cooking.TryStartCooking(player, resolvedName, _world, _dbConnection);
                 }
                 catch (Exception ex)
                 {
@@ -1358,7 +1391,7 @@ namespace MudServer
                 return null;
             }
 
-            // Handle room inventory commands and other admin flows...
+            // Handle admin flows...
             if (command.StartsWith("additem ", StringComparison.OrdinalIgnoreCase))
             {
                 if (!player.IsAdmin)
@@ -1388,11 +1421,18 @@ namespace MudServer
                 return _adminService.AddItem(player, template, qty);
             }
 
-            //if (command.StartsWith("exchange ", StringComparison.OrdinalIgnoreCase))
-            //{
-            //    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
-            //    return _adminService.HandleExchange(player, command);
-            //}
+
+            // Admin toggle invisibility command
+            if (normalized == "togglevisible" || normalized == "togglevis")
+            {
+                return _adminService.HandleToggleVisible(player);
+            }
+
+            // Admin teleport command - handles admin or admin forced player teleports
+            if (normalized == "teleport" || command.StartsWith("teleport ", StringComparison.OrdinalIgnoreCase))
+            {
+                return _adminService.HandleTeleport(player, command);
+            }
 
             if (command.StartsWith("removeitem ", StringComparison.OrdinalIgnoreCase))
             {
@@ -1454,6 +1494,43 @@ namespace MudServer
                         return MessageHandler.System($"Players currently online: {list}");
                     }
 
+                    
+                case "talk":
+                    {
+                        // Minimal 'talk' command: "talk <npcnamekeyword>"
+                        var partsTalk = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (partsTalk.Length < 2) return MessageHandler.System("Usage: talk <npc>");
+                        var targetExpr = partsTalk[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                        if (matches.Count > 1)
+                        {
+                            // Prompt numeric selection (pending)
+                            var list = string.Join("\n", matches.Select((m, idx) => $"{idx + 1}) {m.DisplayName}"));
+                            player.PendingAction = new PendingAction
+                            {
+                                Command = "TalkSelect",
+                                Step = "SelectIndex",
+                                Data = new NpcPendingData { Matches = matches }
+                            };
+                            return MessageHandler.System($"Multiple targets match '{targetExpr}'. Choose one to talk to:\n{list}\nType the number of the NPC to talk to.");
+                        }
+
+                        // Single match: start talk session (NpcTalk.BeginTalkSession will set PendingAction appropriately)
+                        try
+                        {
+                            return MudCore.Actions.NpcTalk.BeginTalkSession(player, matches[0]);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][TALK] BeginTalkSession failed: {ex}");
+                            return MessageHandler.System("Failed to start conversation due to a server error.");
+                        }
+                    }
+
                 case string s when s.StartsWith("createarea", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     return _adminService.HandleCreateArea(player, command);
@@ -1469,6 +1546,21 @@ namespace MudServer
                 case string s when s.StartsWith("editexit", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     return _adminService.HandleEditExit(player, command);
+
+                // NEW: editnpc admin command - starts pending edit flow (single-match -> menu, multi-match -> select)
+
+                case string s when s.StartsWith("editnpc", StringComparison.OrdinalIgnoreCase):
+                    {
+                        try
+                        {
+                            return _adminService.HandleEditNpc(player, command);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD] EditNpc routing failed: {ex.Message}");
+                            return MessageHandler.System("Failed to start NPC edit due to a server error.");
+                        }
+                    }
 
                 case string s when s.StartsWith("createnpc", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
@@ -1553,7 +1645,7 @@ namespace MudServer
                         long xpToNext = 0;
                         try
                         {
-                            xpToNext = MudServer.MudCore.Services.AdvancementManager.GetXpToNext(player.Experience);
+                            xpToNext = MudCore.Services.AdvancementManager.GetXpToNext(player.Experience);
                         }
                         catch { xpToNext = 0; }
 
@@ -1561,6 +1653,8 @@ namespace MudServer
     {
         $"Stats for {player.Name}:",
         $"Level: {player.Level}",
+        // Alignment line: resolved enum name and numeric value (two decimals)
+        $"Alignment: {player.Alignment}({player.AlignmentValue:F2})",
         $"Xp to Next Level: {(xpToNext > 0 ? xpToNext.ToString() : "(max level)")}",
         $"Unspent Skill Points: {player.SkillPoints}",
         $"Health: {player.Health}/{player.MaxHealth}",
@@ -1583,12 +1677,27 @@ namespace MudServer
                         var args = idx >= 0 ? command.Substring(idx + 1).Trim() : string.Empty;
                         try
                         {
-                            return MudServer.MudCore.Actions.Crafting.Smelt(player, args, _world, _dbConnection);
+                            return MudCore.Actions.Crafting.Smelt(player, args, _world, _dbConnection);
                         }
                         catch (Exception ex)
                         {
                             Console.WriteLine($"[CMD] Smelt command failed: {ex.Message}");
                             return MessageHandler.System("Smelting failed due to a server error.");
+                        }
+                    }
+
+                case string s when s.StartsWith("mill", StringComparison.OrdinalIgnoreCase):
+                    {
+                        var idx = command.IndexOf(' ');
+                        var args = idx >= 0 ? command.Substring(idx + 1).Trim() : string.Empty;
+                        try
+                        {
+                            return MudCore.Actions.Crafting.Mill(player, args, _world, _dbConnection);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD] Mill command failed: {ex.Message}");
+                            return MessageHandler.System("Milling failed due to a server error.");
                         }
                     }
 
@@ -1644,6 +1753,37 @@ namespace MudServer
                 case "debugitems":
                     {
                         return _adminService.DebugItems(player);
+                    }
+
+                case string s when s.Equals("adminhelp", StringComparison.OrdinalIgnoreCase):
+                    {
+                        if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+                        var adminCommands = new List<string>
+        {
+            "time - Display current time",
+            "timechange - Adjust game time",
+            "npccounts - Show NPC counts",
+            "debugrooms - List all rooms",
+            "debugitems - Print all items",
+            "kill <npc> - Remove NPCs",
+            "createnpc - Spawn an NPC",
+            "editnpc - Edit an NPC",
+            "createarea - Create new area",
+            "createroom - Create new room",
+            "editroom - Edit current room",
+            "editexit - Edit exit properties",
+            "additem - Add item to room",
+            "removeitem - Remove item",
+            "listitems - List items in room",
+            "anchor - Prevents item pickup"
+        };
+
+                        var header = "=== Admin Commands ===";
+                        var footer = "========================";
+                        var body = string.Join("\n", adminCommands);
+
+                        return MessageHandler.System($"{header}\n{body}\n{footer}");
                     }
 
                 case string s when s.StartsWith("kill", StringComparison.OrdinalIgnoreCase):
@@ -3414,6 +3554,24 @@ namespace MudServer
                 return false;
             }
 
+            // --- NEW: TalkSession pending handling ---
+            // If player has an active TalkSession pending, route short commands here (say / ask / end).
+            if (string.Equals(pa.Command, "TalkSession", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(pa.Step, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    // Delegate to the session manager (will handle 'end'/'cancel' and clear player.PendingAction when appropriate)
+                    return MudCore.Actions.NpcTalk.HandleTalkCommand(player, input);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[PENDING][TALK] TalkSession handling failed: {ex}");
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Conversation failed due to server error.");
+                }
+            }
+
             // --- NEW: TraderSession pending handling ---
             // If player opened a trade session using 'trade <npc>', short commands like 'list', 'buy <item>',
             // 'sell <item> to <trader>', 'confirm', 'cancel', 'quit' are routed here without re-specifying the NPC.
@@ -3445,7 +3603,7 @@ namespace MudServer
                         return MessageHandler.System("Trader not found.");
                     }
 
-                    if (!MudServer.MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
+                    if (!MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
                     {
                         player.PendingAction = null!;
                         return MessageHandler.System($"{npc.DisplayName} does not trade.");
@@ -3559,6 +3717,50 @@ namespace MudServer
 
                     player.PendingAction = null!;
                     return CombatManager.StartOrJoin(player, live, _world, _dbConnection);
+                }
+            }
+
+            // --- Pending: TalkSelect (numeric selection when multiple NPC matches were shown) ---
+            if (pa.Command == "TalkSelect")
+            {
+                var data = pa.Data as NpcPendingData;
+                if (data == null || data.Matches == null || data.Matches.Count == 0)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending data missing.");
+                }
+
+                if (pa.Step == "SelectIndex")
+                {
+                    if (!int.TryParse(input, out int idx) || idx < 1 || idx > data.Matches.Count)
+                        return MessageHandler.System("Invalid selection. Type the number of the NPC to talk to.");
+
+                    var chosen = data.Matches[idx - 1];
+
+                    var room = player.CurrentRoom;
+                    if (room == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("You are not in a valid room.");
+                    }
+
+                    var live = room.Npcs.FirstOrDefault(n => n != null && n.NpcID == chosen.NpcID);
+                    if (live == null)
+                    {
+                        player.PendingAction = null!;
+                        return MessageHandler.System("That NPC is no longer here.");
+                    }
+
+                    player.PendingAction = null!;
+                    try
+                    {
+                        return MudCore.Actions.NpcTalk.BeginTalkSession(player, live);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[PENDING][TALK] BeginTalkSession failed after selection: {ex}");
+                        return MessageHandler.System("Failed to start conversation due to a server error.");
+                    }
                 }
             }
 
@@ -4019,7 +4221,7 @@ namespace MudServer
             try { MudPersistence.ItemPersistence.SaveItem(_dbConnection, item); } catch (Exception ex) { Console.WriteLine($"[WEAR] SaveItem failed: {ex.Message}"); }
 
             // Recompute effective stats and broadcast updated room state
-            MudServer.Combat.UpdateEffectiveStats(player);
+            MudCore.Actions.Combat.UpdateEffectiveStats(player);
 
             foreach (var p in room.Players)
             {
@@ -4128,7 +4330,7 @@ namespace MudServer
             }
 
             // Recompute effective stats (worn armor no longer contributes)
-            MudServer.Combat.UpdateEffectiveStats(player);
+            Combat.UpdateEffectiveStats(player);
 
             // Broadcast updated room payload so other clients see inventory/appearance change
             foreach (var p in room.Players)
@@ -4295,7 +4497,7 @@ namespace MudServer
                 return MessageHandler.System("Failed to hold item due to a server error.");
             }
 
-            MudServer.Combat.UpdateEffectiveStats(player);
+            Combat.UpdateEffectiveStats(player);
 
             // Broadcast room and enqueue player update
             foreach (var p in room.Players)
@@ -4378,7 +4580,7 @@ namespace MudServer
                 Console.WriteLine($"[UNHOLD][WARN] DB verification failed for ItemID={target.ItemID}: {ex.Message}");
             }
 
-            MudServer.Combat.UpdateEffectiveStats(player);
+            Combat.UpdateEffectiveStats(player);
 
             foreach (var p in room.Players)
             {

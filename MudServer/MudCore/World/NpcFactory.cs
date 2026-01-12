@@ -1,5 +1,6 @@
 ﻿using MudCore.Entities;
 using MudCore.Templates;
+using MudCore.Actions;
 using System;
 
 namespace MudCore.World
@@ -120,8 +121,8 @@ namespace MudCore.World
                 catch { }
             }
 
-            MudServer.Combat.InitializeSizeDefaults(npc);
-            MudServer.Combat.UpdateEffectiveStats(npc);
+            Combat.InitializeSizeDefaults(npc);
+            Combat.UpdateEffectiveStats(npc);
 
             // Ensure NPC inherits area from the room so it can wander within its own area.
             npc.CurrentAreaID = room.AreaID;
@@ -133,10 +134,10 @@ namespace MudCore.World
             // Register ItemTrader if configured on this NPC template
             try
             {
-                var trader = MudServer.MudCore.AI.ItemTrader.CreateIfConfigured(npc, _world);
+                var trader = MudCore.AI.ItemTrader.CreateIfConfigured(npc, _world);
                 if (trader != null)
                 {
-                    MudServer.MudCore.AI.ItemTraderManager.Register(npc, trader);
+                    MudCore.AI.ItemTraderManager.Register(npc, trader);
                 }
             }
             catch (Exception exReg)

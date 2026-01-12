@@ -1,0 +1,14 @@
+{
+  "Id": "static_storeroom",
+  "Name": "Storeroom Containers",
+  "ItemCategory": "Container",
+  "Weight": 5000,
+  "Value": 1000,
+  "ShortDesc": "An arrangement of containers",
+  "LongDesc": "A large arrangement of containers, the storeroom containers can't be moved.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity20000", "Accept:All", "Lockable" ],
+  "Material": "Oak",
+  "BaseACBonus": 0.0
+}

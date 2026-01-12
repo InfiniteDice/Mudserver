@@ -2,7 +2,7 @@
 using MudCore.Entities;
 using MudCore.World;
 using MudPersistence;
-using MudServer.MudUtils;
+using MudUtils;
 using MudNetworking;
 using System;
 using System.Collections.Generic;
@@ -12,7 +12,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace MudServer.MudCore.Actions
+namespace MudCore.Actions
 {
     // Centralized cooking service: loads recipes from Data/Recipes and manages in-memory cook jobs.
     // Minimal, maintainable implementation:
@@ -59,7 +59,7 @@ namespace MudServer.MudCore.Actions
             public string RecipeId { get; set; } = "";
             public int ContainerItemId { get; set; }
             public DateTime EndAtUtc { get; set; }
-            public World World { get; set; } = null!;
+            public World.World World { get; set; } = null!;
             public SqliteConnection Conn { get; set; } = null!;
         }
 
@@ -150,7 +150,7 @@ namespace MudServer.MudCore.Actions
         } // end EnsureLoaded
 
         // Minimal public entrypoint called from CommandHandler
-        public static Message? TryStartCooking(Player player, string containerName, World world, SqliteConnection conn)
+        public static Message? TryStartCooking(Player player, string containerName, World.World world, SqliteConnection conn)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
             if (world == null) return MessageHandler.System("Server world unavailable.");
@@ -868,7 +868,7 @@ namespace MudServer.MudCore.Actions
             }
         }
 
-        public static void Tick(World world, SqliteConnection conn)
+        public static void Tick(World.World world, SqliteConnection conn)
         {
             if (world == null || conn == null) return;
 

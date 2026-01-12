@@ -10,7 +10,7 @@ using MudCore.World;
 using MudNetworking;
 using MudUtils;
 
-namespace MudServer.MudCore.Actions
+namespace MudCore.Actions
 {
     public static class ProspectManager
     {
@@ -19,7 +19,7 @@ namespace MudServer.MudCore.Actions
 
         private static string KeyFor(Player p) => string.IsNullOrWhiteSpace(p?.PlayerID) ? (p?.Name ?? Guid.NewGuid().ToString()) : p.PlayerID;
 
-        public static Message? StartProspecting(Player player, string toolName, World world, SqliteConnection db)
+        public static Message? StartProspecting(Player player, string toolName, World.World world, SqliteConnection db)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
             if (player.CurrentRoom == null) return MessageHandler.System("You are not in a location where you can prospect.");
@@ -99,7 +99,7 @@ namespace MudServer.MudCore.Actions
             try { if (player.PendingAction != null && string.Equals(player.PendingAction.Command, "Prospect", StringComparison.OrdinalIgnoreCase)) player.PendingAction = null; } catch { }
         }
 
-        private static async Task RunProspectTask(Player player, string toolName, World world, SqliteConnection db, CancellationToken ct)
+        private static async Task RunProspectTask(Player player, string toolName, World.World world, SqliteConnection db, CancellationToken ct)
         {
             var startRoom = player.CurrentRoom;
             if (startRoom == null)
@@ -136,7 +136,7 @@ namespace MudServer.MudCore.Actions
 
                 try
                 {
-                    if (MudServer.CombatManager.IsEntityInCombat(player))
+                    if (MudCore.Actions.CombatManager.IsEntityInCombat(player))
                     {
                         MessageHandler.SendSystem(player, "Prospecting interrupted by combat.");
                         CancelPending(player);

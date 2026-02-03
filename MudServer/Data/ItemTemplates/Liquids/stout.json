@@ -1,0 +1,14 @@
+{
+  "Id": "stout",
+  "Name": "Stout",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 3,
+  "ShortDesc": "It's stout",
+  "LongDesc": "This is a cup of stout, drink it straight.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" , "Stackable" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

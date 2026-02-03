@@ -1,0 +1,14 @@
+{
+  "Id": "glass_pint",
+  "Name": "Pint Glass",
+  "ItemCategory": "Container",
+  "Weight": 0.15,
+  "Value": 6,
+  "ShortDesc": "A simple pint glass",
+  "LongDesc": "A pint glass, this can be used to drink liquids.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity1","Accept:Food", "HoldsLiquid" ],
+  "Material": "Glass",
+  "BaseACBonus": 0.0
+}

@@ -145,6 +145,20 @@ namespace MudCore.World
                 Console.WriteLine($"[NpcFactory] Failed to create/register ItemTrader for NPC '{npc.Name}': {exReg.Message}");
             }
 
+            // Register BarTender (barkeep) if configured on this NPC template
+            try
+            {
+                var barkeep = MudCore.AI.BarTender.CreateIfConfigured(npc, _world);
+                if (barkeep != null)
+                {
+                    MudCore.AI.BarTenderManager.Register(npc, barkeep);
+                }
+            }
+            catch (Exception exReg)
+            {
+                Console.WriteLine($"[NpcFactory] Failed to create/register BarTender for NPC '{npc.Name}': {exReg.Message}");
+            }
+
             room.Npcs.Add(npc);
             return npc;
         }

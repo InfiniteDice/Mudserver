@@ -81,7 +81,7 @@
   ],
   "Debuffs": [],
   "Buffs": [],
-  "Hunger": 1,
+  "Hunger": 0,
   "VisualTrait": "",
   "VisualTraitType": "Generalhumanoid"
 }

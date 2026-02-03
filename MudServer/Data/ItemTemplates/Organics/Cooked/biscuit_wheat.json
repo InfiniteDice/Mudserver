@@ -1,0 +1,14 @@
+{
+  "Id": "biscuit_wheat",
+  "Name": "Biscuit",
+  "ItemCategory": "Food",
+  "Weight": 0.15,
+  "Value": 2,
+  "ShortDesc": "A plain biscuit",
+  "LongDesc": "A biscuit made from wheat, this is good to eat.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Heal"],
+  "Material": "Organic",
+  "Stackable": "true"
+}

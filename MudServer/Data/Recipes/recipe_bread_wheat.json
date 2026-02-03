@@ -1,0 +1,36 @@
+{
+  "id": "recipe_bread_wheat",
+  "result": {
+    "template": "bread_wheat",
+    "quantity": 1
+  },
+  "ingredients": [
+    {
+      "template": "flour_wheat",
+      "qty": 1
+    },
+    {
+      "template": "egg_chicken",
+      "qty": 1
+    },
+    {
+      "template": "water",
+      "qty": 1
+    },
+    {
+      "template": "yeast",
+      "qty": 1
+    }
+  ],
+  "container": [ "Pan", "Slab" ],
+  "requiredSkill": "skill_cooking",
+  "minSkillLevel": 1,
+  "toolsRequired": [ "Spoon" ],
+  "roomFlags": [ "Oven" ],
+  "timeSeconds": 15, 
+  "allowSubstitutions": false,
+  "substitutions": {
+    "flour_wheat": ["flour_rye"]
+  },
+  "notes": "Simple bread wheat flour"
+}

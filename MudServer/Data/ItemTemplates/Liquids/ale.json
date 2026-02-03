@@ -1,0 +1,14 @@
+{
+  "Id": "ale",
+  "Name": "Ale",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 3,
+  "ShortDesc": "It's ale",
+  "LongDesc": "This is a portion of ale, drink it straight.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" , "Stackable" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

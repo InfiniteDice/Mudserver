@@ -31,13 +31,64 @@ namespace MudCore.AI
         // How long to keep retrying for a scheduled NPC before giving up.
         private static readonly TimeSpan _pendingRecheckTtl = TimeSpan.FromMinutes(30);
 
+        // Track the last-minute retry window so we don't repeat it within the same period.
+        private static string _lastMinuteRecheckKey = string.Empty;
+
+        // NEW: Track failed Gather/Drop attempts for end-of-period retry
+        private class RetryKey
+        {
+            public int NpcID { get; set; }
+            public string Period { get; set; }
+            public string Action { get; set; }
+
+            public override bool Equals(object obj)
+            {
+                if (obj is RetryKey other)
+                    return NpcID == other.NpcID &&
+                           string.Equals(Period, other.Period, StringComparison.OrdinalIgnoreCase) &&
+                           string.Equals(Action, other.Action, StringComparison.OrdinalIgnoreCase);
+                return false;
+            }
+
+            public override int GetHashCode()
+            {
+                return HashCode.Combine(NpcID, Period?.ToLowerInvariant() ?? "", Action?.ToLowerInvariant() ?? "");
+            }
+        }
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<RetryKey, (DateTime firstAttempt, NpcTemplate.AiBehaviorConfig config)> _pendingRetries
+            = new System.Collections.Concurrent.ConcurrentDictionary<RetryKey, (DateTime, NpcTemplate.AiBehaviorConfig)>();
+
+        private static string _lastProcessedPeriod = "";
+
         // Public entry: run ItemMover checks once per game hour (idempotent).
         public static void ProcessItemMovers(World.World world, SqliteConnection conn)
         {
+
             try
             {
                 if (world == null) return;
                 var gc = world.GameTime ?? new GameClock();
+
+                var currentPeriodNow = gc.GetPeriodDescriptor();
+                if (gc.Minute == 55 &&
+                    GameClock.TryGetPeriodHourRange(currentPeriodNow, out var range) &&
+                    gc.Hour == range.EndHour)
+                {
+                    var minuteKey = $"{gc.Year}-{gc.Month}-{gc.Day}-{gc.Hour}-{currentPeriodNow}";
+                    if (!string.Equals(_lastMinuteRecheckKey, minuteKey, StringComparison.Ordinal))
+                    {
+                        if (DiagnosticsEnabled)
+                            Console.WriteLine($"[ITEMMOVER] Last-minute window reached for period '{currentPeriodNow}' (Hour={gc.Hour}). Running retries before the transition.");
+                        ProcessEndOfPeriodRetries(world, conn, currentPeriodNow);
+                        _lastMinuteRecheckKey = minuteKey;
+                    }
+                }
+                else
+                {
+                    if (gc.Minute < 55 || gc.Minute > 55)
+                        _lastMinuteRecheckKey = string.Empty;
+                }
 
                 long totalMonths = ((gc.Year - 1) * 12L) + (gc.Month - 1);
                 long totalDays = (totalMonths * 30L) + (gc.Day - 1);
@@ -47,6 +98,7 @@ namespace MudCore.AI
                 if (_lastItemMoverProcessedTotalHours == long.MinValue)
                 {
                     _lastItemMoverProcessedTotalHours = totalHours;
+                    _lastProcessedPeriod = gc.GetPeriodDescriptor(); // NEW
                     if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER] Initialized baseline at totalHours={totalHours}");
                     return;
                 }
@@ -57,6 +109,18 @@ namespace MudCore.AI
                 long steps = deltaHours; // one check per hour
                 for (long s = 0; s < steps; s++)
                 {
+                    // NEW: Check if period changed - process end-of-period retries BEFORE normal step
+                    string currentPeriod = gc.GetPeriodDescriptor();
+                    if (!string.Equals(currentPeriod, _lastProcessedPeriod, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrWhiteSpace(_lastProcessedPeriod)) // Skip first initialization
+                        {
+                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER] Period changed from '{_lastProcessedPeriod}' to '{currentPeriod}' - processing end-of-period retries");
+                            ProcessEndOfPeriodRetries(world, conn, _lastProcessedPeriod);
+                        }
+                        _lastProcessedPeriod = currentPeriod;
+                    }
+
                     ProcessItemMoverStep(world, conn);
                     _lastItemMoverProcessedTotalHours += 1;
                 }
@@ -132,6 +196,62 @@ namespace MudCore.AI
                 }
             }
             catch { /* best-effort */ }
+        }
+
+        // NEW: Process all pending retries for a period that just ended
+        private static void ProcessEndOfPeriodRetries(World.World world, SqliteConnection conn, string endedPeriod)
+        {
+            try
+            {
+                var keysToRetry = _pendingRetries.Keys.Where(k => string.Equals(k.Period, endedPeriod, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                if (keysToRetry.Count == 0)
+                {
+                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][RETRY] No pending retries for period '{endedPeriod}'");
+                    return;
+                }
+
+                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][RETRY] Processing {keysToRetry.Count} retry attempts for ended period '{endedPeriod}'");
+
+                foreach (var key in keysToRetry)
+                {
+                    try
+                    {
+                        if (!_pendingRetries.TryRemove(key, out var retryData)) continue;
+
+                        var npc = world.Npcs.FirstOrDefault(n => n != null && n.NpcID == key.NpcID);
+                        if (npc == null || npc.IsOnMove)
+                        {
+                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][RETRY] Skipping NpcID={key.NpcID} - not found or still moving");
+                            continue;
+                        }
+
+                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][RETRY] Attempting {key.Action} retry for NpcID={key.NpcID}");
+
+                        // Re-run the same behavior logic (inline simplified version)
+                        var b = retryData.config;
+                        var gc = world.GameTime ?? new GameClock();
+
+                        // Skip if somehow no longer in the period (edge case)
+                        if (!gc.IsInPeriod(b.TimePeriod ?? ""))
+                        {
+                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][RETRY] NpcID={key.NpcID} period mismatch, skipping");
+                            continue;
+                        }
+
+                        // Call ProcessItemMoverForNpc to re-execute the behavior
+                        ProcessItemMoverForNpc(npc, world, conn);
+                    }
+                    catch (Exception exRetry)
+                    {
+                        Console.WriteLine($"[ITEMMOVER][RETRY] Error processing retry for NpcID={key.NpcID}: {exRetry.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ITEMMOVER][RETRY] Error in ProcessEndOfPeriodRetries: {ex.Message}");
+            }
         }
 
         private static List<MudCore.Entities.Item> EnumerateRoomAndContainerItems(MudCore.World.Room room, Microsoft.Data.Sqlite.SqliteConnection conn)
@@ -223,6 +343,21 @@ namespace MudCore.AI
             if (npc.Template == null) return;
             if (npc.CurrentRoom == null) return;
 
+            // ADD THIS DEBUG OUTPUT
+            if (npc.NpcID == 820)
+            {
+                var gc2= world.GameTime ?? new GameClock();
+                Console.WriteLine($"[ITEMMOVER][820-DEBUG] ProcessItemMoverForNpc called at Hour={gc2.Hour} Period={gc2.GetPeriodDescriptor()}");
+                Console.WriteLine($"[ITEMMOVER][820-DEBUG] Template.AiBehaviorConfigs count={npc.Template.AiBehaviorConfigs?.Count ?? 0}");
+                if (npc.Template.AiBehaviorConfigs != null)
+                {
+                    foreach (var b in npc.Template.AiBehaviorConfigs)
+                    {
+                        Console.WriteLine($"[ITEMMOVER][820-DEBUG]   Behavior={b.Behavior} TimePeriod={b.TimePeriod} Action={b.Action} GiveLocation={b.GiveLocation}");
+                    }
+                }
+            }
+
             if (npc.IsOnMove)
             {
                 try
@@ -308,6 +443,15 @@ namespace MudCore.AI
                     }
 
                     // GATHER (room -> npc)
+                    // Summary:
+                    // - Collects items from the NPC's current room (floor + containers) into NPC inventory
+                    // - Searches: Room floor items (OwnerType='Room') + all containers in room + container contents (OwnerType='Item')
+                    // - Filters: TakeItemCategories (e.g., ["Food"]), TakeItems whitelist (e.g., ["grain_wheat"]) all the qty.
+                    // - Supports quantity syntax: "template:qty" to limit how many to take (e.g., "grain_wheat:5" = up to 5)
+                    // - Respects: MaxCarryKg capacity (stops when NPC reaches weight limit)
+                    // - Ignores: NPC-owned and Player-owned items (only takes from room/containers)
+                    // - Merges: Stackable items into existing NPC inventory stacks when possible
+                    // - Transaction: Atomic DB operation (delete/update sources, create/merge NPC items)
                     if (string.Equals(action, "Gather", StringComparison.OrdinalIgnoreCase))
                     {
                         try
@@ -334,6 +478,9 @@ namespace MudCore.AI
                             }
 
                             // Select rows to take, respecting categories, takeMap, and capacity
+                            // Track how much of each template we've already taken (for absolute limits)
+                            var takenByTemplate = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
                             var takenList = new List<(MudCore.Entities.Item Row, int Qty)>();
                             foreach (var row in candidates.OrderByDescending(r => r.Quantity))
                             {
@@ -371,8 +518,21 @@ namespace MudCore.AI
 
                                 int avail = Math.Max(1, row.Quantity);
                                 int want = avail;
+
+                                // FIXED: Apply ABSOLUTE limit across all rows for this template
                                 if (!string.IsNullOrWhiteSpace(row.TemplateID) && takeMap.TryGetValue(row.TemplateID, out var qSpec) && qSpec.HasValue)
-                                    want = Math.Min(want, qSpec.Value);
+                                {
+                                    int alreadyTaken = takenByTemplate.TryGetValue(row.TemplateID, out var at) ? at : 0;
+                                    int remaining = Math.Max(0, qSpec.Value - alreadyTaken);
+
+                                    if (remaining <= 0)
+                                    {
+                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][SKIP] ItemID={row.ItemID} Template='{row.TemplateID}' already reached limit of {qSpec.Value}");
+                                        continue;
+                                    }
+
+                                    want = Math.Min(want, remaining);
+                                }
 
                                 double unitKg = Math.Max(0.0, row.Weight);
                                 if (unitKg > 0.0)
@@ -389,13 +549,29 @@ namespace MudCore.AI
                                 if (want <= 0) continue;
 
                                 takenList.Add((row, want));
-                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][ACCEPT] ItemID={row.ItemID} Tmpl='{row.TemplateID}' QtyAvail={avail} Want={want} UnitKg={unitKg:F3}");
+
+                                // Track how much we're taking of this template
+                                if (!string.IsNullOrWhiteSpace(row.TemplateID))
+                                {
+                                    if (!takenByTemplate.ContainsKey(row.TemplateID))
+                                        takenByTemplate[row.TemplateID] = 0;
+                                    takenByTemplate[row.TemplateID] += want;
+                                }
+
+                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][ACCEPT] ItemID={row.ItemID} Tmpl='{row.TemplateID}' QtyAvail={avail} Want={want} UnitKg={unitKg:F3} TotalTaken={takenByTemplate.GetValueOrDefault(row.TemplateID ?? "", 0)}");
                                 currentKg += unitKg * want;
                             }
 
                             if (takenList.Count == 0)
                             {
                                 if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER] NpcID={npc.NpcID} found nothing to gather in RoomID={room.RoomID}.");
+
+                                // NEW: Schedule end-of-period retry
+                                var retryKey = new RetryKey { NpcID = npc.NpcID, Period = b.TimePeriod ?? "", Action = "Gather" };
+                                _pendingRetries[retryKey] = (DateTime.UtcNow, b);
+
+                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER] NpcID={npc.NpcID} scheduled for end-of-period retry");
+
                                 continue;
                             }
 
@@ -444,80 +620,135 @@ namespace MudCore.AI
                                             continue;
                                         }
 
-                                        // Persist source reduction/delete
+                                        // Capture original owner info from the source row (do NOT rely on 'authoritative' after it may be mutated)
+                                        var originalOwnerType = srcRow.OwnerType ?? "";
+                                        var originalOwnerId = srcRow.OwnerID;
+                                        var originalItemId = srcRow.ItemID;
+
+                                        // Persist source reduction or transfer ownership
                                         try
                                         {
                                             if (take < avail)
                                             {
-                                                // update quantity on existing row
+                                                // Partial take from stack - reduce quantity on source
                                                 var updated = new MudCore.Entities.Item { ItemID = authoritative.ItemID, Quantity = avail - take };
                                                 MudPersistence.ItemPersistence.SaveItem(wConn, updated, wTx);
                                                 if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] UPDATE ItemID={authoritative.ItemID} NewQty={avail - take}");
+
+                                                // Create new item for the taken portion and try to merge into NPC inventory
+                                                var created = world.ItemFactory.CreateItem(authoritative.TemplateID ?? authoritative.Name ?? "", "NPC", npc.NpcID, npc.CurrentRoom.RoomID, take);
+                                                created.Name = authoritative.Name;
+                                                created.ItemCategory = authoritative.ItemCategory;
+
+                                                var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
+                                                    wConn, wTx, "NPC", npc.NpcID, npc.CurrentRoom.RoomID,
+                                                    created.TemplateID ?? "", created.FlagsJson ?? "[]", take);
+
+                                                if (merged.mergedId != 0)
+                                                {
+                                                    created.ItemID = merged.mergedId;
+                                                    created.Quantity = merged.newQty;
+                                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] MERGED into ItemID={merged.mergedId} NewQty={merged.newQty}");
+                                                }
+                                                else
+                                                {
+                                                    ItemPersistence.SaveItem(wConn, created, wTx);
+                                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] INSERT new ItemID={created.ItemID} Qty={created.Quantity}");
+                                                }
+
+                                                newlyAdded.Add(created);
                                             }
                                             else
                                             {
-                                                MudPersistence.ItemPersistence.DeleteItem(wConn, authoritative.ItemID, wTx);
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] DELETE ItemID={authoritative.ItemID}");
+                                                // Full take - check if stackable and can merge into NPC inventory
+                                                bool isStackable = authoritative.Flags != null &&
+                                                    authoritative.Flags.Any(f => string.Equals(f, "Stackable", StringComparison.OrdinalIgnoreCase));
+
+                                                if (isStackable)
+                                                {
+                                                    // Try to merge into existing NPC stack
+                                                    var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
+                                                        wConn, wTx, "NPC", npc.NpcID, npc.CurrentRoom.RoomID,
+                                                        authoritative.TemplateID ?? "", authoritative.FlagsJson ?? "[]", take);
+
+                                                    if (merged.mergedId != 0)
+                                                    {
+                                                        // Merged successfully - delete the source item
+                                                        MudPersistence.ItemPersistence.DeleteItem(wConn, authoritative.ItemID, wTx);
+                                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] MERGED ItemID={authoritative.ItemID} into ItemID={merged.mergedId} NewQty={merged.newQty}");
+
+                                                        // Update in-memory reference for newlyAdded
+                                                        var placeholder = new MudCore.Entities.Item
+                                                        {
+                                                            ItemID = merged.mergedId,
+                                                            TemplateID = authoritative.TemplateID,
+                                                            Name = authoritative.Name,
+                                                            ItemCategory = authoritative.ItemCategory,
+                                                            Quantity = merged.newQty,
+                                                            OwnerType = "NPC",
+                                                            OwnerID = npc.NpcID
+                                                        };
+                                                        newlyAdded.Add(placeholder);
+                                                    }
+                                                    else
+                                                    {
+                                                        // No existing stack - update ownership in place (preserves ItemID)
+                                                        using var updCmd = wConn.CreateCommand();
+                                                        updCmd.Transaction = wTx;
+                                                        updCmd.CommandText = @"UPDATE Item SET OwnerType = @ot, OwnerID = @oid, RoomID = @rid WHERE ItemID = @id";
+                                                        updCmd.Parameters.AddWithValue("@ot", "NPC");
+                                                        updCmd.Parameters.AddWithValue("@oid", npc.NpcID);
+                                                        updCmd.Parameters.AddWithValue("@rid", npc.CurrentRoom.RoomID);
+                                                        updCmd.Parameters.AddWithValue("@id", authoritative.ItemID);
+                                                        updCmd.ExecuteNonQuery();
+
+                                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] UPDATE ItemID={authoritative.ItemID} -> OwnerType='NPC' OwnerID={npc.NpcID}");
+
+                                                        authoritative.OwnerType = "NPC";
+                                                        authoritative.OwnerID = npc.NpcID;
+                                                        authoritative.RoomID = npc.CurrentRoom.RoomID;
+                                                        newlyAdded.Add(authoritative);
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    // Non-stackable: update ownership in place (preserves ItemID)
+                                                    using var updCmd = wConn.CreateCommand();
+                                                    updCmd.Transaction = wTx;
+                                                    updCmd.CommandText = @"UPDATE Item SET OwnerType = @ot, OwnerID = @oid, RoomID = @rid WHERE ItemID = @id";
+                                                    updCmd.Parameters.AddWithValue("@ot", "NPC");
+                                                    updCmd.Parameters.AddWithValue("@oid", npc.NpcID);
+                                                    updCmd.Parameters.AddWithValue("@rid", npc.CurrentRoom.RoomID);
+                                                    updCmd.Parameters.AddWithValue("@id", authoritative.ItemID);
+                                                    updCmd.ExecuteNonQuery();
+
+                                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] UPDATE ItemID={authoritative.ItemID} -> OwnerType='NPC' OwnerID={npc.NpcID}");
+
+                                                    authoritative.OwnerType = "NPC";
+                                                    authoritative.OwnerID = npc.NpcID;
+                                                    authoritative.RoomID = npc.CurrentRoom.RoomID;
+                                                    newlyAdded.Add(authoritative);
+                                                }
                                             }
                                         }
                                         catch (Exception exTxSrc)
                                         {
-                                            Console.WriteLine($"[ITEMMOVER][GATHER][TX][ERROR] Failed to reduce/delete source ItemID={authoritative.ItemID}: {exTxSrc.Message}");
-                                            continue; // best-effort per-row
-                                        }
-
-                                        // Create new NPC-owned row
-                                        try
-                                        {
-                                            var created = world.ItemFactory.CreateItem(authoritative.TemplateID ?? authoritative.Name ?? "", "NPC", npc.NpcID, npc.CurrentRoom.RoomID, take);
-                                            created.Name = authoritative.Name;
-                                            created.ItemCategory = authoritative.ItemCategory;
-
-                                            // Try merge first (already inside DbWriteQueue context, wTx provided)
-                                            var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
-                                                wConn, wTx, "NPC", npc.NpcID, npc.CurrentRoom.RoomID,
-                                                created.TemplateID ?? "", created.FlagsJson ?? "[]", take);
-
-                                            if (merged.mergedId != 0)
-                                            {
-                                                // Merged into existing stack
-                                                created.ItemID = merged.mergedId;
-                                                created.Quantity = merged.newQty;
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] MERGED into ItemID={merged.mergedId} NewQty={merged.newQty}");
-                                            }
-                                            else
-                                            {
-                                                // No existing stack - insert new
-                                                ItemPersistence.SaveItem(wConn, created, wTx);
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] INSERT new ItemID={created.ItemID} Qty={created.Quantity}");
-                                            }
-
-                                            newlyAdded.Add(created);
-                                            //created.Name = authoritative.Name;
-                                            //created.ItemCategory = authoritative.ItemCategory;
-                                            //MudPersistence.ItemPersistence.SaveItem(wConn, created, wTx);
-                                            //newlyAdded.Add(created);
-
-                                            //if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER][TX] INSERT -> NPC ItemID={created.ItemID} Tmpl='{created.TemplateID}' Qty={created.Quantity}");
-                                        }
-                                        catch (Exception exCreate)
-                                        {
-                                            Console.WriteLine($"[ITEMMOVER][GATHER][TX][ERROR] Failed to create npc-owned item for Template='{authoritative.TemplateID}': {exCreate.Message}");
-                                            // Attempt to rollback source change is not done here; rely on writer transactional semantics (exception would abort tx)
+                                            Console.WriteLine($"[ITEMMOVER][GATHER][TX][ERROR] Failed to process source ItemID={authoritative.ItemID}: {exTxSrc.Message}");
                                             continue;
                                         }
 
                                         // In-memory best-effort: remove from room.Inventory if present (top-level)
                                         try
                                         {
-                                            if (string.Equals(authoritative.OwnerType ?? "", "Room", StringComparison.OrdinalIgnoreCase))
+                                            // Use the ORIGINAL owner info (from srcRow) rather than 'authoritative' which may have been mutated above.
+                                            if (string.Equals(originalOwnerType ?? "", "Room", StringComparison.OrdinalIgnoreCase))
                                             {
-                                                room.Inventory?.RemoveAll(i => i != null && i.ItemID == authoritative.ItemID);
+                                                room.Inventory?.RemoveAll(i => i != null && i.ItemID == originalItemId);
                                             }
-                                            else if (string.Equals(authoritative.OwnerType ?? "", "Item", StringComparison.OrdinalIgnoreCase))
+                                            else if (string.Equals(originalOwnerType ?? "", "Item", StringComparison.OrdinalIgnoreCase))
                                             {
                                                 // Container contents may not be in memory; best-effort remove if present
-                                                foreach (var cont in room.Inventory?.Where(it => it != null && it.ItemID == authoritative.OwnerID).ToList() ?? new List<MudCore.Entities.Item>())
+                                                foreach (var cont in room.Inventory?.Where(it => it != null && it.ItemID == originalOwnerId).ToList() ?? new List<MudCore.Entities.Item>())
                                                 {
                                                     try
                                                     {
@@ -547,6 +778,23 @@ namespace MudCore.AI
                                 continue;
                             }
 
+                            // Broadcast room update to all players in the room
+                            try
+                            {
+                                if (room != null && room.Players != null)
+                                {
+                                    foreach (var p in room.Players)
+                                    {
+                                        p.PendingMessageQueue.Add(MessageHandler.Room(
+                                            room,
+                                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                                            room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                            world));
+                                    }
+                                }
+                            }
+                            catch { /* best-effort */ }
+
                             if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][GATHER] NpcID={npc.NpcID} gather completed; added {npc.Inventory?.Count ?? 0} item(s) in-memory (best-effort).");
                         }
                         catch (Exception exGather)
@@ -558,6 +806,18 @@ namespace MudCore.AI
                     }
 
                     // DROP remains room/container only
+                    // Summary:
+                    // - Transfers items from NPC inventory to room floor or a specific container
+                    // - Target: Controlled by GiveLocation parameter
+                    //   * "Room" → Drops items onto room floor (OwnerType='Room', OwnerID=RoomID)
+                    //   * "Container" → Drops into specific container (uses IfDropToContainerTemplate to find target)
+                    // - Filters: TakeItemCategories (e.g., ["Food"]), TakeItems whitelist (e.g., ["grain_wheat:5"])
+                    // - Supports quantity syntax: "template:qty" to limit how many to drop (e.g., "grain_wheat:5" = up to 5)
+                    // - By default: Drops ALL matching items in NPC inventory (unless quantity limit specified)
+                    // - Merges: Stackable items into existing target stacks when possible
+                    // - Container validation: If GiveLocation="Container", target container must exist in room (by TemplateID)
+                    // - Transaction: Atomic DB operation (delete/update NPC items, create/merge target items)
+                    // - In-memory sync: Removes from NPC inventory, adds to room/container (best-effort)
                     if (string.Equals(action, "Drop", StringComparison.OrdinalIgnoreCase))
                     {
                         try
@@ -567,6 +827,23 @@ namespace MudCore.AI
                             {
                                 if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][WARN] NpcID={npc.NpcID} has no current room.");
                                 continue;
+                            }
+
+                            // Check IfDropToRoomFlag: if set and room doesn't have the flag, skip drop
+                            var requiredRoomFlag = (b.IfDropToRoomFlag ?? "None").Trim();
+                            if (!string.IsNullOrWhiteSpace(requiredRoomFlag) && !string.Equals(requiredRoomFlag, "None", StringComparison.OrdinalIgnoreCase))
+                            {
+                                bool roomHasFlag = room.Flags != null && room.Flags.Any(f => string.Equals(f, requiredRoomFlag, StringComparison.OrdinalIgnoreCase));
+                                if (!roomHasFlag)
+                                {
+                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][SKIP] NpcID={npc.NpcID} room RoomID={room.RoomID} missing required flag '{requiredRoomFlag}'; scheduling retry.");
+
+                                    // Schedule end-of-period retry since NPC may travel to correct room later
+                                    var retryKey2 = new RetryKey { NpcID = npc.NpcID, Period = b.TimePeriod ?? "", Action = "Drop" };
+                                    _pendingRetries[retryKey2] = (DateTime.UtcNow, b);
+
+                                    continue;
+                                }
                             }
 
                             // Determine drop target: Room or Container
@@ -626,18 +903,39 @@ namespace MudCore.AI
                             if (dropList.Count == 0)
                             {
                                 if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP] NpcID={npc.NpcID} has nothing to drop.");
+
+                                // NEW: Schedule end-of-period retry
+                                var retryKey2 = new RetryKey { NpcID = npc.NpcID, Period = b.TimePeriod ?? "", Action = "Drop" };
+                                _pendingRetries[retryKey2] = (DateTime.UtcNow, b);
+
+                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP] NpcID={npc.NpcID} scheduled for end-of-period retry");
+
                                 continue;
                             }
 
                             if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP] NpcID={npc.NpcID} preparing to drop {dropList.Count} item types.");
+
+                            // ADD THIS DEBUG BLOCK
+                            if (DiagnosticsEnabled)
+                            {
+                                Console.WriteLine($"[ITEMMOVER][DROP][DEBUG] NpcID={npc.NpcID} dropList contents:");
+                                foreach (var (it, q) in dropList)
+                                {
+                                    Console.WriteLine($"[ITEMMOVER][DROP][DEBUG]   ItemID={it.ItemID} TemplateID='{it.TemplateID}' Category='{it.ItemCategory}' Qty={q}");
+                                }
+                            }
 
                             // Execute drop in writer transaction
                             try
                             {
                                 DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
                                 {
+                                    // ADD THIS AT START OF TRANSACTION
+                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] NpcID={npc.NpcID} transaction started");
+
                                     foreach (var (item, qty) in dropList)
                                     {
+                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] Processing ItemID={item.ItemID} TemplateID='{item.TemplateID}'");
                                         // Load authoritative source
                                         var authRows = ItemPersistence.LoadItemsByOwner(wConn, "NPC", npc.NpcID, wTx);
                                         var auth = authRows.FirstOrDefault(r => r.ItemID == item.ItemID);
@@ -647,52 +945,100 @@ namespace MudCore.AI
                                         int drop = Math.Min(avail, qty);
                                         if (drop <= 0) continue;
 
-                                        // Reduce/delete source
+                                        // Update source item ownership (DO NOT delete and recreate - preserves ItemID)
                                         if (drop < avail)
                                         {
+                                            // Partial drop from stack - reduce quantity on source
                                             var updated = new Item { ItemID = auth.ItemID, Quantity = avail - drop };
                                             ItemPersistence.SaveItem(wConn, updated, wTx);
                                             if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] UPDATE NPC ItemID={auth.ItemID} NewQty={avail - drop}");
+
+                                            // Create new item for the dropped portion (stackable partial)
+                                            string targetOwnerType = targetContainer != null ? "Item" : "Room";
+                                            int targetOwnerId = targetContainer != null ? targetContainer.ItemID : room.RoomID;
+
+                                            var dropped = world.ItemFactory.CreateItem(auth.TemplateID ?? auth.Name ?? "", targetOwnerType, targetOwnerId, room.RoomID, drop);
+                                            dropped.Name = auth.Name;
+                                            dropped.ItemCategory = auth.ItemCategory;
+
+                                            // Try merge into target
+                                            var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
+                                                wConn, wTx, targetOwnerType, targetOwnerId, room.RoomID,
+                                                dropped.TemplateID ?? "", dropped.FlagsJson ?? "[]", drop);
+
+                                            if (merged.mergedId != 0)
+                                            {
+                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] MERGED into ItemID={merged.mergedId} NewQty={merged.newQty}");
+                                            }
+                                            else
+                                            {
+                                                ItemPersistence.SaveItem(wConn, dropped, wTx);
+                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] INSERT new ItemID={dropped.ItemID} Qty={dropped.Quantity}");
+
+                                                // Add to room in-memory inventory
+                                                if (targetContainer == null)
+                                                    room.Inventory?.Add(dropped);
+                                            }
                                         }
                                         else
                                         {
-                                            ItemPersistence.DeleteItem(wConn, auth.ItemID, wTx);
-                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] DELETE NPC ItemID={auth.ItemID}");
-                                        }
+                                            // Full drop - check if stackable and can merge first
+                                            string targetOwnerType = targetContainer != null ? "Item" : "Room";
+                                            int targetOwnerId = targetContainer != null ? targetContainer.ItemID : room.RoomID;
 
-                                        // Create dropped item
-                                        string targetOwnerType = targetContainer != null ? "Item" : "Room";
-                                        int targetOwnerId = targetContainer != null ? targetContainer.ItemID : room.RoomID;
+                                            bool isStackable = auth.Flags != null && auth.Flags.Any(f => string.Equals(f, "Stackable", StringComparison.OrdinalIgnoreCase));
 
-                                        var dropped = world.ItemFactory.CreateItem(auth.TemplateID ?? auth.Name ?? "", targetOwnerType, targetOwnerId, room.RoomID, drop);
-                                        dropped.Name = auth.Name;
-                                        dropped.ItemCategory = auth.ItemCategory;
+                                            if (isStackable)
+                                            {
+                                                // Try to merge into existing stack at target
+                                                var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
+                                                    wConn, wTx, targetOwnerType, targetOwnerId, room.RoomID,
+                                                    auth.TemplateID ?? "", auth.FlagsJson ?? "[]", auth.Quantity);
 
-                                        // Try merge into target
-                                        var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
-                                            wConn, wTx, targetOwnerType, targetOwnerId, room.RoomID,
-                                            dropped.TemplateID ?? "", dropped.FlagsJson ?? "[]", drop);
+                                                if (merged.mergedId != 0)
+                                                {
+                                                    // Merged successfully - delete the source item
+                                                    ItemPersistence.DeleteItem(wConn, auth.ItemID, wTx);
+                                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] MERGED ItemID={auth.ItemID} into ItemID={merged.mergedId} NewQty={merged.newQty}");
 
-                                        if (merged.mergedId != 0)
-                                        {
-                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] MERGED into ItemID={merged.mergedId} NewQty={merged.newQty}");
-                                        }
-                                        else
-                                        {
-                                            ItemPersistence.SaveItem(wConn, dropped, wTx);
-                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] INSERT new ItemID={dropped.ItemID} Qty={dropped.Quantity}");
+                                                    // Remove from NPC in-memory
+                                                    npc.Inventory?.RemoveAll(i => i != null && i.ItemID == auth.ItemID);
+                                                    continue;
+                                                }
+                                            }
 
-                                            // Add to room in-memory inventory
+                                            // No merge possible (or not stackable) - update ownership in place (preserves ItemID)
+                                            using var updCmd = wConn.CreateCommand();
+                                            updCmd.Transaction = wTx;
+                                            updCmd.CommandText = @"UPDATE Item SET OwnerType = @ot, OwnerID = @oid, RoomID = @rid WHERE ItemID = @id";
+                                            updCmd.Parameters.AddWithValue("@ot", targetOwnerType);
+                                            updCmd.Parameters.AddWithValue("@oid", targetOwnerId);
+                                            updCmd.Parameters.AddWithValue("@rid", room.RoomID);
+                                            updCmd.Parameters.AddWithValue("@id", auth.ItemID);
+                                            updCmd.ExecuteNonQuery();
+
+                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] UPDATE ItemID={auth.ItemID} -> OwnerType='{targetOwnerType}' OwnerID={targetOwnerId} RoomID={room.RoomID}");
+
+                                            // Update in-memory item
+                                            auth.OwnerType = targetOwnerType;
+                                            auth.OwnerID = targetOwnerId;
+                                            auth.RoomID = room.RoomID;
+
+                                            // Add to room in-memory inventory (same item, just moved)
                                             if (targetContainer == null)
-                                                room.Inventory?.Add(dropped);
+                                                room.Inventory?.Add(auth);
                                         }
 
                                         // Remove from NPC in-memory
                                         npc.Inventory?.RemoveAll(i => i != null && i.ItemID == auth.ItemID);
                                     }
 
+                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP][TX] NpcID={npc.NpcID} transaction completing");
+
                                     return (object?)null;
                                 }, timeout: TimeSpan.FromSeconds(30));
+                                // ADD THIS AFTER TRANSACTION
+                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP] NpcID={npc.NpcID} transaction completed successfully");
                             }
                             catch (Exception exTx)
                             {
@@ -700,7 +1046,28 @@ namespace MudCore.AI
                                 continue;
                             }
 
+                            // Broadcast room update to all players in the room
+                            try
+                            {
+                                if (room != null && room.Players != null)
+                                {
+                                    foreach (var p in room.Players)
+                                    {
+                                        p.PendingMessageQueue.Add(MessageHandler.Room(
+                                            room,
+                                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                                            room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                            world));
+                                    }
+                                }
+                            }
+                            catch { /* best-effort */ }
+
                             if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][DROP] NpcID={npc.NpcID} drop completed.");
+
+                            // NEW: Clear retry on success
+                            var retryKey = new RetryKey { NpcID = npc.NpcID, Period = b.TimePeriod ?? "", Action = "Drop" };
+                            _pendingRetries.TryRemove(retryKey, out _);
                         }
                         catch (Exception exDrop)
                         {
@@ -711,7 +1078,7 @@ namespace MudCore.AI
                     }
 
                     // EXCHANGE: strictly NPC <-> NPC (no room-sourced fallback).
-                    
+
                     if (string.Equals(action, "Exchange", StringComparison.OrdinalIgnoreCase))
                     {
                         try
@@ -751,7 +1118,7 @@ namespace MudCore.AI
                                 catch { /* best-effort */ }
                             }
 
-                            // NEW: Perform exchange in writer transaction with TWO phases: GIVE then TAKE
+                            // Perform exchange in writer transaction with TWO phases: GIVE then TAKE
                             try
                             {
                                 DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
@@ -788,8 +1155,51 @@ namespace MudCore.AI
 
                                     if (required.Count > 0)
                                     {
+                                        var allowedCategories = (b.TakeItemCategories ?? new List<string>())
+                                            .Where(c => !string.IsNullOrWhiteSpace(c))
+                                            .Select(c => c.Trim())
+                                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                                            .ToList();
+
+                                        bool CategoryAllowed(Item itm)
+                                        {
+                                            if (allowedCategories.Count == 0) return true;
+                                            if (itm == null) return false;
+                                            if (string.IsNullOrWhiteSpace(itm.ItemCategory)) return false;
+                                            return allowedCategories.Any(filter => string.Equals(filter, itm.ItemCategory, StringComparison.OrdinalIgnoreCase));
+                                        }
+
                                         // Filter mover's items matching what target needs
-                                        var moverCandidates = moverRows.Where(i => i != null && required.Contains(i.TemplateID, StringComparer.OrdinalIgnoreCase)).ToList();
+                                        var moverCandidates = moverRows
+                                            .Where(i => i != null && !string.IsNullOrWhiteSpace(i.TemplateID)
+                                                        && required.Contains(i.TemplateID, StringComparer.OrdinalIgnoreCase)
+                                                        && CategoryAllowed(i))
+                                            .ToList();
+
+                                        try
+                                        {
+                                            var moverContainers = moverRows
+                                                .Where(i => i != null && i.ItemID > 0 && (
+                                                    string.Equals(i.ItemCategory, "Container", StringComparison.OrdinalIgnoreCase) ||
+                                                    (i.Flags != null && i.Flags.Any(f => string.Equals(f, "Container", StringComparison.OrdinalIgnoreCase)))
+                                                ))
+                                                .ToList();
+
+                                            foreach (var container in moverContainers)
+                                            {
+                                                if (container == null || container.ItemID <= 0) continue;
+
+                                                var contents = ItemPersistence.LoadItemsByOwner(wConn, "Item", container.ItemID, wTx) ?? new List<Item>();
+                                                foreach (var content in contents)
+                                                {
+                                                    if (content == null || string.IsNullOrWhiteSpace(content.TemplateID)) continue;
+                                                    if (!required.Contains(content.TemplateID, StringComparer.OrdinalIgnoreCase)) continue;
+                                                    if (!CategoryAllowed(content)) continue;
+                                                    moverCandidates.Add(content);
+                                                }
+                                            }
+                                        }
+                                        catch { /* best-effort */ }
 
                                         if (DiagnosticsEnabled)
                                             Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} has {moverCandidates.Count} items matching target's needs");
@@ -798,8 +1208,16 @@ namespace MudCore.AI
                                         {
                                             if (mv == null) continue;
 
-                                            // Load authoritative mover item from DB
-                                            var moverAuthRows = ItemPersistence.LoadItemsByOwner(wConn, "NPC", npc.NpcID, wTx);
+                                            List<Item> moverAuthRows;
+                                            if (string.Equals(mv.OwnerType ?? "", "Item", StringComparison.OrdinalIgnoreCase) && mv.OwnerID > 0)
+                                            {
+                                                moverAuthRows = ItemPersistence.LoadItemsByOwner(wConn, "Item", mv.OwnerID, wTx) ?? new List<Item>();
+                                            }
+                                            else
+                                            {
+                                                moverAuthRows = ItemPersistence.LoadItemsByOwner(wConn, "NPC", npc.NpcID, wTx) ?? new List<Item>();
+                                            }
+
                                             var moverAuth = moverAuthRows.FirstOrDefault(r => r.ItemID == mv.ItemID);
                                             if (moverAuth == null)
                                             {
@@ -808,77 +1226,83 @@ namespace MudCore.AI
                                             }
 
                                             int giveQty = Math.Max(1, moverAuth.Quantity);
+                                            bool isStackable = moverAuth.Flags != null && moverAuth.Flags.Any(f => string.Equals(f, "Stackable", StringComparison.OrdinalIgnoreCase));
 
-                                            // Delete from mover
-                                            ItemPersistence.DeleteItem(wConn, moverAuth.ItemID, wTx);
-                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] DELETE from mover ItemID={moverAuth.ItemID} Template='{moverAuth.TemplateID}' Qty={giveQty}");
-
-                                            // Try to merge into target's existing stack
-                                            var mergedToTarget = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
-                                                wConn, wTx, "NPC", target.NpcID, target.CurrentRoom?.RoomID ?? 0,
-                                                moverAuth.TemplateID ?? "", moverAuth.FlagsJson ?? "[]", giveQty);
-
-                                            if (mergedToTarget.mergedId != 0)
+                                            if (isStackable)
                                             {
-                                                // Merged into existing target stack
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] MERGED give item into target ItemID={mergedToTarget.mergedId} NewQty={mergedToTarget.newQty}");
+                                                // Try to merge into target's existing stack
+                                                var mergedToTarget = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
+                                                    wConn, wTx, "NPC", target.NpcID, target.CurrentRoom?.RoomID ?? 0,
+                                                    moverAuth.TemplateID ?? "", moverAuth.FlagsJson ?? "[]", giveQty);
 
-                                                // Update in-memory target inventory
-                                                try
+                                                if (mergedToTarget.mergedId != 0)
                                                 {
-                                                    var existingInMem = target.Inventory?.FirstOrDefault(i => i != null && i.ItemID == mergedToTarget.mergedId);
-                                                    if (existingInMem != null)
+                                                    // Merged - delete source
+                                                    ItemPersistence.DeleteItem(wConn, moverAuth.ItemID, wTx);
+                                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] MERGED give item into target ItemID={mergedToTarget.mergedId} NewQty={mergedToTarget.newQty}");
+
+                                                    try
                                                     {
-                                                        existingInMem.Quantity = mergedToTarget.newQty;
-                                                    }
-                                                    else
-                                                    {
-                                                        // Not in memory - create placeholder with merged quantity
-                                                        if (target.Inventory == null) target.Inventory = new List<Item>();
-                                                        var placeholder = new Item
+                                                        var existingInMem = target.Inventory?.FirstOrDefault(i => i != null && i.ItemID == mergedToTarget.mergedId);
+                                                        if (existingInMem != null)
                                                         {
-                                                            ItemID = mergedToTarget.mergedId,
-                                                            TemplateID = moverAuth.TemplateID,
-                                                            Name = moverAuth.Name,
-                                                            ItemCategory = moverAuth.ItemCategory,
-                                                            Weight = moverAuth.Weight,
-                                                            Quantity = mergedToTarget.newQty,
-                                                            OwnerType = "NPC",
-                                                            OwnerID = target.NpcID,
-                                                            RoomID = target.CurrentRoom?.RoomID ?? 0,
-                                                            Flags = moverAuth.Flags,
-                                                            FlagsJson = moverAuth.FlagsJson
-                                                        };
-                                                        target.Inventory.Add(placeholder);
+                                                            existingInMem.Quantity = mergedToTarget.newQty;
+                                                        }
                                                     }
+                                                    catch { }
                                                 }
-                                                catch { /* best-effort in-memory update */ }
+                                                else
+                                                {
+                                                    // No existing stack - update ownership in place
+                                                    using var updCmd = wConn.CreateCommand();
+                                                    updCmd.Transaction = wTx;
+                                                    updCmd.CommandText = @"UPDATE Item SET OwnerType = @ot, OwnerID = @oid, RoomID = @rid WHERE ItemID = @id";
+                                                    updCmd.Parameters.AddWithValue("@ot", "NPC");
+                                                    updCmd.Parameters.AddWithValue("@oid", target.NpcID);
+                                                    updCmd.Parameters.AddWithValue("@rid", target.CurrentRoom?.RoomID ?? 0);
+                                                    updCmd.Parameters.AddWithValue("@id", moverAuth.ItemID);
+                                                    updCmd.ExecuteNonQuery();
+
+                                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] UPDATE give ItemID={moverAuth.ItemID} -> target NpcID={target.NpcID}");
+
+                                                    moverAuth.OwnerType = "NPC";
+                                                    moverAuth.OwnerID = target.NpcID;
+                                                    moverAuth.RoomID = target.CurrentRoom?.RoomID ?? 0;
+
+                                                    try
+                                                    {
+                                                        if (target.Inventory == null) target.Inventory = new List<Item>();
+                                                        target.Inventory.Add(moverAuth);
+                                                    }
+                                                    catch { }
+                                                }
                                             }
                                             else
                                             {
-                                                // No merge - create new target-owned item
-                                                var returned = world.ItemFactory.CreateItem(
-                                                    moverAuth.TemplateID ?? moverAuth.Name ?? "",
-                                                    "NPC",
-                                                    target.NpcID,
-                                                    target.CurrentRoom?.RoomID ?? 0,
-                                                    giveQty);
-                                                returned.Name = moverAuth.Name;
-                                                returned.ItemCategory = moverAuth.ItemCategory;
+                                                // Non-stackable: update ownership in place (preserves ItemID)
+                                                using var updCmd = wConn.CreateCommand();
+                                                updCmd.Transaction = wTx;
+                                                updCmd.CommandText = @"UPDATE Item SET OwnerType = @ot, OwnerID = @oid, RoomID = @rid WHERE ItemID = @id";
+                                                updCmd.Parameters.AddWithValue("@ot", "NPC");
+                                                updCmd.Parameters.AddWithValue("@oid", target.NpcID);
+                                                updCmd.Parameters.AddWithValue("@rid", target.CurrentRoom?.RoomID ?? 0);
+                                                updCmd.Parameters.AddWithValue("@id", moverAuth.ItemID);
+                                                updCmd.ExecuteNonQuery();
 
-                                                ItemPersistence.SaveItem(wConn, returned, wTx);
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] INSERT give item to target ItemID={returned.ItemID} Template='{returned.TemplateID}' Qty={returned.Quantity}");
+                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] UPDATE give ItemID={moverAuth.ItemID} -> target NpcID={target.NpcID}");
 
-                                                // Add to target in-memory inventory
+                                                moverAuth.OwnerType = "NPC";
+                                                moverAuth.OwnerID = target.NpcID;
+                                                moverAuth.RoomID = target.CurrentRoom?.RoomID ?? 0;
+
                                                 try
                                                 {
                                                     if (target.Inventory == null) target.Inventory = new List<Item>();
-                                                    target.Inventory.Add(returned);
+                                                    target.Inventory.Add(moverAuth);
                                                 }
-                                                catch { /* best-effort */ }
+                                                catch { }
                                             }
 
-                                            // Remove from mover in-memory inventory
                                             try
                                             {
                                                 npc.Inventory?.RemoveAll(i => i != null && i.ItemID == moverAuth.ItemID);
@@ -888,155 +1312,259 @@ namespace MudCore.AI
                                     }
 
                                     // ===== PHASE 2: TAKE items from target -> mover (based on mover's TakeItems/TakeItemCategories) =====
-                                    if (DiagnosticsEnabled)
-                                        Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} Phase 2 (TAKE): scanning target inventory");
+                                    bool hasTakeFilters = (takeMap.Count > 0) || (b.TakeItemCategories != null && b.TakeItemCategories.Count > 0);
 
-                                    // Reload target's inventory (may have been updated in Phase 1)
-                                    var targetRows = ItemPersistence.LoadItemsByOwner(wConn, "NPC", target.NpcID, wTx) ?? new List<Item>();
-                                    var candidateRows = new List<Item>(targetRows);
-
-                                    // Identify containers owned by target and load their contents
-                                    try
+                                    if (!hasTakeFilters)
                                     {
-                                        var containers = targetRows.Where(it => it != null && (
-                                            string.Equals(it.ItemCategory, "Container", StringComparison.OrdinalIgnoreCase)
-                                            || (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Container", StringComparison.OrdinalIgnoreCase)))
-                                        )).ToList();
-
-                                        foreach (var c in containers)
-                                        {
-                                            try
-                                            {
-                                                var contents = ItemPersistence.LoadItemsByOwner(wConn, "Item", c.ItemID, wTx) ?? new List<Item>();
-                                                foreach (var ci in contents) candidateRows.Add(ci);
-                                            }
-                                            catch { /* best-effort per-container */ }
-                                        }
-                                    }
-                                    catch { }
-
-                                    // Select items from candidateRows according to takeMap, categories, and capacity
-                                    var takenList = new List<(Item SourceRow, int QtyTaken)>();
-                                    foreach (var row in candidateRows.OrderByDescending(r => r.Quantity))
-                                    {
-                                        if (currentKg >= capacityKg) break;
-                                        if (row == null || string.IsNullOrWhiteSpace(row.TemplateID)) continue;
-
-                                        if (b.TakeItemCategories != null && b.TakeItemCategories.Count > 0)
-                                        {
-                                            if (string.IsNullOrWhiteSpace(row.ItemCategory) || !b.TakeItemCategories.Any(c => string.Equals(c, row.ItemCategory, StringComparison.OrdinalIgnoreCase)))
-                                                continue;
-                                        }
-
-                                        if (takeMap.Count > 0 && !takeMap.ContainsKey(row.TemplateID)) continue;
-
-                                        int avail = Math.Max(1, row.Quantity);
-                                        int want = avail;
-                                        if (takeMap.TryGetValue(row.TemplateID, out var qSpec) && qSpec.HasValue)
-                                            want = Math.Min(want, qSpec.Value);
-
-                                        double unitKg = Math.Max(0.0, row.Weight);
-                                        if (unitKg > 0.0)
-                                        {
-                                            int maxFit = (int)Math.Floor((capacityKg - currentKg) / unitKg);
-                                            if (maxFit <= 0) break;
-                                            want = Math.Min(want, maxFit);
-                                        }
-
-                                        if (want <= 0) continue;
-                                        takenList.Add((row, want));
-                                        currentKg += unitKg * want;
-                                    }
-
-                                    if (takenList.Count == 0)
-                                    {
-                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} no items available on target NpcID={target.NpcID} for taking.");
+                                        if (DiagnosticsEnabled)
+                                            Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} Phase 2 (TAKE): SKIPPED - no TakeItems or TakeItemCategories configured");
                                     }
                                     else
                                     {
-                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} taking {takenList.Count} rows from target NpcID={target.NpcID}");
+                                        if (DiagnosticsEnabled)
+                                            Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} Phase 2 (TAKE): scanning target inventory");
 
-                                        var newlyAddedToMover = new List<Item>();
-
-                                        foreach (var (srcRow, qty) in takenList)
+                                        // Build exclusion set: items the target needs for ItemCreator
+                                        var targetNeeds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                        try
                                         {
-                                            Item authoritative = null;
-                                            try
+                                            if (target.Template?.AiBehaviorConfigs != null)
                                             {
-                                                // Load latest authoritative rows for the correct owner
-                                                if (string.Equals(srcRow.OwnerType, "NPC", StringComparison.OrdinalIgnoreCase) || srcRow.OwnerType == null)
+                                                foreach (var tb in target.Template.AiBehaviorConfigs.Where(x => string.Equals(x.Behavior ?? "", "ItemCreator", StringComparison.OrdinalIgnoreCase)))
                                                 {
-                                                    var rows = ItemPersistence.LoadItemsByOwner(wConn, "NPC", target.NpcID, wTx);
-                                                    authoritative = rows.FirstOrDefault(r => r.ItemID == srcRow.ItemID) ?? rows.FirstOrDefault(r => string.Equals(r.TemplateID, srcRow.TemplateID, StringComparison.OrdinalIgnoreCase));
+                                                    foreach (var req in tb.RequiresItem ?? new List<string>())
+                                                    {
+                                                        try
+                                                        {
+                                                            var p = req.Split(':', 2, StringSplitOptions.RemoveEmptyEntries);
+                                                            var tmpl = p[0].Trim();
+                                                            if (!string.IsNullOrWhiteSpace(tmpl))
+                                                                targetNeeds.Add(tmpl);
+                                                        }
+                                                        catch { }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        catch { /* best-effort */ }
+
+                                        if (DiagnosticsEnabled && targetNeeds.Count > 0)
+                                            Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} Phase 2: Excluding target's RequiresItem templates: {string.Join(", ", targetNeeds)}");
+
+                                        // Reload target's inventory
+                                        var targetRows = ItemPersistence.LoadItemsByOwner(wConn, "NPC", target.NpcID, wTx) ?? new List<Item>();
+                                        var candidateRows = new List<Item>(targetRows);
+
+                                        // Load container contents
+                                        try
+                                        {
+                                            var containers = targetRows.Where(it => it != null && (
+                                                string.Equals(it.ItemCategory, "Container", StringComparison.OrdinalIgnoreCase)
+                                                || (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Container", StringComparison.OrdinalIgnoreCase)))
+                                            )).ToList();
+
+                                            foreach (var c in containers)
+                                            {
+                                                try
+                                                {
+                                                    var contents = ItemPersistence.LoadItemsByOwner(wConn, "Item", c.ItemID, wTx) ?? new List<Item>();
+                                                    foreach (var ci in contents) candidateRows.Add(ci);
+                                                }
+                                                catch { }
+                                            }
+                                        }
+                                        catch { }
+
+                                        // Select items to take
+                                        var takenList = new List<(Item SourceRow, int QtyTaken)>();
+                                        foreach (var row in candidateRows.OrderByDescending(r => r.Quantity))
+                                        {
+                                            if (currentKg >= capacityKg) break;
+                                            if (row == null || string.IsNullOrWhiteSpace(row.TemplateID)) continue;
+
+                                            if (targetNeeds.Contains(row.TemplateID))
+                                            {
+                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][SKIP] ItemID={row.ItemID} Template='{row.TemplateID}' is needed by target for crafting");
+                                                continue;
+                                            }
+
+                                            if (b.TakeItemCategories != null && b.TakeItemCategories.Count > 0)
+                                            {
+                                                if (string.IsNullOrWhiteSpace(row.ItemCategory) || !b.TakeItemCategories.Any(c => string.Equals(c, row.ItemCategory, StringComparison.OrdinalIgnoreCase)))
+                                                    continue;
+                                            }
+
+                                            if (takeMap.Count > 0 && !takeMap.ContainsKey(row.TemplateID)) continue;
+
+                                            int avail = Math.Max(1, row.Quantity);
+                                            int want = avail;
+                                            if (takeMap.TryGetValue(row.TemplateID, out var qSpec) && qSpec.HasValue)
+                                                want = Math.Min(want, qSpec.Value);
+
+                                            double unitKg = Math.Max(0.0, row.Weight);
+                                            if (unitKg > 0.0)
+                                            {
+                                                int maxFit = (int)Math.Floor((capacityKg - currentKg) / unitKg);
+                                                if (maxFit <= 0) break;
+                                                want = Math.Min(want, maxFit);
+                                            }
+
+                                            if (want <= 0) continue;
+                                            takenList.Add((row, want));
+                                            currentKg += unitKg * want;
+                                        }
+
+                                        if (takenList.Count == 0)
+                                        {
+                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} no items available on target NpcID={target.NpcID} for taking.");
+                                        }
+                                        else
+                                        {
+                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} taking {takenList.Count} rows from target NpcID={target.NpcID}");
+
+                                            foreach (var (srcRow, qty) in takenList)
+                                            {
+                                                Item authoritative = null;
+                                                try
+                                                {
+                                                    if (string.Equals(srcRow.OwnerType, "NPC", StringComparison.OrdinalIgnoreCase) || srcRow.OwnerType == null)
+                                                    {
+                                                        var rows = ItemPersistence.LoadItemsByOwner(wConn, "NPC", target.NpcID, wTx);
+                                                        authoritative = rows.FirstOrDefault(r => r.ItemID == srcRow.ItemID) ?? rows.FirstOrDefault(r => string.Equals(r.TemplateID, srcRow.TemplateID, StringComparison.OrdinalIgnoreCase));
+                                                    }
+                                                    else
+                                                    {
+                                                        var rows = ItemPersistence.LoadItemsByOwner(wConn, "Item", srcRow.OwnerID, wTx);
+                                                        authoritative = rows.FirstOrDefault(r => r.ItemID == srcRow.ItemID) ?? srcRow;
+                                                    }
+                                                }
+                                                catch { authoritative = srcRow; }
+
+                                                if (authoritative == null) continue;
+                                                int avail = Math.Max(1, authoritative.Quantity);
+                                                int take = Math.Min(avail, qty);
+                                                if (take <= 0) continue;
+
+                                                bool isStackable = authoritative.Flags != null && authoritative.Flags.Any(f => string.Equals(f, "Stackable", StringComparison.OrdinalIgnoreCase));
+
+                                                if (take < avail)
+                                                {
+                                                    // Partial take - reduce source, create new for mover
+                                                    var updated = new Item { ItemID = authoritative.ItemID, Quantity = avail - take };
+                                                    ItemPersistence.SaveItem(wConn, updated, wTx);
+                                                    if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] UPDATE target ItemID={authoritative.ItemID} NewQty={avail - take}");
+
+                                                    var added = world.ItemFactory.CreateItem(authoritative.TemplateID ?? authoritative.Name ?? "", "NPC", npc.NpcID, npc.CurrentRoom.RoomID, take);
+                                                    added.Name = authoritative.Name;
+                                                    added.ItemCategory = authoritative.ItemCategory;
+
+                                                    var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
+                                                        wConn, wTx, "NPC", npc.NpcID, npc.CurrentRoom.RoomID,
+                                                        added.TemplateID ?? "", added.FlagsJson ?? "[]", take);
+
+                                                    if (merged.mergedId != 0)
+                                                    {
+                                                        added.ItemID = merged.mergedId;
+                                                        added.Quantity = merged.newQty;
+                                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] MERGED take into mover ItemID={merged.mergedId} NewQty={merged.newQty}");
+                                                    }
+                                                    else
+                                                    {
+                                                        ItemPersistence.SaveItem(wConn, added, wTx);
+                                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] INSERT partial take to mover ItemID={added.ItemID} Qty={added.Quantity}");
+                                                    }
+
+                                                    try
+                                                    {
+                                                        if (npc.Inventory == null) npc.Inventory = new List<Item>();
+                                                        npc.Inventory.Add(added);
+                                                    }
+                                                    catch { }
                                                 }
                                                 else
                                                 {
-                                                    var rows = ItemPersistence.LoadItemsByOwner(wConn, "Item", srcRow.OwnerID, wTx);
-                                                    authoritative = rows.FirstOrDefault(r => r.ItemID == srcRow.ItemID) ?? srcRow;
+                                                    // Full take
+                                                    if (isStackable)
+                                                    {
+                                                        // Try merge into mover's existing stack
+                                                        var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
+                                                            wConn, wTx, "NPC", npc.NpcID, npc.CurrentRoom.RoomID,
+                                                            authoritative.TemplateID ?? "", authoritative.FlagsJson ?? "[]", take);
+
+                                                        if (merged.mergedId != 0)
+                                                        {
+                                                            // Merged - delete source
+                                                            ItemPersistence.DeleteItem(wConn, authoritative.ItemID, wTx);
+                                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] MERGED take ItemID={authoritative.ItemID} into mover ItemID={merged.mergedId} NewQty={merged.newQty}");
+
+                                                            try
+                                                            {
+                                                                var existingInMem = npc.Inventory?.FirstOrDefault(i => i != null && i.ItemID == merged.mergedId);
+                                                                if (existingInMem != null)
+                                                                    existingInMem.Quantity = merged.newQty;
+                                                            }
+                                                            catch { }
+                                                        }
+                                                        else
+                                                        {
+                                                            // No existing stack - update ownership in place
+                                                            using var updCmd = wConn.CreateCommand();
+                                                            updCmd.Transaction = wTx;
+                                                            updCmd.CommandText = @"UPDATE Item SET OwnerType = @ot, OwnerID = @oid, RoomID = @rid WHERE ItemID = @id";
+                                                            updCmd.Parameters.AddWithValue("@ot", "NPC");
+                                                            updCmd.Parameters.AddWithValue("@oid", npc.NpcID);
+                                                            updCmd.Parameters.AddWithValue("@rid", npc.CurrentRoom.RoomID);
+                                                            updCmd.Parameters.AddWithValue("@id", authoritative.ItemID);
+                                                            updCmd.ExecuteNonQuery();
+
+                                                            if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] UPDATE take ItemID={authoritative.ItemID} -> mover NpcID={npc.NpcID}");
+
+                                                            authoritative.OwnerType = "NPC";
+                                                            authoritative.OwnerID = npc.NpcID;
+                                                            authoritative.RoomID = npc.CurrentRoom.RoomID;
+
+                                                            try
+                                                            {
+                                                                if (npc.Inventory == null) npc.Inventory = new List<Item>();
+                                                                npc.Inventory.Add(authoritative);
+                                                            }
+                                                            catch { }
+                                                        }
+                                                    }
+                                                    else
+                                                    {
+                                                        // Non-stackable: update ownership in place
+                                                        using var updCmd = wConn.CreateCommand();
+                                                        updCmd.Transaction = wTx;
+                                                        updCmd.CommandText = @"UPDATE Item SET OwnerType = @ot, OwnerID = @oid, RoomID = @rid WHERE ItemID = @id";
+                                                        updCmd.Parameters.AddWithValue("@ot", "NPC");
+                                                        updCmd.Parameters.AddWithValue("@oid", npc.NpcID);
+                                                        updCmd.Parameters.AddWithValue("@rid", npc.CurrentRoom.RoomID);
+                                                        updCmd.Parameters.AddWithValue("@id", authoritative.ItemID);
+                                                        updCmd.ExecuteNonQuery();
+
+                                                        if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] UPDATE take ItemID={authoritative.ItemID} -> mover NpcID={npc.NpcID}");
+
+                                                        authoritative.OwnerType = "NPC";
+                                                        authoritative.OwnerID = npc.NpcID;
+                                                        authoritative.RoomID = npc.CurrentRoom.RoomID;
+
+                                                        try
+                                                        {
+                                                            if (npc.Inventory == null) npc.Inventory = new List<Item>();
+                                                            npc.Inventory.Add(authoritative);
+                                                        }
+                                                        catch { }
+                                                    }
+
+                                                    try
+                                                    {
+                                                        target.Inventory?.RemoveAll(i => i != null && i.ItemID == authoritative.ItemID);
+                                                    }
+                                                    catch { }
                                                 }
                                             }
-                                            catch { authoritative = srcRow; }
-
-                                            if (authoritative == null) continue;
-                                            int avail = Math.Max(1, authoritative.Quantity);
-                                            int take = Math.Min(avail, qty);
-                                            if (take <= 0) continue;
-
-                                            // Reduce or remove source
-                                            if (take < avail)
-                                            {
-                                                var updated = new Item { ItemID = authoritative.ItemID, Quantity = avail - take };
-                                                ItemPersistence.SaveItem(wConn, updated, wTx);
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] UPDATE target ItemID={authoritative.ItemID} NewQty={avail - take}");
-                                            }
-                                            else
-                                            {
-                                                ItemPersistence.DeleteItem(wConn, authoritative.ItemID, wTx);
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] DELETE target ItemID={authoritative.ItemID}");
-                                            }
-
-                                            // Create item owned by mover NPC (with merge)
-                                            var added = world.ItemFactory.CreateItem(authoritative.TemplateID ?? authoritative.Name ?? "", "NPC", npc.NpcID, npc.CurrentRoom.RoomID, take);
-                                            added.Name = authoritative.Name;
-                                            added.ItemCategory = authoritative.ItemCategory;
-
-                                            // Try merge first (same pattern as Gather)
-                                            var merged = MudCore.Entities.InventoryManager.TryMergeIntoExistingStack(
-                                                wConn, wTx, "NPC", npc.NpcID, npc.CurrentRoom.RoomID,
-                                                added.TemplateID ?? "", added.FlagsJson ?? "[]", take);
-
-                                            if (merged.mergedId != 0)
-                                            {
-                                                // Merged into existing mover stack
-                                                added.ItemID = merged.mergedId;
-                                                added.Quantity = merged.newQty;
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] MERGED take into mover ItemID={merged.mergedId} NewQty={merged.newQty}");
-                                            }
-                                            else
-                                            {
-                                                // No existing stack - insert new
-                                                ItemPersistence.SaveItem(wConn, added, wTx);
-                                                if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE][TX] INSERT take to mover ItemID={added.ItemID} Qty={added.Quantity}");
-                                            }
-
-                                            newlyAddedToMover.Add(added);
-
-                                            // reflect in-memory best-effort
-                                            try
-                                            {
-                                                // Remove from target's in-memory inventory where present
-                                                target.Inventory?.RemoveAll(i => i != null && i.ItemID == authoritative.ItemID);
-                                            }
-                                            catch { }
                                         }
-
-                                        // Add newly created items to mover in-memory
-                                        try
-                                        {
-                                            if (npc.Inventory == null) npc.Inventory = new List<Item>();
-                                            foreach (var a in newlyAddedToMover) npc.Inventory.Add(a);
-                                        }
-                                        catch { }
                                     }
 
                                     return (object?)null;
@@ -1048,6 +1576,24 @@ namespace MudCore.AI
                                 continue;
                             }
 
+                            // Broadcast room update to all players in the room
+                            try
+                            {
+                                var room = npc.CurrentRoom;
+                                if (room != null && room.Players != null)
+                                {
+                                    foreach (var p in room.Players)
+                                    {
+                                        p.PendingMessageQueue.Add(MessageHandler.Room(
+                                            room,
+                                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                                            room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                            world));
+                                    }
+                                }
+                            }
+                            catch { /* best-effort */ }
+
                             if (DiagnosticsEnabled) Console.WriteLine($"[ITEMMOVER][EXCHANGE] NpcID={npc.NpcID} exchange completed with target NpcID={target.NpcID}");
                         }
                         catch (Exception exEx)
@@ -1058,7 +1604,7 @@ namespace MudCore.AI
                         continue;
                     } // end Exchange
 
-                    
+
                 }
                 catch (Exception exBeh)
                 {

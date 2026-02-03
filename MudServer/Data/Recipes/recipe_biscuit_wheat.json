@@ -1,0 +1,36 @@
+{
+  "id": "recipe_biscuit_wheat",
+  "result": {
+    "template": "biscuit_wheat",
+    "quantity": 4
+  },
+  "ingredients": [
+    {
+      "template": "flour_wheat",
+      "qty": 1
+    },
+    {
+      "template": "egg_chicken",
+      "qty": 1
+    },
+    {
+      "template": "Milk",
+      "qty": 1
+    },
+    {
+      "template": "yeast",
+      "qty": 1
+    }
+  ],
+  "container": [ "Pan" , "Slab" ],
+  "requiredSkill": "skill_cooking",
+  "minSkillLevel": 1,
+  "toolsRequired": [ "Spatula" ],
+  "roomFlags": [ "Oven" ],
+  "timeSeconds": 30, 
+  "allowSubstitutions": false,
+  "substitutions": {
+    "flour_wheat": ["flour_rye"]
+  },
+  "notes": "Simple bread wheat flour"
+}

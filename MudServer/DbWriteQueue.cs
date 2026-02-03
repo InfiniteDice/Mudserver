@@ -339,6 +339,19 @@ namespace MudServer
             catch { return 0; }
         }
 
+        // --- ADDED: expose queue length for diagnostics ---
+        public int GetQueueLength()
+        {
+            try
+            {
+                return _queue.Count;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
         // Internal helper: record a tick for a processed job.
         // Called from the single writer thread; updates total (atomic) and rolling per-second buckets.
         private void RecordWriteTick()

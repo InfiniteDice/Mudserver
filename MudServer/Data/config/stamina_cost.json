@@ -1,0 +1,108 @@
+{
+  "area_climate": [
+    {
+      "climate": "Temperate",
+      "stamina_cost": 1
+    },
+    {
+      "climate": "Tropical",
+      "stamina_cost": 2
+    },
+    {
+      "climate": "Arid",
+      "stamina_cost": 2
+    },
+    {
+      "climate": "Polar",
+      "stamina_cost": 2
+    },
+    {
+      "climate": "Swampland",
+      "stamina_cost": 3
+    },
+    {
+      "climate": "Highland",
+      "stamina_cost": 3
+    },
+    {
+      "climate": "Indoor",
+      "stamina_cost": 0
+    },
+    {
+      "climate": "Volcanic",
+      "stamina_cost": 3
+    }
+  ],
+  "area_weather": [
+    {
+      "weather": "Clear",
+      "stamina_cost": 0
+    },
+    {
+      "weather": "Rain",
+      "stamina_cost": 1
+    },
+    {
+      "weather": "HeavyRain",
+      "stamina_cost": 3
+    },
+    {
+      "weather": "Snow",
+      "stamina_cost": 2
+    },
+    {
+      "weather": "HeavySnow",
+      "stamina_cost": 4
+    },
+    {
+      "weather": "Fog",
+      "stamina_cost": 1
+    }
+  ],
+  "world_season": [
+    {
+      "season": "Spring",
+      "stamina_cost": 1
+    },
+    {
+      "season": "Summer",
+      "stamina_cost": 0
+    },
+    {
+      "season": "Fall",
+      "stamina_cost": 0
+    },
+    {
+      "season": "Winter",
+      "stamina_cost": 2
+    }
+  ],
+  "movement_type": [
+    {
+      "move": "basic",
+      "stamina_cost": 1
+    },
+    {
+      "move": "up",
+      "stamina_cost": 5
+    }
+  ],
+  "action_type": [
+    {
+      "action": "attack",
+      "stamina_cost": 1
+    },
+    {
+      "action": "prospect",
+      "stamina_cost": 5
+    },
+    {
+      "action": "mine",
+      "stamina_cost": 5
+    },
+    {
+      "action": "dig",
+      "stamina_cost": 5
+    }
+  ]
+}

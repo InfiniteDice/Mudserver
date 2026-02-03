@@ -5,10 +5,10 @@
   "Weight": 2.0,
   "Value": 25,
   "ShortDesc": "A simple bronze helmet",
-  "LongDesc": "A helmet made of bronze and lined with leather and felt, low level head protection.",
+  "LongDesc": "A helmet made of bronze and lined with leather and felt, decent head protection.",
   "WearLoc": "Head",
   "HandLoc": 0,
   "Flags": [],
   "Material": "Bronze",
-  "BaseACBonus": 2.0
+  "BaseACBonus": 8.0
 }

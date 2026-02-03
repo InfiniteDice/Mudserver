@@ -1,0 +1,96 @@
+{
+  "Id": "worker_barkeep",
+  "Name": "Barkeep",
+  "Alignment": "Neutral",
+  "Description": "A barkeep, who serves drinks and manages the bar.",
+  "IdleActions": [
+    "cleans glasses with a cloth",
+    "want something? Just say the word menu",
+    "fills a glass with ale",
+    "checks the room for trouble!"
+  ],
+  "WanderChance": 0.0047741,
+  "WanderAreas": [],
+  "AiBehaviors": [
+    {
+      "Behavior": "Barkeep",
+      "ServePeriod": [ "Afternoon", "Evening", "Night" ],
+      "BarRoom": 81,
+
+      "SellDrinks": true,
+      "DrinkMenu": [ "ale:3", "stout:3", "mead:5", "wine:6", "uisce_beatha:10", "water:0" ],
+      "SellFood": true,
+      "FoodMenu": [ "bread_wheat:5", "fish_salted:4", "gruel_hare:4" ],
+
+      "InformationCollector": true,
+      "TriggerCollectKeywords": [ "killed", "best", "travel", "found", "where" ],
+
+      "RequiredAlignment": [ "Any" ],
+      "RequiredLevel": 1,
+      "RequiredQuestId": 0,
+
+      "FillContainerTemplateId": "glass_pint",
+
+      "Notes": "Barkeep gathers rumors over time."
+    },
+    {
+      "Behavior": "ItemMover",
+      "TimePeriod": "Dawn",
+      "GiveLocation": "Room",
+      "Action": "Gather",
+      "MaxCarryKg": 50,
+      "TakeItems": [ "glass_pint" ],
+      "TakeItemCategories": [ "Container" ],
+      "TakeProducerReqItemsBool": false,
+      "TargetNpcIdContains": "None",
+      "TargetNpcIdKeepsNumber": 0,
+      "IfDropToRoomFlag": "None",
+      "IfDropToContainerTemplate": "None"
+    }
+  ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 100,
+  "Health": 100,
+  "Flags": ["Carnivore", "AiCanTalk"],
+  "Level": 2,
+  "Mass": 75.0,
+  "EffMass": 75.0,
+  "SizeEnum": 4,
+  "CombatSkill": 69.0,
+  "EffCombatSkill": 69.0,
+  "BaseDmgDice": 4.15,
+  "EffDmgDice": 4.15,
+  "BaseArmorClass": 22.0,
+  "EffArmorClass": 22.0,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": ["tool_spatula"],
+  "DropChance": 0.70,
+  "DropCountMin": 1,
+  "DropCountMax": 4,
+  "DropPool": [
+    {
+      "TemplateId": "coin_copper",
+      "Weight": 60,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 6,
+      "Stackable": true,
+      "Notes": "coins"
+    },
+    {
+      "TemplateId": "biscuit_wheat",
+      "Weight": 40,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 4,
+      "Stackable": true,
+      "Notes": "food"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 0,
+  "VisualTrait": "",
+  "VisualTraitType": "Generalhumanoid"
+}

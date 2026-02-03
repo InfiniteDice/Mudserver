@@ -1,0 +1,14 @@
+{
+  "Id": "uisce_beatha",
+  "Name": "Uisce Beatha",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 10,
+  "ShortDesc": "It's distilled barley alcohol.",
+  "LongDesc": "This is uisce beatha, also known as the water of life, drink it straight.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid", "Stackable" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

@@ -1,0 +1,14 @@
+{
+  "Id": "wine",
+  "Name": "Wine",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 6,
+  "ShortDesc": "It's wine",
+  "LongDesc": "This is a portion of wine, use this in recipes or drink it straight.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" , "Stackable" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

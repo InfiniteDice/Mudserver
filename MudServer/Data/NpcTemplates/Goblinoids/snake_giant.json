@@ -1,0 +1,60 @@
+{
+  "Id": "snake_giant",
+  "Name": "Giant Snake",
+  "Alignment": "Neutral",
+  "Description": "A giant snake, wild and unforgiving a truly terrifying opponent.",
+  "IdleActions": [
+    "slithers along the ground",
+    "sniffs with it's tongue for prey",
+    "peers your way in anticipation",
+    "moves silently around"
+  ],
+  "WanderChance": 0.03,
+  "WanderAreas": [],
+  "AiBehaviors": null,
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 120,
+  "Health": 120,
+  "Flags": [ "Carnivore", "Chaotic", "Affiliation:NiceSnake" ],
+  "Level": 2,
+  "Mass": 480.0,
+  "EffMass": 480.0,
+  "SizeEnum": 6,
+  "CombatSkill": 70.0,
+  "EffCombatSkill": 70.0,
+  "BaseDmgDice": 0.0,
+  "EffDmgDice": 0.0,
+  "BaseArmorClass": 0.0,
+  "EffArmorClass": 0.0,
+  "IsHumanoid": false,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.50,
+  "DropCountMin": 1,
+  "DropCountMax": 2,
+  "DropPool": [
+    {
+      "TemplateId": "meat_snake_giant",
+      "Weight": 70,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 4,
+      "Stackable": false,
+      "Notes": "crafting component"
+    },
+    {
+      "TemplateId": "fang_snake_giant",
+      "Weight": 30,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 2,
+      "Stackable": true,
+      "Notes": "spell/potion component"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 1,
+  "VisualTrait": "",
+  "VisualTraitType": "Animal"
+}

@@ -1,6 +1,7 @@
 {
   "id": "skill_arcane_knowledge",
   "skill_type": "Mystical",
+  "skill_prerequisites": [],
   "skill_tiers": [
     {
       "level": 1,

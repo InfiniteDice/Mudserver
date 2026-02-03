@@ -270,7 +270,7 @@ namespace MudPersistence
                     }
                     catch { isStackable = false; }
 
-                    if (isStackable && item.Quantity > 1 && !string.IsNullOrEmpty(item.TemplateID))
+                    if (isStackable && item.Quantity >= 1 && !string.IsNullOrEmpty(item.TemplateID))
                     {
                         using var findCmd = new SqliteCommand(
                             @"SELECT ItemID, Quantity FROM Item

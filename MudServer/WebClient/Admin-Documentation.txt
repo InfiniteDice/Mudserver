@@ -1,0 +1,194 @@
+NPC AI Behavior Configuration Guide
+This guide details the configuration options for NPC AI behaviors in the game server. NPCs can be assigned various behaviors to automate tasks such
+as item movement, trading, and more. Below are the primary AI behaviors available, along with their configuration fields and explanations.
+
+1. ItemMoverManager (Behavior: "ItemMover")
+Handles automated item movement between NPCs, rooms, and containers.
+Actions
+
+GATHER (Room ? NPC)
+Collects items from room floor and containers into NPC inventory.
+
+{
+    "Behavior": "ItemMover",
+    "Action": "Gather",
+    "TimePeriod": "Morning",
+    "TakeItems": ["grain_wheat:2", "egg_chicken"],
+    "TakeItemCategories": ["Food"],
+    "MaxCarryKg": 50
+}
+
+Field	            Required	    Default	        Notes
+Action	            ?	            -	            "Gather"
+TimePeriod	        ?	            -	            Dawn, Morning, Noon, Afternoon, Dusk, Evening, Night, Midnight
+TakeItems	        ?	            null	        Template IDs to take. Use "template:qty" for limits (absolute total). null = no template filter
+TakeItemCategories	?	            []	            Category filter (e.g., ["Food", "Container"]). Empty = no category filter
+MaxCarryKg	        ?	            -	            Max weight NPC can carry
+Chance	            ?	            1.0	            Probability (0.0-1.0)
+Filter Logic: Items must pass BOTH TakeItemCategories AND TakeItems if both are set.
+
+DROP (NPC ? Room/Container)
+Drops items from NPC inventory to room floor or into a container.
+
+{
+    "Behavior": "ItemMover",
+    "Action": "Drop",
+    "TimePeriod": "Noon",
+    "GiveLocation": "Room",
+    "TakeItems": ["pail"],
+    "TakeItemCategories": ["Container"],
+    "IfDropToRoomFlag": "MilkingSpot",
+    "IfDropToContainerTemplate": "None",
+    "MaxCarryKg": 50
+}
+
+Field	                    Required	    Default	            Notes
+Action	                    ?	            -	                "Drop"
+GiveLocation	            ?	            -	                "Room" (floor) or "Container"
+TakeItems	                ?	            null	            Items to drop from NPC inventory
+TakeItemCategories	        ?	            []	                Category filter for items to drop
+IfDropToRoomFlag	        ?	            "None"	            Only drop if room has this flag. "None" = no requirement
+IfDropToContainerTemplate	?	            "None"	            Target container template (when GiveLocation: "Container"). "None" = N/A
+MaxCarryKg	                ?	            -	                Capacity reference
+---
+
+EXCHANGE (NPC ? NPC)
+Two-phase transfer between NPCs.
+
+{
+    "Behavior": "ItemMover",
+    "Action": "Exchange",
+    "TimePeriod": "Evening",
+    "GiveLocation": "Npc",
+    "TargetNpcIdContains": "worker_baker",
+    "TakeItems": null,
+    "TakeItemCategories": [],
+    "MaxCarryKg": 50
+}
+
+Field	                    Required	    Default	                Notes
+Action	                    ?	            -	                    "Exchange"
+GiveLocation	            ?	            -	                    "Npc"
+TargetNpcIdContains	        ?	            -	                    Substring match on target's TemplateID. "None" = skip
+TakeItems	                ?	            null	                Items to TAKE from target. null = don't take
+TakeItemCategories	        ?	            []	                    Categories to TAKE from target. [] = don't take
+MaxCarryKg	                ?	            -	                    Capacity for taking
+Phase 1 (GIVE): Automatically gives items the target needs (reads target's RequiresItem from ItemCreator behaviors).
+Phase 2 (TAKE): Takes items from target based on YOUR TakeItems/TakeItemCategories.
+To GIVE only (no take): Set both TakeItems: null and TakeItemCategories: []
+---
+
+
+2. ItemTrader (Behavior: "ItemTrader")
+NPC merchant that buys/sells items with players.
+
+{
+    "Behavior": "ItemTrader",
+    "TradePeriod": ["Morning", "Afternoon"],
+    "Buy": true,
+    "Sell": true,
+    "ItemTypesAllowed": ["Component", "Armor", "Handheld"],
+    "RequiredAlignment": ["Neutral", "Good"],
+    "RequiredLevel": 1,
+    "BarterSkill": 0.5,
+    "SellMarkup": 0.1,
+    "DynamicPricing": true,
+    "DynamicPricingRate": 0.1,
+    "ItemSaturationLimit": 5,
+    "CopperTradePool": 20000,
+    "MinTradePool": 500,
+    "InventoryMaxWeight": 200,
+    "TradeCenter": 0,
+    "ConvertCurrency": false,
+    "ConversionFee": 0,
+    "DesiredItems": [],
+    "RequiredQuestId": 0
+}
+
+Field	                    Required	    Default	                Notes
+TradePeriod	                ?	            []	                    When open. [] = always open
+Buy	                        ?	            true	                Will buy from players
+Sell	                    ?	            true	                Will sell to players
+ItemTypesAllowed	        ?	            []	                    Categories trader deals in. [] = all
+RequiredAlignment	        ?	            []	                    ["Good", "Neutral", "Evil"]. [] = no restriction
+RequiredLevel	            ?	            0	                    Min player level. 0 = no restriction
+BarterSkill	                ?	            0.0	                    Trader's negotiation skill (0.0-1.0)
+SellMarkup	                ?	            0.1	                    Price markup when selling (10% = 0.1)
+DynamicPricing	            ?	            false	                Adjust prices based on inventory
+DynamicPricingRate	        ?	            0.1	                    Price reduction per item owned
+ItemSaturationLimit	        ?	            5	                    Max qty per template before refusing to buy
+CopperTradePool	            ?	            0	                    Starting copper funds
+MinTradePool	            ?	            0	                    Min copper before traveling to restock
+InventoryMaxWeight	        ?	            100.0	                Max inventory weight
+TradeCenter	                ?	            0	                    RoomID to travel to for restock. 0 = disabled
+DesiredItems	            ?	            []	                    Templates to announce buying
+RequiredQuestId	            ?	            0	                    Quest gate. 0 = no restriction
+---
+
+
+3. General Move / Sleep (Template-level)
+Defined at NPC template root level, not in AiBehaviorConfigs.
+
+{
+    "Id": "worker_baker",
+    "Name": "Baker",
+    "SleepSchedule": {
+        "SleepPeriod": "Night",
+        "SleepRoomId": 45
+    },
+    "HomeRoomId": 45,
+    "WanderAreas": [2, 3],
+    "MovementSpeed": 1.0
+}
+
+Field	                    Required	    Default	                    Notes
+SleepSchedule.SleepPeriod	?	            null	                    Period to sleep. null = no sleep
+SleepSchedule.SleepRoomId	?	            0	                        Room to sleep in. 0 = current room
+HomeRoomId	                ?	            0	                        Default home room. 0 = spawn room
+WanderAreas	                ?	            []	                        AreaIDs NPC can wander in. [] = current area only
+MovementSpeed	            ?	            1.0	                        Movement multiplier
+---
+
+
+4. WaterCollector (AITask: "CollectWater")
+Automated water collection from water sources.
+
+{
+    "Behavior": "AITask",
+    "Task": "CollectWater",
+    "TimePeriod": "Morning",
+    "TargetRoomId": 59,
+    "ContainerTemplates": ["pail", "bowl", "cup"],
+    "WaterSourceFlag": "WaterSource",
+    "MaxTripsPerPeriod": 3
+}
+
+Field	                    Required	    Default	                    Notes
+Behavior	                ?	            -	                        "AITask"
+Task	                    ?	            -	                        "CollectWater"
+TimePeriod	                ?	            -	                        When to collect
+TargetRoomId	            ?	            -	                        Room with water source
+ContainerTemplates	        ?	            ["pail"]	                Container templates to fill
+WaterSourceFlag	            ?	            "WaterSource"	            Room flag required
+MaxTripsPerPeriod	        ?	            0	                        Max trips. 0 = unlimited
+Container Requirements:
+•	Must have "HoldsLiquid" flag
+•	Must have capacity (Capacity# flag where # is max units)
+---
+
+
+Quick Reference: Null/Empty Values
+
+Value	                    Meaning
+null	                    Disabled/no filter
+"None"	                    Explicitly disabled (string sentinel)
+[]	                        Empty list - no filter applied
+0	                        Disabled (for numeric IDs)
+1.0	                    Default probability (always)
+---
+
+
+Time Reference:Time Periods
+
+               Dawn  ? Morning  ? Noon   ? Afternoon ? Dusk  ? Evening  ? Midnight  ? Night    
+Hours (24h):   06    ? 07-11    ? 12     ? 13-17     ? 18    ? 19-24    ? 00        ? 01-05    

@@ -8,7 +8,20 @@
 </head>
 <body>
     <div id="app">
-        <header class="topbar"> <div class="title">MUD</div> <div class="status"> <span class="status-item">Player: <strong id="playerName">—</strong></span> <span class="status-item">HP: <strong id="hp">0</strong></span> <span class="status-item">XP: <strong id="xp">0</strong></span> <button id="invBtn" class="inv-button">Inventory</button> </div> </header>
+        <!-- Rain Overlay -->
+
+        <header class="topbar">
+            <canvas id="rain-canvas"></canvas>
+            <div class="title">MUD</div> <div class="status">
+
+                <span class="status-item">Player: <strong id="playerName">—</strong></span> <span class="status-item">HP: <strong id="hp">0</strong></span> <span class="status-item">Stamina: <strong id="stamina">0/0</strong></span> <span class="status-item">XP: <strong id="xp">0</strong></span> <button id="invBtn" class="inv-button">Inventory</button><div id="seasonGauge" style="display:inline-flex;align-items:center;margin-left:8px;">
+                    <img id="seasonImg_W" src="SeasonGauge_W.png" alt="Winter" style="display:none;height:32px;" />
+                    <img id="seasonImg_Sp" src="SeasonGauge_Sp.png" alt="Spring" style="display:none;height:32px;" />
+                    <img id="seasonImg_Su" src="SeasonGauge_Su.png" alt="Summer" style="display:none;height:32px;" />
+                    <img id="seasonImg_F" src="SeasonGauge_F.png" alt="Fall" style="display:none;height:32px;" />
+                </div>
+            </div>
+        </header>
         <main class="main">
             <section class="room card">
                 <h2 id="roomTitle">Loading…</h2>
@@ -71,6 +84,8 @@
                     <thead>
                         <tr>
                             <th>Name</th>
+                            <th>Descriptor</th>
+                            <th>Material</th>
                             <th>Weight</th>
                             <th>Condition</th>
                             <th>Category</th>
@@ -99,6 +114,7 @@
 
         const playerNameEl = document.getElementById('playerName');
         const hpEl = document.getElementById('hp');
+        const staminaEl = document.getElementById('stamina');
         const xpEl = document.getElementById('xp');
         const roomTitleEl = document.getElementById('roomTitle');
         const roomDescEl = document.getElementById('roomDesc');
@@ -169,16 +185,20 @@
                 }
 
                 const displayName = qty > 1 ? `${qty} x ${escapeHtml(it.name)}` : escapeHtml(it.name);
+                const descriptor = escapeHtml(it.descriptor || '');
+                const material = escapeHtml(it.material || '');
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                          <td>${displayName}</td>
-                          <td>${escapeHtml(String(it.weight ?? ''))}</td>
-                          <td>${escapeHtml(String(it.condition ?? ''))}</td>
-                          <td>${escapeHtml(it.itemCategory ?? '')}</td>
-                          <td>${escapeHtml(it.shortDesc ?? '')}</td>
-                          <td>${escapeHtml(status)}</td>
-                        `;
+                                              <td>${displayName}</td>
+                                              <td>${descriptor}</td>
+                                              <td>${material}</td>
+                                              <td>${escapeHtml(String(it.weight ?? ''))}</td>
+                                              <td>${escapeHtml(String(it.condition ?? ''))}</td>
+                                              <td>${escapeHtml(it.itemCategory ?? '')}</td>
+                                              <td>${escapeHtml(it.shortDesc ?? '')}</td>
+                                              <td>${escapeHtml(status)}</td>
+                                            `;
                 invTableBody.appendChild(tr);
             });
         }
@@ -284,10 +304,11 @@
                             const doorState = (e.doorState ?? e.DoorState ?? '').toString();
 
                             if (hasDoor) {
+                                const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
                                 const stateLower = doorState.toLowerCase();
                                 const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
-                                const titleAttr = `Door to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
-                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">Door: ${escapeHtml(doorState)}</span>`;
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
                             }
 
                             html += `</span>`;
@@ -344,10 +365,11 @@
                             const doorState = (e.doorState ?? e.DoorState ?? '').toString();
 
                             if (hasDoor) {
+                                const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
                                 const stateLower = doorState.toLowerCase();
                                 const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
-                                const titleAttr = `Door to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
-                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">Door: ${escapeHtml(doorState)}</span>`;
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
                             }
 
                             html += `</span>`;
@@ -359,6 +381,7 @@
                 if (msg.type === 'player_update') {
                     playerNameEl.textContent = msg.name || '—';
                     hpEl.textContent = `${msg.currentHealth ?? 0}/${msg.maxHealth ?? 0}`;
+                    if (staminaEl) staminaEl.textContent = `${msg.currentStamina ?? 0}/${msg.maxStamina ?? 0}`;
                     if (xpEl) xpEl.textContent = String(msg.experience ?? 0);
 
                     // Update header with world/area + stylized game header when available
@@ -516,5 +539,193 @@
             };
         })();
     </script>
+    <!-- Add this script near the end of the file (before </body>) -->
+    <script>
+        (function () {
+            // Map month index (0=Jan .. 11=Dec) -> season code
+            function monthToSeason(month) {
+                if (month === 11 || month === 0 || month === 1) return 'W';    // Dec/Jan/Feb -> Winter
+                if (month >= 2 && month <= 4) return 'Sp';                     // Mar/Apr/May -> Spring
+                if (month >= 5 && month <= 7) return 'Su';                     // Jun/Jul/Aug -> Summer
+                return 'F';                                                    // Sep/Oct/Nov -> Fall
+            }
+
+            const imgs = {
+                W: document.getElementById('seasonImg_W'),
+                Sp: document.getElementById('seasonImg_Sp'),
+                Su: document.getElementById('seasonImg_Su'),
+                F: document.getElementById('seasonImg_F')
+            };
+
+            function showSeason(code) {
+                Object.keys(imgs).forEach(k => { if (imgs[k]) imgs[k].style.display = (k === code) ? '' : 'none'; });
+            }
+
+            // Try parse ISO timestamp -> month index
+            function tryIsoToMonth(iso) {
+                try {
+                    const d = new Date(iso);
+                    if (!isNaN(d.getTime())) return d.getMonth();
+                } catch (e) { /* ignore */ }
+                return null;
+            }
+
+            // Try extract month name from freeform header (e.g. "Dawn, 5th of March")
+            function tryHeaderToMonth(header) {
+                if (!header) return null;
+                const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+                const s = header.toLowerCase();
+                for (let i = 0; i < months.length; i++) {
+                    if (s.indexOf(months[i]) !== -1) return i;
+                }
+                return null;
+            }
+
+            // Public helper if you want to override manually
+            window.setSeasonByMonth = function (monthIndex) {
+                if (typeof monthIndex !== 'number' || monthIndex < 0 || monthIndex > 11) return;
+                showSeason(monthToSeason(monthIndex));
+            };
+
+            // Heuristic: listen to incoming WS messages (non-invasive, additional listener)
+            try {
+                if (typeof ws !== 'undefined' && ws && ws.addEventListener) {
+                    ws.addEventListener('message', evt => {
+                        try {
+                            const raw = evt.data;
+                            const msg = JSON.parse(raw);
+
+                            // 1) Prefer explicit ISO timestamp if server sends it
+                            if (msg.gameTimeIso) {
+                                const m = tryIsoToMonth(msg.gameTimeIso);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+                            if (msg.gameTime) { // some servers may send an object or ISO string in different property
+                                const m = tryIsoToMonth(msg.gameTime);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+
+                            // 2) Try player_update / room metadata that may include a header with month name
+                            if (msg.gameHeader) {
+                                const mh = tryHeaderToMonth(msg.gameHeader);
+                                if (mh !== null) { window.setSeasonByMonth(mh); return; }
+                            }
+                            // fallback keys to inspect (safe guards)
+                            if (msg.worldDate) {
+                                const m = tryIsoToMonth(msg.worldDate);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+                            if (msg.date || msg.time) {
+                                const m = tryIsoToMonth(msg.date || msg.time);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+                        } catch (e) {
+                            // ignore parse errors
+                        }
+                    });
+                }
+            } catch (e) { /* best-effort */ }
+
+
+        })();
+    </script>
+    <script>
+        const canvas = document.getElementById("rain-canvas");
+        const ctx = canvas.getContext("2d");
+        const topbar = canvas.parentElement;
+
+        const numDrops = 200;
+        const drops = [];
+
+        let width = 0;
+        let height = 0;
+        let lastTime = performance.now();
+
+        // Exposed boolean to control rain
+        let isRaining = false; // default: not raining
+
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+
+            width = topbar.clientWidth;
+            height = topbar.clientHeight;
+
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            canvas.style.width = width + "px";
+            canvas.style.height = height + "px";
+
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        // Initialize raindrops
+        function initDrops() {
+            drops.length = 0;
+            for (let i = 0; i < numDrops; i++) {
+                drops.push({
+                    x: Math.random() * width,
+                    y: Math.random() * height,
+                    length: 10 + Math.random() * 15,
+                    speed: 200 + Math.random() * 200
+                });
+            }
+        }
+
+        function animate(now) {
+            const dt = (now - lastTime) / 1000;
+            lastTime = now;
+
+            // Only draw if raining
+            if (isRaining) {
+                ctx.clearRect(0, 0, width, height);
+
+                ctx.strokeStyle = "rgba(173,216,230,0.6)";
+                ctx.lineWidth = 2;
+                ctx.lineCap = "round";
+
+                for (let drop of drops) {
+                    ctx.beginPath();
+                    ctx.moveTo(drop.x, drop.y);
+                    ctx.lineTo(drop.x, drop.y + drop.length);
+                    ctx.stroke();
+
+                    drop.y += drop.speed * dt;
+
+                    if (drop.y > height) {
+                        drop.y = -drop.length;
+                        drop.x = Math.random() * width;
+                        drop.length = 10 + Math.random() * 15;
+                        drop.speed = 200 + Math.random() * 200;
+                    }
+                }
+            } else {
+                // If not raining, just clear canvas
+                ctx.clearRect(0, 0, width, height);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // Initial setup
+        resizeCanvas();
+        initDrops();
+        requestAnimationFrame(animate);
+
+        // Keep in sync if topbar changes size
+        window.addEventListener("resize", () => {
+            resizeCanvas();
+            initDrops();
+        });
+
+        // Optional: expose toggle function
+        function toggleRain(value) {
+            isRaining = value;
+        }
+
+        // Example usage: start rain after 2 seconds
+        // setTimeout(() => toggleRain(true), 2000);
+    </script>
+
+
 </body>
 </html>

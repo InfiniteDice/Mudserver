@@ -1,0 +1,14 @@
+{
+  "Id": "pail",
+  "Name": "Pail",
+  "ItemCategory": "Container",
+  "Weight": 0.4,
+  "Value": 7,
+  "ShortDesc": "A simple oak pail",
+  "LongDesc": "A simple oak pail, this can be used to carry liquids.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity5","Accept:Food", "HoldsLiquid" ],
+  "Material": "Oak",
+  "BaseACBonus": 0.0
+}

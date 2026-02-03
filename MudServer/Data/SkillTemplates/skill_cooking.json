@@ -1,6 +1,7 @@
 {
   "id": "skill_cooking",
   "skill_type": "Mundane",
+  "skill_prerequisites": [],
   "skill_tiers": [
     {
       "level": 1,
@@ -23,6 +24,6 @@
       "title": "Grandmaster Cook"
     }
   ],
-  
-  "notes": "Cooking skill is a basic/general skill type"
+
+  "notes": "Cooking skill is a basic/general skill type. Cooking level 1 will allow cooking of the recipie param minSkillLevel, if 0 then no skill in skill_cooking is required (anyone can make it)"
 }

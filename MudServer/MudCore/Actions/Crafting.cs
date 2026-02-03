@@ -1,15 +1,16 @@
-﻿using System;
+﻿using Microsoft.Data.Sqlite;
+using MudCore.Entities;
+using MudCore.World;
+using MudNetworking;
+using MudPersistence;
+using MudUtils;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Microsoft.Data.Sqlite;
-using MudCore.Entities;
-using MudCore.World;
-using MudPersistence;
-using MudNetworking;
-using MudUtils;
 
 namespace MudCore.Actions
 {
@@ -49,25 +50,25 @@ namespace MudCore.Actions
         private static readonly Dictionary<string, double> _metalWearMultiplier = new(StringComparer.OrdinalIgnoreCase)
         {
             // baseline / typical industrial metals
-            { "Iron",     1.00 }, // baseline
-            { "Steel",    0.85 }, // slightly better than iron
-            { "Bronze",   1.10 },
-            { "Copper",   1.20 },
-            { "Tin",      1.50 },
-            { "Brass",    1.15 },
-            { "Zinc",     1.30 },
-            { "Lead",     1.50 },
+            { "Iron",     1.00 }, // baseline //ac per armor segment: 10
+            { "Steel",    0.85 }, // ac per armor segment: 15
+            { "Bronze",   1.10 }, // ac per armor segment: 8
+            { "Copper",   1.20 }, // ac per armor segment: 6
+            { "Tin",      1.50 }, // not used in armor; very soft
+            { "Brass",    1.15 }, // ac per armor segment: 7
+            { "Zinc",     1.30 }, // 5
+            { "Lead",     1.55 }, // not used in armor; very soft
 
             // precious  — wear faster
-            { "Silver",   1.30 },
-            { "Gold",     1.40 },
-            { "Electrum", 1.35 },
+            { "Silver",   1.30 }, // 5 
+            { "Gold",     1.40 }, // 3 ceremonial armor only
+            { "Electrum", 1.35 }, // 4
 
             // harder / exotic metals — wear slower
-            { "Nickel",   0.95 },
-            { "Platinum", 0.75 },
-            { "Meteoric", 0.5 },
-            { "Mithril",  0.01 }  // nearly immune to wear (designer-tunable)
+            { "Nickel",   0.95 }, // 12
+            { "Platinum", 0.75 }, // 18
+            { "Meteoric", 0.5 }, // 25
+            { "Mithril",  0.01 } // 40  // nearly immune to wear (designer-tunable)
         };
 
         // Optional: expose a read-only hardness view (higher = harder / more durable).
@@ -118,7 +119,7 @@ namespace MudCore.Actions
         };
 
         // Exposed read-only accessors (other code should read these, not mutate)
-        
+
         public static IReadOnlyCollection<string> AllowedWoods => _allowedWoods;
         public static IReadOnlyCollection<string> AllowedCloths => _allowedCloths;
         public static IReadOnlyCollection<string> AllowedStones => _allowedStones;
@@ -1111,5 +1112,510 @@ namespace MudCore.Actions
                 return MessageHandler.System("You can only mill grain or grist (e.g. grain_wheat, grist_wheat).");
             }
         } // end Mill
+
+
+        // Repair command:
+        // Usage: repair <item> with <material> bits
+        // Requirements:
+        //  - Player must be in a room with flag "Forge"
+        //  - Player must be holding a hammer (template id contains "hammer")
+        //  - Player must have water available: either a carried "water" item, any container in the room containing a "water" item, or room flag "Water"
+        //  - Player must have at least 1 bit of the requested material in inventory (template "bit_<material>")
+        // Behavior:
+        //  - consumes 1 bit
+        //  - increases item.Condition by (5 + 5 * smithingLevel)
+        //  - caps: no-skill -> max 25; skill tiers read from Data/SkillTemplates/skill_smithing.json determine max% per level
+        //  - uses DbWriteQueue when available; falls back to direct persistence
+        public static Message Repair(Player player, string args, World.World world, SqliteConnection conn)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (world == null) return MessageHandler.System("Invalid world.");
+            if (string.IsNullOrWhiteSpace(args)) return MessageHandler.System("Usage: repair <item> with <material> bits");
+
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            // Require Forge in room flags
+            try
+            {
+                if (room.Flags == null || !room.Flags.Any(f => string.Equals(f, "Forge", StringComparison.OrdinalIgnoreCase)))
+                    return MessageHandler.System("You need a forge to repair items.");
+            }
+            catch { return MessageHandler.System("You need a forge to repair items."); }
+
+            // Parse "X with Y bits" where X may contain spaces
+            var m = Regex.Match(args.Trim(), @"^\s*(.+?)\s+with\s+([A-Za-z0-9_]+)\s+bits?\s*$", RegexOptions.IgnoreCase);
+            if (!m.Success)
+            {
+                return MessageHandler.System("Usage: repair <item> with <material> bits");
+            }
+
+            string itemExpr = m.Groups[1].Value.Trim();
+            string materialToken = m.Groups[2].Value.Trim();
+            if (string.IsNullOrWhiteSpace(itemExpr) || string.IsNullOrWhiteSpace(materialToken))
+                return MessageHandler.System("Usage: repair <item> with <material> bits");
+
+            string bitTemplate = $"bit_{materialToken.ToLowerInvariant()}";
+
+            // Helper: runtime held detection
+            static bool IsRuntimeHeld(Item it)
+            {
+                if (it == null) return false;
+                if (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase))) return true;
+                if (!string.IsNullOrEmpty(it.FlagsJson) && it.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                return false;
+            }
+
+            // Ensure player is holding a hammer (template id contains "hammer")
+            bool hasHammer = false;
+            try
+            {
+                hasHammer = player.Inventory != null && player.Inventory.Any(i =>
+                    i != null &&
+                    !string.IsNullOrWhiteSpace(i.TemplateID) &&
+                    i.TemplateID.IndexOf("hammer", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    IsRuntimeHeld(i));
+            }
+            catch { hasHammer = false; }
+
+            if (!hasHammer) return MessageHandler.System("You must be holding a hammer to perform repairs.");
+
+            // Ensure water availability: player inventory contains a "water" item OR a container in the room contains water
+            // OR a container in the player's inventory contains water OR room flag "Water"
+            bool hasWater = false;
+            try
+            {
+                if (room.Flags != null && room.Flags.Any(f => string.Equals(f, "Water", StringComparison.OrdinalIgnoreCase)))
+                    hasWater = true;
+            }
+            catch { }
+
+            // Check player inventory for direct water item
+            try
+            {
+                if (!hasWater && player.Inventory != null && player.Inventory.Any(i => i != null && !string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, "water", StringComparison.OrdinalIgnoreCase)))
+                    hasWater = true;
+            }
+            catch { }
+
+            // Check containers in player's inventory for water (important: user reported cup with water)
+            try
+            {
+                if (!hasWater && conn != null && player.Inventory != null)
+                {
+                    foreach (var container in player.Inventory)
+                    {
+                        try
+                        {
+                            if (container == null) continue;
+                            bool isContainerCat = string.Equals(container.ItemCategory ?? "", "Container", StringComparison.OrdinalIgnoreCase);
+                            bool holdsLiquidFlag = (container.Flags != null && container.Flags.Any(f => string.Equals(f, "HoldsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                                   || (!string.IsNullOrEmpty(container.FlagsJson) && container.FlagsJson.IndexOf("\"HoldsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                            if (!isContainerCat && !holdsLiquidFlag) continue;
+
+                            // Load items inside the container (DB authoritative)
+                            var contents = ItemPersistence.LoadItemsByOwner(conn, "Item", container.ItemID) ?? new List<Item>();
+                            if (contents.Any(c => !string.IsNullOrWhiteSpace(c.TemplateID) && string.Equals(c.TemplateID, "water", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                hasWater = true;
+                                break;
+                            }
+                        }
+                        catch { /* ignore per-container errors */ }
+                    }
+                }
+            }
+            catch { /* best-effort */ }
+
+            // Check room containers for water (existing behavior)
+            try
+            {
+                if (!hasWater && conn != null)
+                {
+                    foreach (var container in room.Inventory ?? new List<Item>())
+                    {
+                        try
+                        {
+                            if (container == null) continue;
+                            bool isContainerCat = string.Equals(container.ItemCategory ?? "", "Container", StringComparison.OrdinalIgnoreCase);
+                            bool holdsLiquidFlag = (container.Flags != null && container.Flags.Any(f => string.Equals(f, "HoldsLiquid", StringComparison.OrdinalIgnoreCase)))
+                                                   || (!string.IsNullOrEmpty(container.FlagsJson) && container.FlagsJson.IndexOf("\"HoldsLiquid\"", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                            if (!isContainerCat && !holdsLiquidFlag) continue;
+
+                            var contents = ItemPersistence.LoadItemsByOwner(conn, "Item", container.ItemID) ?? new List<Item>();
+                            if (contents.Any(c => !string.IsNullOrWhiteSpace(c.TemplateID) && string.Equals(c.TemplateID, "water", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                hasWater = true;
+                                break;
+                            }
+                        }
+                        catch { /* ignore per-container errors */ }
+                    }
+                }
+            }
+            catch { /* best-effort */ }
+
+            if (!hasWater) return MessageHandler.System("You need water nearby (a carried water container, a container in the room with water, or the room must provide water).");
+
+            // Resolve the target item in player's inventory using ItemParser (prefer non-equipped when possible)
+            Item? target = null;
+            try
+            {
+                var pres = ItemParser.ResolveForInventoryCommand(player, itemExpr);
+                if (pres?.Winner != null)
+                {
+                    target = player.Inventory?.FirstOrDefault(i => i != null && (ReferenceEquals(i, pres.Winner) || i.ItemID == pres.Winner.ItemID));
+                }
+            }
+            catch { /* best-effort */ }
+
+            // Fallback heuristic: match by template/name tokens
+            if (target == null)
+            {
+                try
+                {
+                    var toks = (itemExpr ?? "").ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    target = player.Inventory?.FirstOrDefault(i =>
+                        i != null && (!string.IsNullOrWhiteSpace(i.TemplateID) && toks.Any(t => i.TemplateID.ToLowerInvariant().Contains(t))
+                                      || (!string.IsNullOrWhiteSpace(i.Name) && toks.Any(t => i.Name.ToLowerInvariant().Contains(t)))
+                        ));
+                }
+                catch { target = null; }
+            }
+
+            if (target == null)
+                return MessageHandler.System($"You are not carrying anything matching '{itemExpr}'.");
+
+            // Ensure target has a material to match against
+            var targetMaterial = (target.Material ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(targetMaterial))
+            {
+                // try Template material via world factory if available
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(target.TemplateID) && world?.ItemFactory != null)
+                    {
+                        // attempt to lookup template name in ItemFactory Templates dictionary (best-effort)
+                        try
+                        {
+                            if (world.ItemFactory != null)
+                            {
+                                // ItemFactory has a private TemplateManager; attempt to fetch friendly info isn't part of public API reliably
+                                // Fallback: use target.Material (already attempted)
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(targetMaterial))
+            {
+                return MessageHandler.System($"Cannot determine material for {target.Name}. Repair needs a matching material bit.");
+            }
+
+            // Material must match requested bits (case-insensitive)
+            if (!string.Equals(targetMaterial, materialToken, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(targetMaterial, materialToken, StringComparison.OrdinalIgnoreCase))
+            {
+                // allow matching e.g. "Iron" vs "iron"
+                // but if mismatch, reject
+                if (!string.Equals(targetMaterial, materialToken, StringComparison.OrdinalIgnoreCase))
+                    return MessageHandler.System($"{target.Name} is made of '{targetMaterial}'. Use {targetMaterial} bits to repair it.");
+            }
+
+            // Find a bit stack for the material
+            Item? bitStack = null;
+            try
+            {
+                bitStack = player.Inventory?.FirstOrDefault(i => i != null && !string.IsNullOrWhiteSpace(i.TemplateID) && string.Equals(i.TemplateID, bitTemplate, StringComparison.OrdinalIgnoreCase) && i.Quantity > 0);
+            }
+            catch { bitStack = null; }
+
+            if (bitStack == null)
+                return MessageHandler.System($"You do not have any {materialToken} bits to repair with.");
+
+            // Determine player's smithing skill level (best-effort)
+            int smithLevel = 0;
+            try
+            {
+                smithLevel = GetPlayerSmithingLevel(player);
+            }
+            catch { smithLevel = 0; }
+
+            // Load smithing repair caps (cached)
+            var caps = _cachedSmithingRepairCaps ??= LoadSmithingRepairCaps();
+
+            int allowedMaxPercent = 25; // default for no-skill
+            if (smithLevel <= 0)
+            {
+                allowedMaxPercent = 25;
+            }
+            else
+            {
+                if (!caps.TryGetValue(smithLevel, out allowedMaxPercent))
+                {
+                    // if not present, use highest known tier or 100
+                    allowedMaxPercent = caps.Count > 0 ? caps.Values.Max() : 100;
+                }
+            }
+
+            // Compute repair delta
+            int delta = 5 + (5 * Math.Max(0, smithLevel));
+
+            int beforeCond = Math.Max(0, target.Condition);
+            if (beforeCond >= allowedMaxPercent)
+                return MessageHandler.System($"{target.Name} is already at or above your repairable limit ({allowedMaxPercent}%).");
+
+            int newCond = Math.Min(allowedMaxPercent, beforeCond + delta);
+
+            // Persist changes: consume one bit + save target condition
+            try
+            {
+                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    // consume one bit from bitStack row
+                    if (bitStack.ItemID > 0)
+                    {
+                        int remaining = Math.Max(0, bitStack.Quantity - 1);
+                        if (remaining > 0)
+                        {
+                            bitStack.Quantity = remaining;
+                            ItemPersistence.SaveItem(wConn, bitStack, wTx);
+                        }
+                        else
+                        {
+                            using var del = wConn.CreateCommand();
+                            del.Transaction = wTx;
+                            del.CommandText = "DELETE FROM Item WHERE ItemID = @id;";
+                            del.Parameters.AddWithValue("@id", bitStack.ItemID);
+                            del.ExecuteNonQuery();
+                        }
+                    }
+                    else
+                    {
+                        // In-memory-only stack: remove from player's inventory after writer completes (best-effort)
+                    }
+
+                    // Save updated target condition
+                    target.Condition = newCond;
+                    ItemPersistence.SaveItem(wConn, target, wTx);
+
+                    return (object?)null;
+                }, timeout: TimeSpan.FromSeconds(10));
+            }
+            catch (InvalidOperationException)
+            {
+                //no fallback
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CRAFTING] Repair writer-path failed: {ex.Message}");
+                return MessageHandler.System("Repair failed due to an internal error.");
+            }
+
+            // Update in-memory inventory: adjust / remove consumed bit
+            try
+            {
+                if (bitStack != null)
+                {
+                    if (bitStack.Quantity <= 0)
+                        player.Inventory.RemoveAll(i => i != null && i.ItemID == bitStack.ItemID);
+                }
+            }
+            catch { /* best-effort */ }
+
+            // Notify client(s)
+            try { MessageHandler.EnqueuePlayerUpdate(player, world); } catch { }
+
+            return MessageHandler.System($"You repair {target.Name} using one {materialToken} bit: condition {beforeCond}% → {newCond}% (max allowed for you: {allowedMaxPercent}%).");
+        } // end Repair
+
+        // Cached smithing repair caps: level -> repair_effectiveness (percent)
+        private static Dictionary<int, int>? _cachedSmithingRepairCaps = null;
+
+        private static Dictionary<int, int> LoadSmithingRepairCaps()
+        {
+            var defaults = new Dictionary<int, int>
+            {
+                { 1, 70 }, { 2, 80 }, { 3, 90 }, { 4, 100 }, { 5, 100 }
+            };
+
+            try
+            {
+                var baseDir = AppContext.BaseDirectory;
+                var path = System.IO.Path.Combine(baseDir, "Data", "SkillTemplates", "skill_smithing.json");
+                if (!System.IO.File.Exists(path))
+                {
+                    // try relative project layout
+                    var alt = System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, "..", "..", "Data", "SkillTemplates", "skill_smithing.json"));
+                    if (System.IO.File.Exists(alt)) path = alt;
+                }
+
+                if (!System.IO.File.Exists(path)) return defaults;
+
+                var json = System.IO.File.ReadAllText(path);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("skill_tiers", out var tiers) && tiers.ValueKind == JsonValueKind.Array)
+                {
+                    var map = new Dictionary<int, int>();
+                    foreach (var el in tiers.EnumerateArray())
+                    {
+                        try
+                        {
+                            int lvl = 0;
+                            int eff = 0;
+                            if (el.TryGetProperty("level", out var v1) && v1.TryGetInt32(out var lv)) lvl = lv;
+                            if (el.TryGetProperty("repair_effectiveness", out var v2) && v2.TryGetInt32(out var re)) eff = re;
+                            if (lvl > 0 && eff > 0) map[lvl] = eff;
+                        }
+                        catch { /* ignore per-entry errors */ }
+                    }
+
+                    if (map.Count > 0) return map;
+                }
+
+                return defaults;
+            }
+            catch
+            {
+                return defaults;
+            }
+        }
+
+        // Best-effort: determine player's smithing level from runtime flags
+        // Supported conventions:
+        //  - runtime Flag "SmithingLevel:<n>"
+        //  - FlagsJson containing "SmithingLevel" token
+        // If none present returns 0.
+
+        private static int GetPlayerSmithingLevel(Player player)
+        {
+            if (player == null) return 0;
+
+            // If player has no DB id we cannot create/read a persistent skill row — treat as no-skill.
+            if (player.DbPlayerID <= 0) return 0;
+
+            const string skillId = "skill_smithing";
+
+            try
+            {
+                // Use writer queue to perform read-then-insert atomically and avoid races.
+                var level = MudServer.DbWriteQueue.Instance.RunWriteAndWait<int>((wConn, wTx) =>
+                {
+                    // 1) Try read existing row
+                    using (var sel = wConn.CreateCommand())
+                    {
+                        sel.Transaction = wTx;
+                        sel.CommandText = "SELECT SkillHasLevels, SkillLevel FROM PlayerSkills WHERE PlayerID = @pid AND SkillID = @skill LIMIT 1;";
+                        sel.Parameters.AddWithValue("@pid", player.DbPlayerID);
+                        sel.Parameters.AddWithValue("@skill", skillId);
+
+                        using var rdr = sel.ExecuteReader();
+                        if (rdr.Read())
+                        {
+                            // If SkillLevel stored, return it (clamped)
+                            try
+                            {
+                                var obj = rdr.IsDBNull(1) ? (object?)null : rdr.GetValue(1);
+                                if (obj != null && int.TryParse(obj.ToString(), out var lvl))
+                                {
+                                    return Math.Clamp(lvl, 0, 5);
+                                }
+                            }
+                            catch { /* fall through to default return 0 */ }
+
+                            return 0;
+                        }
+                    }
+
+                    // 2) Row missing -> determine SkillHasLevels by inspecting skill template JSON
+                    int hasLevelsInt = 0;
+                    try
+                    {
+                        bool hasLevels = false;
+                        var baseDir = AppContext.BaseDirectory;
+                        var candidatePaths = new[]
+                        {
+                            System.IO.Path.Combine(baseDir, "Data", "SkillTemplates", $"{skillId}.json"),
+                            System.IO.Path.Combine(baseDir, "..", "Data", "SkillTemplates", $"{skillId}.json"),
+                            System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, "..", "..", "Data", "SkillTemplates", $"{skillId}.json"))
+                        };
+
+                        string? found = null;
+                        foreach (var p in candidatePaths)
+                        {
+                            try { if (!string.IsNullOrWhiteSpace(p) && System.IO.File.Exists(p)) { found = p; break; } } catch { }
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(found))
+                        {
+                            var json = System.IO.File.ReadAllText(found);
+                            using var doc = System.Text.Json.JsonDocument.Parse(json);
+                            var root = doc.RootElement;
+                            if (root.ValueKind == System.Text.Json.JsonValueKind.Object && root.TryGetProperty("skill_tiers", out var tiers) && tiers.ValueKind == System.Text.Json.JsonValueKind.Array)
+                            {
+                                hasLevels = tiers.GetArrayLength() > 0;
+                            }
+                        }
+
+                        hasLevelsInt = hasLevels ? 1 : 0;
+                    }
+                    catch
+                    {
+                        hasLevelsInt = 0;
+                    }
+
+                    // 3) Insert default row (SkillLevel = 0) since not present
+                    using (var ins = wConn.CreateCommand())
+                    {
+                        ins.Transaction = wTx;
+                        ins.CommandText = "INSERT INTO PlayerSkills (PlayerID, SkillID, SkillHasLevels, SkillLevel) VALUES (@pid, @skill, @has, @lvl);";
+                        ins.Parameters.AddWithValue("@pid", player.DbPlayerID);
+                        ins.Parameters.AddWithValue("@skill", skillId);
+                        ins.Parameters.AddWithValue("@has", hasLevelsInt);
+                        ins.Parameters.AddWithValue("@lvl", 0);
+                        try
+                        {
+                            ins.ExecuteNonQuery();
+                        }
+                        catch (Microsoft.Data.Sqlite.SqliteException ex)
+                        {
+                            // If another writer raced and inserted concurrently, swallow unique-constraint and read again.
+                            Console.WriteLine($"[CRAFTING] PlayerSkills insert race or error: {ex.Message}");
+                            using var sel2 = wConn.CreateCommand();
+                            sel2.Transaction = wTx;
+                            sel2.CommandText = "SELECT SkillLevel FROM PlayerSkills WHERE PlayerID = @pid AND SkillID = @skill LIMIT 1;";
+                            sel2.Parameters.AddWithValue("@pid", player.DbPlayerID);
+                            sel2.Parameters.AddWithValue("@skill", skillId);
+                            var obj = sel2.ExecuteScalar();
+                            if (obj != null && obj != DBNull.Value && int.TryParse(obj.ToString(), out var lvl2))
+                                return Math.Clamp(lvl2, 0, 5);
+                            return 0;
+                        }
+                    }
+
+                    // newly created -> return 0
+                    return 0;
+                }, timeout: TimeSpan.FromSeconds(5));
+
+                return Math.Clamp(level, 0, 5);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.WriteLine($"[CRAFTING] GetPlayerSmithingLevel direct DB fallback failed: {ex.Message}");
+                return 0;
+
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CRAFTING] GetPlayerSmithingLevel failed: {ex.Message}");
+                return 0;
+            }
+        } // end GetPlayerSmithingLevel
     }
 }

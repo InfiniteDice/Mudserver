@@ -1,0 +1,14 @@
+{
+  "Id": "fish_salted",
+  "Name": "Salted Fish",
+  "ItemCategory": "Food",
+  "Weight": 0.3,
+  "Value": 4,
+  "ShortDesc": "Dry salted fish",
+  "LongDesc": "A dry salted portion of fish, salty but I bet you could eat this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Heal" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

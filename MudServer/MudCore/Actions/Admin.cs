@@ -5,6 +5,7 @@ using MudCore.Templates;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
+using MudServer;
 using MudUtils;
 using System;
 using System.Collections.Generic;
@@ -347,6 +348,53 @@ namespace MudCore.Actions
 
         // HandleEditRoomPending: processes removed as redundant.
 
+        // ===== NEW: HandleEditArea =====
+        // Syntax: editarea [areaid]
+        // If areaid not provided, uses the area of the player's current room.
+        // Allows editing: 1) Name, 2) IsPvPAllowed, 3) Climate, 4) Owner
+        public Message? HandleEditArea(Player player, string command)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            // Parse optional areaid from command
+            var payload = (command ?? "").Trim();
+            if (payload.StartsWith("editarea", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring("editarea".Length).Trim();
+
+            Area? targetArea = null;
+
+            if (!string.IsNullOrWhiteSpace(payload) && int.TryParse(payload, out int areaId))
+            {
+                targetArea = _world.Areas.FirstOrDefault(a => a.AreaID == areaId);
+                if (targetArea == null)
+                    return MessageHandler.System($"Area with ID {areaId} not found.");
+            }
+            else
+            {
+                // Use area of player's current room
+                var room = player.CurrentRoom;
+                if (room == null)
+                    return MessageHandler.System("You are not in a valid room.");
+
+                targetArea = _world.Areas.FirstOrDefault(a => a.AreaID == room.AreaID);
+                if (targetArea == null)
+                    return MessageHandler.System($"Current room's area (AreaID={room.AreaID}) not found.");
+            }
+
+            // Set up pending action for edit flow
+            player.PendingAction = new PendingAction
+            {
+                Command = "EditArea",
+                Step = "SelectField",
+                Data = new Dictionary<string, object> { { "AreaId", targetArea.AreaID } }
+            };
+
+            var summary = $"Editing Area: ID={targetArea.AreaID}, Name='{targetArea.Name}', IsPvPAllowed={targetArea.IsPvPAllowed}, Climate='{targetArea.Climate}', Owner='{targetArea.Owner}'";
+            var menu = summary + "\n\nChoose a field to edit:\n1) Name\n2) IsPvPAllowed\n3) Climate\n4) Owner\nType the option number or name, or 'EndEdit' to finish.";
+
+            return MessageHandler.System(menu);
+        }
 
         public Message? HandleEditExit(Player player, string command)
         {
@@ -738,7 +786,7 @@ namespace MudCore.Actions
                             p.PendingMessageQueue.Add(MessageHandler.Room(targetPlayer.CurrentRoom ?? room,
                                 (targetPlayer.CurrentRoom ?? room).Npcs.Select(n => n.DisplayName).ToList(),
                                 (targetPlayer.CurrentRoom ?? room).Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-                                _world));
+                                _world, _db));
                         }
                     }
                     catch { }
@@ -786,7 +834,7 @@ namespace MudCore.Actions
                             p.PendingMessageQueue.Add(MessageHandler.Room(player.CurrentRoom ?? room,
                                 (player.CurrentRoom ?? room).Npcs.Select(n => n.DisplayName).ToList(),
                                 (player.CurrentRoom ?? room).Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
-                                _world));
+                                _world, _db));
                         }
 
                         if (ownerPlayer != null) MessageHandler.EnqueuePlayerUpdate(ownerPlayer);
@@ -920,6 +968,7 @@ namespace MudCore.Actions
 
                 string monthName = (gc.Month >= 1 && gc.Month <= 12) ? monthNames[gc.Month - 1] : $"Month{gc.Month}";
                 string period = gc.GetPeriodDescriptor();
+                string periodRange = GameClock.FormatPeriodHourRange(period);
 
                 var lines = new List<string>
         {
@@ -933,6 +982,10 @@ namespace MudCore.Actions
             $"Time Period: {period}",
             "========================"
         };
+                if (!string.IsNullOrWhiteSpace(periodRange))
+                    lines.Add(periodRange);
+
+                lines.Add("========================");
 
                 return MessageHandler.System(string.Join("\n", lines));
             }
@@ -969,7 +1022,10 @@ namespace MudCore.Actions
             "additem - Add item to room",
             "removeitem - Remove item",
             "listitems - List items in room",
-            "anchor - Prevents item pickup"
+            "anchor - Prevents item pickup",
+            "teleport - Move to room",
+            "togglevis - Toggle invisibility",
+            "shutdown - Shutdown server"
     };
 
             var header = "=== Admin Commands ===";
@@ -1082,6 +1138,14 @@ namespace MudCore.Actions
 
                 // Apply new GameClock
                 _world.GameTime = new GameClock(newYear, newMonth, newDay, newHour, newMinute, newSecond);
+
+                // Skip NPC hunger processing for this admin-initiated time change
+                // (prevents starvation during testing/setup time jumps)
+                try
+                {
+                    MudCore.AI.NpcAI.ProcessHunger(_world, _db, isAdminTimeChange: true);
+                }
+                catch { /* best-effort */ }
 
                 // Broadcast admin message to all players
                 string notif = $"[ADMIN] Time changed by {amt} {unitTok}{(Math.Abs(amt) == 1 ? "" : "s")} -> {_world.GameTime.GetHeaderString()}";
@@ -2254,6 +2318,198 @@ namespace MudCore.Actions
 
                 return null;
             }
+
+            // --- EditArea pending action ---
+            if (pa.Command == "EditArea")
+            {
+                if (!player.IsAdmin)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Permission denied. Admins only.");
+                }
+
+                if (input.Equals("EndEdit", StringComparison.OrdinalIgnoreCase))
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Area editing ended.");
+                }
+
+                // Resolve area from pa.Data
+                Area? ResolveAreaFromPa()
+                {
+                    try
+                    {
+                        if (pa.Data is Dictionary<string, object> dict && dict.TryGetValue("AreaId", out var aidObj) && int.TryParse(aidObj.ToString(), out var aid))
+                        {
+                            return _world.Areas.FirstOrDefault(a => a != null && a.AreaID == aid);
+                        }
+                    }
+                    catch { }
+                    return null;
+                }
+
+                var area = ResolveAreaFromPa();
+                if (area == null)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Area not found.");
+                }
+
+                if (pa.Step == "SelectField")
+                {
+                    var choice = (input ?? "").Trim();
+                    if (choice.Equals("1") || choice.Equals("Name", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditName";
+                        return MessageHandler.System($"Current name is '{area.Name}'. Enter new name (or 'EndEdit'):");
+                    }
+                    if (choice.Equals("2") || choice.Equals("IsPvPAllowed", StringComparison.OrdinalIgnoreCase) || choice.Equals("PvP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditPvP";
+                        return MessageHandler.System($"Current IsPvPAllowed is '{area.IsPvPAllowed}'. Enter 'true' or 'false' (or 'EndEdit'):");
+                    }
+                    if (choice.Equals("3") || choice.Equals("Climate", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditClimate";
+                        return MessageHandler.System($"Current Climate is '{area.Climate}'. Enter new climate (e.g., Temperate, Tropical, Arid, Polar, Swampland, Highland, Indoor) or 'EndEdit':");
+                    }
+                    if (choice.Equals("4") || choice.Equals("Owner", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditOwner";
+                        return MessageHandler.System($"Current Owner is '{area.Owner}'. Enter new owner (or 'EndEdit'):");
+                    }
+
+                    return MessageHandler.System("Invalid option. Choose 1..4 or type the field name, or 'EndEdit'.");
+                }
+
+                if (pa.Step == "EditName")
+                {
+                    var newName = (input ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(newName))
+                        return MessageHandler.System("Name cannot be empty. Enter a valid name or 'EndEdit'.");
+
+                    area.Name = newName;
+                    try
+                    {
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                        {
+                            using var cmd = wConn.CreateCommand();
+                            cmd.Transaction = wTx;
+                            cmd.CommandText = "UPDATE Area SET Name = @name WHERE AreaID = @aid;";
+                            cmd.Parameters.AddWithValue("@name", newName);
+                            cmd.Parameters.AddWithValue("@aid", area.AreaID);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditArea] Failed to persist Name for AreaID={area.AreaID}: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save area name due to a server error.");
+                    }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Area name updated to '{area.Name}'.");
+                }
+
+                if (pa.Step == "EditPvP")
+                {
+                    var val = (input ?? "").Trim().ToLowerInvariant();
+                    if (val != "true" && val != "false" && val != "t" && val != "f")
+                        return MessageHandler.System("Invalid value. Enter 'true' or 'false'.");
+
+                    bool newVal = val == "true" || val == "t";
+                    area.IsPvPAllowed = newVal;
+
+                    try
+                    {
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                        {
+                            using var cmd = wConn.CreateCommand();
+                            cmd.Transaction = wTx;
+                            cmd.CommandText = "UPDATE Area SET IsPvPAllowed = @pvp WHERE AreaID = @aid;";
+                            cmd.Parameters.AddWithValue("@pvp", newVal ? 1 : 0);
+                            cmd.Parameters.AddWithValue("@aid", area.AreaID);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditArea] Failed to persist IsPvPAllowed for AreaID={area.AreaID}: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save PvP setting due to a server error.");
+                    }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"IsPvPAllowed updated to '{area.IsPvPAllowed}'.");
+                }
+
+                if (pa.Step == "EditClimate")
+                {
+                    var newClimate = (input ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(newClimate))
+                        return MessageHandler.System("Climate cannot be empty. Enter a valid climate or 'EndEdit'.");
+
+                    area.Climate = newClimate;
+                    try
+                    {
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                        {
+                            using var cmd = wConn.CreateCommand();
+                            cmd.Transaction = wTx;
+                            cmd.CommandText = "UPDATE Area SET Climate = @climate WHERE AreaID = @aid;";
+                            cmd.Parameters.AddWithValue("@climate", newClimate);
+                            cmd.Parameters.AddWithValue("@aid", area.AreaID);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditArea] Failed to persist Climate for AreaID={area.AreaID}: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save climate due to a server error.");
+                    }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Climate updated to '{area.Climate}'.");
+                }
+
+                if (pa.Step == "EditOwner")
+                {
+                    var newOwner = (input ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(newOwner))
+                        return MessageHandler.System("Owner cannot be empty. Enter a valid owner or 'EndEdit'.");
+
+                    area.Owner = newOwner;
+                    try
+                    {
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                        {
+                            using var cmd = wConn.CreateCommand();
+                            cmd.Transaction = wTx;
+                            cmd.CommandText = "UPDATE Area SET Owner = @owner WHERE AreaID = @aid;";
+                            cmd.Parameters.AddWithValue("@owner", newOwner);
+                            cmd.Parameters.AddWithValue("@aid", area.AreaID);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditArea] Failed to persist Owner for AreaID={area.AreaID}: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save owner due to a server error.");
+                    }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"Owner updated to '{area.Owner}'.");
+                }
+
+                return null;
+            } // end EditArea pending action
 
             // --- EditNpc pending action ---
             if (pa.Command == "EditNpc")
@@ -3743,6 +3999,75 @@ namespace MudCore.Actions
             BroadcastRoomUpdates(destRoom, _world, _db);
 
             return null;
+        }
+
+        // Add after HandleTeleport method (around line 1400)
+
+        public Message? HandleShutdown(Player player, string command, Action onShutdown)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            // Parse command payload after "shutdown"
+            var payload = command.Trim();
+            if (payload.StartsWith("shutdown", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring(8).Trim();
+
+            if (string.IsNullOrWhiteSpace(payload))
+                return MessageHandler.System("Usage: shutdown <minutes> <reason> <downtime> OR shutdown abort");
+
+            // Check for abort command
+            if (payload.Equals("abort", StringComparison.OrdinalIgnoreCase))
+            {
+                if (ShutdownManager.AbortShutdown())
+                {
+                    return MessageHandler.System("Shutdown aborted.");
+                }
+                else
+                {
+                    return MessageHandler.System("No shutdown is currently pending.");
+                }
+            }
+
+            // Parse: <minutes> <reason> <downtime>
+            var tokens = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 3)
+                return MessageHandler.System("Usage: shutdown <minutes> <reason> <downtime>");
+
+            if (!int.TryParse(tokens[0], out int minutes) || minutes < 0)
+                return MessageHandler.System("Invalid minutes. Provide a non-negative integer.");
+
+            string reason = tokens[1].Trim();
+            if (string.IsNullOrWhiteSpace(reason))
+                return MessageHandler.System("Reason cannot be empty.");
+
+            if (!int.TryParse(tokens[2], out int downtime) || downtime < 0)
+                return MessageHandler.System("Invalid downtime. Provide a non-negative integer.");
+
+            // Check if shutdown already pending
+            if (ShutdownManager.IsShutdownPending)
+            {
+                return MessageHandler.System("A shutdown is already pending. Use 'shutdown abort' to cancel it first.");
+            }
+
+            // Schedule shutdown
+            bool success = ShutdownManager.ScheduleShutdown(minutes, reason, downtime, _world, onShutdown);
+
+            if (success)
+            {
+                if (minutes == 0)
+                {
+                    return MessageHandler.System("Immediate shutdown initiated.");
+                }
+                else
+                {
+                    return MessageHandler.System($"Shutdown scheduled in {minutes} minute{(minutes != 1 ? "s" : "")}. Reason: {reason}, Downtime: {downtime} minutes.");
+                }
+            }
+            else
+            {
+                return MessageHandler.System("Failed to schedule shutdown (already pending).");
+            }
         }
 
         public Message? HandleNpcCounts(Player player, string command)

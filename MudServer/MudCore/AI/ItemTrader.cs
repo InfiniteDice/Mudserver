@@ -113,17 +113,6 @@ namespace MudCore.AI
             }
         }
 
-        // Is item reserved by someone other than this player?
-        private bool IsItemReservedByOther(int itemId, string playerId)
-        {
-            if (itemId <= 0) return false;
-            lock (_reserveLock)
-            {
-                if (!_reservedItems.TryGetValue(itemId, out var existing)) return false;
-                return !string.Equals(existing, playerId, StringComparison.OrdinalIgnoreCase);
-            }
-        }
-
         private const string TraderStateFlagPrefix = "TraderState:";
 
         private ItemTrader(Npc npc, World.World world, TraderConfig cfg)
@@ -303,7 +292,7 @@ namespace MudCore.AI
             catch
             {
                 friendlyText = _cfg.TradePeriod != null && _cfg.TradePeriod.Count > 0 ? string.Join(",", _cfg.TradePeriod) : "normal hours";
-                return false;
+                throw;
             }
         }
 
@@ -320,19 +309,24 @@ namespace MudCore.AI
             }
             catch { /* ignore */ }
 
-            // Alignment: attempt to read from player.Flags "Alignment:Good" or "Alignment" token.
+            // Alignment: check player.Alignment enum (Good/Neutral/Evil)
             try
             {
                 if (_cfg.RequiredAlignment != null && _cfg.RequiredAlignment.Count > 0)
                 {
                     bool ok = false;
-                    var pflags = player.Flags ?? new List<string>();
+                    string playerAlignment = player.Alignment.ToString(); // "Good", "Neutral", or "Evil"
+
                     foreach (var want in _cfg.RequiredAlignment)
                     {
-                        if (pflags.Any(f => string.Equals(f, want, StringComparison.OrdinalIgnoreCase))) { ok = true; break; }
+                        if (string.Equals(want, playerAlignment, StringComparison.OrdinalIgnoreCase))
+                        {
+                            ok = true;
+                            break;
+                        }
                     }
-                    // if player has no alignment flags, we treat as allowed (backwards compatible)
-                    if (!ok && pflags.Count > 0)
+
+                    if (!ok)
                         return (false, "Sorry I don't trade with your kind. Come back when your alignment suits my wares.");
                 }
             }
@@ -527,36 +521,54 @@ namespace MudCore.AI
             }
             catch { return "I have no goods to sell right now."; }
         }
-
+                
         // Initiate a purchase: create a pending action awaiting payment or confirmation.
         private Message HandleBuy(Player player, string templateOrId, SqliteConnection? conn)
         {
             if (player == null) return MessageHandler.System("Invalid player.");
             try
             {
-                // Parse optional quantity prefix: "4 fur", "all fur", default -> 1
+                // Parse optional quantity prefix: "4 fur", "4x fur", "all fur", default -> 1
                 int requestedQty = 1;
                 bool explicitQty = false;
                 string expr = (templateOrId ?? "").Trim();
                 if (string.IsNullOrWhiteSpace(expr)) return MessageHandler.System("Usage: buy <item> or buy <n> <item> (or 'all <item>').");
 
                 var toks = expr.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                if (toks.Length >= 2 && int.TryParse(toks[0], out var n) && n > 0)
+                if (toks.Length >= 2)
                 {
-                    requestedQty = Math.Max(1, n);
+                    // Numeric prefix "4"
+                    if (int.TryParse(toks[0], out var n) && n > 0)
+                    {
+                        requestedQty = Math.Max(1, n);
+                        explicitQty = true;
+                        expr = toks[1].Trim();
+                    }
+                    else
+                    {
+                        // Support "4x" or "4X" prefix (e.g. "4x biscuit")
+                        var qtok = toks[0].Trim();
+                        if (qtok.EndsWith("x", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var numPart = qtok.Substring(0, qtok.Length - 1);
+                            if (int.TryParse(numPart, out var n2) && n2 > 0)
+                            {
+                                requestedQty = Math.Max(1, n2);
+                                explicitQty = true;
+                                expr = toks[1].Trim();
+                            }
+                        }
+                        // "all <item>" handling falls through below
+                    }
+                }
+
+                if (!explicitQty && toks.Length >= 1 && string.Equals(toks[0], "all", StringComparison.OrdinalIgnoreCase))
+                {
+                    // ambiguous "buy all" requires item name, so require second token
+                    if (toks.Length < 2) return MessageHandler.System("Specify what to buy: buy all <item>");
+                    requestedQty = -1;
                     explicitQty = true;
                     expr = toks[1].Trim();
-                }
-                else if (toks.Length >= 2 && (string.Equals(toks[0], "all", StringComparison.OrdinalIgnoreCase) || string.Equals(toks[0], "everything", StringComparison.OrdinalIgnoreCase)))
-                {
-                    requestedQty = -1; // denote 'all'
-                    explicitQty = true;
-                    expr = toks[1].Trim();
-                }
-                else if (string.Equals(toks[0], "all", StringComparison.OrdinalIgnoreCase))
-                {
-                    // "buy all" ambiguous -> require an item
-                    return MessageHandler.System("Specify what to buy: buy all <item>");
                 }
 
                 // Use ItemParser to match by name/descriptor/material/template tokens against NPC inventory.
@@ -567,7 +579,27 @@ namespace MudCore.AI
                     IncludeBuried = false
                 };
 
+                // First attempt resolution
                 var resolution = MudUtils.ItemParser.ResolveCandidates(_npc.Inventory ?? Enumerable.Empty<Item>(), player, expr, opts);
+
+                // If no winner, try a simple singularization heuristic (e.g., "biscuits" -> "biscuit"), and re-resolve.
+                if (resolution.Winner == null)
+                {
+                    try
+                    {
+                        var singular = expr;
+                        if (expr.EndsWith("s", StringComparison.OrdinalIgnoreCase) && expr.Length > 1)
+                            singular = expr.Substring(0, expr.Length - 1).Trim();
+
+                        if (!string.Equals(singular, expr, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var alt = MudUtils.ItemParser.ResolveCandidates(_npc.Inventory ?? Enumerable.Empty<Item>(), player, singular, opts);
+                            if (alt?.Winner != null)
+                                resolution = alt;
+                        }
+                    }
+                    catch { /* best-effort */ }
+                }
 
                 if (resolution.Winner == null)
                 {
@@ -860,43 +892,6 @@ namespace MudCore.AI
             {
                 Console.WriteLine($"[ItemTrader] HandleConfirm error: {ex.Message}");
                 return MessageHandler.System("Confirm is not available for payments. Use 'give <amount> to <npc>' instead.");
-            }
-        }
-
-        private Message HandleCancel(Player player)
-        {
-            try
-            {
-                var pa = player.PendingAction;
-                if (pa == null) return MessageHandler.System("You have nothing pending.");
-                if (string.Equals(pa.Command, "TraderBuy", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Refund any paid amount and clear pending
-                    HandlePlayerTerminationInternal(player, "cancel", null);
-                    return MessageHandler.System("Purchase cancelled.");
-                }
-                return MessageHandler.System("Nothing to cancel here.");
-            }
-            catch { return MessageHandler.System("Failed to cancel pending action."); }
-        }
-
-        // NEW: player requested termination (quit / end trade). Returns a friendly message to caller.
-        private Message HandlePlayerRequestedTermination(Player player, SqliteConnection? conn)
-        {
-            try
-            {
-                var pa = player.PendingAction;
-                if (pa == null) return MessageHandler.System("You have nothing pending.");
-                if (!string.Equals(pa.Command, "TraderBuy", StringComparison.OrdinalIgnoreCase)) return MessageHandler.System("You have nothing pending with the trader.");
-
-                // Process termination and refund if necessary.
-                HandlePlayerTerminationInternal(player, "quit", conn);
-                return MessageHandler.System("Ok, maybe some other time!");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[ItemTrader] HandlePlayerRequestedTermination error: {ex.Message}");
-                return MessageHandler.System("Failed to end trade.");
             }
         }
 
@@ -1210,32 +1205,118 @@ namespace MudCore.AI
 
                         if (takeQty < availableInRow)
                         {
+                            // Partial transfer: reduce NPC stack and give player 'takeQty'
                             itemRow.Quantity = availableInRow - takeQty;
                             ItemPersistence.SaveItem(wConn, itemRow, wTx);
 
-                            var newItem = _world.ItemFactory.CreateItem(itemRow.TemplateID ?? itemRow.Name ?? "", "Player", player.DbPlayerID, player.CurrentRoom?.RoomID ?? 0, takeQty);
-                            newItem.Name = itemRow.Name;
-                            newItem.ItemCategory = itemRow.ItemCategory;
-                            ItemPersistence.SaveItem(wConn, newItem, wTx);
-                            player.Inventory.Add(newItem);
+                            // Attempt to merge into existing player stack first (transactional)
+                            bool mergedIntoPlayer = false;
+                            if (!string.IsNullOrWhiteSpace(itemRow.TemplateID))
+                            {
+                                try
+                                {
+                                    var merged = InventoryManager.TryMergeIntoExistingStack(
+                                        wConn, wTx,
+                                        "Player", player.DbPlayerID,
+                                        player.CurrentRoom?.RoomID ?? 0,
+                                        itemRow.TemplateID ?? "",
+                                        itemRow.FlagsJson ?? "[]",
+                                        takeQty);
 
-                            transferredSummaries.Add($"{takeQty} {(newItem.Name ?? newItem.TemplateID)}");
+                                    if (merged.mergedId != 0)
+                                    {
+                                        // Update in-memory player stack quantity
+                                        var mem = player.Inventory?.FirstOrDefault(i => i != null && i.ItemID == merged.mergedId);
+                                        if (mem != null) mem.Quantity = merged.newQty;
+                                        mergedIntoPlayer = true;
+                                    }
+                                }
+                                catch { mergedIntoPlayer = false; }
+                            }
+
+                            if (!mergedIntoPlayer)
+                            {
+                                // Create new player-owned item row
+                                var newItem = _world.ItemFactory.CreateItem(itemRow.TemplateID ?? itemRow.Name ?? "", "Player", player.DbPlayerID, player.CurrentRoom?.RoomID ?? 0, takeQty);
+                                newItem.Name = itemRow.Name;
+                                newItem.ItemCategory = itemRow.ItemCategory;
+                                ItemPersistence.SaveItem(wConn, newItem, wTx);
+                                player.Inventory.Add(newItem);
+                            }
+
+                            transferredSummaries.Add($"{takeQty} {(itemRow.Name ?? itemRow.TemplateID)}");
 
                             try { ReleaseReservationForItem(itemRow.ItemID); } catch { }
                         }
                         else
                         {
-                            itemRow.OwnerType = "Player";
-                            itemRow.OwnerID = player.DbPlayerID;
-                            itemRow.RoomID = 0;
-                            ItemPersistence.SaveItem(wConn, itemRow, wTx);
+                            // Full-row transfer: prefer merging into existing player stack if possible
+                            bool mergedIntoPlayer = false;
+                            if (!string.IsNullOrWhiteSpace(itemRow.TemplateID))
+                            {
+                                try
+                                {
+                                    var merged = InventoryManager.TryMergeIntoExistingStack(
+                                        wConn, wTx,
+                                        "Player", player.DbPlayerID,
+                                        player.CurrentRoom?.RoomID ?? 0,
+                                        itemRow.TemplateID ?? "",
+                                        itemRow.FlagsJson ?? "[]",
+                                        availableInRow);
 
-                            try { _npc.Inventory.RemoveAll(i => i != null && i.ItemID == itemRow.ItemID); } catch { }
-                            player.Inventory.Add(itemRow);
+                                    if (merged.mergedId != 0)
+                                    {
+                                        // merged into existing player stack - remove original NPC row
+                                        try
+                                        {
+                                            if (itemRow.ItemID > 0) MudPersistence.ItemPersistence.DeleteItem(wConn, itemRow.ItemID, wTx);
+                                        }
+                                        catch
+                                        {
+                                            try
+                                            {
+                                                using var cmd = wConn.CreateCommand();
+                                                if (wTx != null) cmd.Transaction = wTx;
+                                                cmd.CommandText = "DELETE FROM Item WHERE ItemID = @id;";
+                                                cmd.Parameters.AddWithValue("@id", itemRow.ItemID);
+                                                cmd.ExecuteNonQuery();
+                                            }
+                                            catch { }
+                                        }
 
-                            transferredSummaries.Add($"{availableInRow} {(itemRow.Name ?? itemRow.TemplateID)}");
+                                        // Update in-memory: remove from NPC and update player's merged row qty
+                                        try
+                                        {
+                                            _npc.Inventory?.RemoveAll(i => i != null && i.ItemID == itemRow.ItemID);
+                                            var mem = player.Inventory?.FirstOrDefault(i => i != null && i.ItemID == merged.mergedId);
+                                            if (mem != null) mem.Quantity = merged.newQty;
+                                        }
+                                        catch { /* best-effort */ }
 
-                            try { ReleaseReservationForItem(itemRow.ItemID); } catch { }
+                                        transferredSummaries.Add($"{availableInRow} {(itemRow.Name ?? itemRow.TemplateID)}");
+                                        mergedIntoPlayer = true;
+                                        try { ReleaseReservationForItem(itemRow.ItemID); } catch { }
+                                        // done with this line item
+                                    }
+                                }
+                                catch { mergedIntoPlayer = false; }
+                            }
+
+                            if (!mergedIntoPlayer)
+                            {
+                                // No existing player stack: move ownership of the whole row to player
+                                itemRow.OwnerType = "Player";
+                                itemRow.OwnerID = player.DbPlayerID;
+                                itemRow.RoomID = player.CurrentRoom?.RoomID ?? 0;
+                                ItemPersistence.SaveItem(wConn, itemRow, wTx);
+
+                                try { _npc.Inventory.RemoveAll(i => i != null && i.ItemID == itemRow.ItemID); } catch { }
+                                player.Inventory.Add(itemRow);
+
+                                transferredSummaries.Add($"{availableInRow} {(itemRow.Name ?? itemRow.TemplateID)}");
+
+                                try { ReleaseReservationForItem(itemRow.ItemID); } catch { }
+                            }
                         }
 
                         try { _npc.IsTradeLocked = false; } catch { }

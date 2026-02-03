@@ -159,6 +159,100 @@ namespace MudServer
 
                         var npc = matches[0];
 
+                        // Barkeep: if player has a BarkeepBuy pending for this npc, delegate 'give ... to <npc>' as payment to the BarTender
+                        if (MudCore.AI.BarTenderManager.TryGet(npc, out var bt)
+                            && player.PendingAction != null
+                            && string.Equals(player.PendingAction.Command, "BarkeepBuy", StringComparison.OrdinalIgnoreCase)
+                            && player.PendingAction.Data is System.Collections.Generic.Dictionary<string, object> pd2
+                            && pd2.TryGetValue("NpcId", out var nidObj2)
+                            && int.TryParse(nidObj2.ToString(), out var nid2)
+                            && nid2 == npc.NpcID)
+                        {
+                            long copper2 = 0;
+
+                            // 1) Direct currency syntax (1g20s5c or 250c)
+                            if (whatExpr.IndexOf('g', StringComparison.OrdinalIgnoreCase) >= 0
+                                || whatExpr.IndexOf('s', StringComparison.OrdinalIgnoreCase) >= 0
+                                || whatExpr.IndexOf('c', StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                try { copper2 = MudCore.AI.ItemTrader.ParseCurrencyExpressionToCopper(whatExpr); } catch { copper2 = 0; }
+                            }
+                            else
+                            {
+                                // 2) Quantity + token: "2 coin_gold" or "2 gold"
+                                var toks = whatExpr.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                                if (toks.Length == 2 && int.TryParse(toks[0], out var q2) && q2 > 0)
+                                {
+                                    var token = toks[1].Trim().ToLowerInvariant();
+                                    if (token.Contains("gold") || token.Contains("coin_gold"))
+                                        copper2 = (long)q2 * Currency.CopperPerGold;
+                                    else if (token.Contains("silver") || token.Contains("coin_silver"))
+                                        copper2 = (long)q2 * Currency.CopperPerSilver;
+                                    else if (token.Contains("copper") || token.Contains("coin_copper"))
+                                        copper2 = q2;
+                                    else
+                                    {
+                                        var found = player.Inventory?.FirstOrDefault(i =>
+                                            i != null && (string.Equals(i.TemplateID, toks[1], StringComparison.OrdinalIgnoreCase)
+                                                          || (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(toks[1], StringComparison.OrdinalIgnoreCase) >= 0)));
+                                        if (found != null)
+                                        {
+                                            if (string.Equals(found.TemplateID, "coin_gold", StringComparison.OrdinalIgnoreCase))
+                                                copper2 = (long)q2 * Currency.CopperPerGold;
+                                            else if (string.Equals(found.TemplateID, "coin_silver", StringComparison.OrdinalIgnoreCase))
+                                                copper2 = (long)q2 * Currency.CopperPerSilver;
+                                            else if (string.Equals(found.TemplateID, "coin_copper", StringComparison.OrdinalIgnoreCase))
+                                                copper2 = q2;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    // 3) Single token that may match coin stacks in inventory: sum them
+                                    var foundAny = player.Inventory?.Where(i => i != null && (
+                                        string.Equals(i.TemplateID, whatExpr, StringComparison.OrdinalIgnoreCase)
+                                        || (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(whatExpr, StringComparison.OrdinalIgnoreCase) >= 0)))
+                                        .ToList();
+
+                                    if (foundAny != null && foundAny.Count > 0)
+                                    {
+                                        foreach (var it in foundAny)
+                                        {
+                                            if (it == null) continue;
+                                            if (string.Equals(it.TemplateID, "coin_gold", StringComparison.OrdinalIgnoreCase))
+                                                copper2 += (long)it.Quantity * Currency.CopperPerGold;
+                                            else if (string.Equals(it.TemplateID, "coin_silver", StringComparison.OrdinalIgnoreCase))
+                                                copper2 += (long)it.Quantity * Currency.CopperPerSilver;
+                                            else if (string.Equals(it.TemplateID, "coin_copper", StringComparison.OrdinalIgnoreCase))
+                                                copper2 += it.Quantity;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (copper2 > 0)
+                            {
+                                var cur2 = Currency.FromCopper(copper2);
+                                var sb2 = new System.Text.StringBuilder();
+                                if (cur2.Gold > 0) sb2.Append($"{cur2.Gold}g");
+                                if (cur2.Silver > 0) sb2.Append($"{cur2.Silver}s");
+                                if (cur2.Copper > 0) sb2.Append($"{cur2.Copper}c");
+                                if (sb2.Length == 0) sb2.Append("0c");
+
+                                try
+                                {
+                                    return bt.HandlePaymentAttempt(player, sb2.ToString(), _dbConnection);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"[CMD][GIVE->BARKEEP] Payment delegation failed: {ex.Message}");
+                                    return MessageHandler.System("Payment failed due to server error.");
+                                }
+                            }
+
+                            // if we couldn't interpret as coins, fall through to the standard give flow below
+                        }
+
                         // If NPC is a trader and the player has a TraderBuy pending for that npc, treat this as payment
                         if (MudCore.AI.ItemTraderManager.TryGet(npc, out var trader)
                             && player.PendingAction != null
@@ -365,7 +459,8 @@ namespace MudServer
             }
             // --- END give handling ---
 
-            // --- NEW: ItemTrader command routing ---
+            
+            // --- NEW: ItemTrader / Barkeep command routing ---
             // Support:
             //  - trade <npc> [list|buy <id>|sell <item>|convert <amount>]
             //  - buy <npc> <templateId>
@@ -374,6 +469,43 @@ namespace MudServer
             try
             {
                 var lc = command.Length > 0 ? command.ToLowerInvariant() : "";
+
+                // MENU command: "menu <npc>" - show barkeep/trader menu
+                if (lc == "menu" || lc.StartsWith("menu "))
+                {
+                    var payload = command.Length > 5 ? command.Substring(5).Trim() : "";
+                    if (string.IsNullOrWhiteSpace(payload)) return MessageHandler.System("Usage: menu <npc>");
+
+                    var room = player?.CurrentRoom;
+                    if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                    var matches = NpcTargeting.FindMatches(room, payload);
+                    if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{payload}' here.");
+                    if (matches.Count > 1)
+                    {
+                        var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                        return MessageHandler.System($"Multiple matches: {list}");
+                    }
+
+                    var npc = matches[0];
+
+                    // Prefer BarTender behavior (barkeep)
+                    try
+                    {
+                        if (MudCore.AI.BarTenderManager.TryGet(npc, out var bt))
+                        {
+                            return bt.HandleCommand(player, "menu", _dbConnection);
+                        }
+
+                        return MessageHandler.System($"{npc.DisplayName} has nothing to sell.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CMD][MENU] Error showing menu for '{npc?.DisplayName}': {ex.Message}");
+                        return MessageHandler.System("Failed to show menu due to a server error.");
+                    }
+                }
+
                 if (lc == "trade" || lc.StartsWith("trade "))
                 {
                     var payload = command.Length > 5 ? command.Substring(5).Trim() : "";
@@ -441,6 +573,21 @@ namespace MudServer
                     }
 
                     var npc = matches[0];
+
+                    // Prefer BarTender (barkeep) behaviour first
+                    try
+                    {
+                        if (MudCore.AI.BarTenderManager.TryGet(npc, out var bt))
+                        {
+                            return bt.HandleCommand(player, $"buy {itemArg}", _dbConnection);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CMD][BUY] BarTender.HandleCommand failed: {ex.Message}");
+                        // fall through to trader fallback
+                    }
+
                     if (!MudCore.AI.ItemTraderManager.TryGet(npc, out var trader))
                         return MessageHandler.System($"{npc.DisplayName} does not trade.");
 
@@ -1434,6 +1581,19 @@ namespace MudServer
                 return _adminService.HandleTeleport(player, command);
             }
 
+            // Add after teleport command (around line 565)
+
+            if (normalized == "shutdown" || command.StartsWith("shutdown ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Pass shutdown callback that stops the game loop
+                return _adminService.HandleShutdown(player, command, () =>
+                {
+                    Console.WriteLine("[SHUTDOWN] Signaling Program.cs to stop...");
+                    // Signal the main program to stop gracefully
+                    Program.RequestShutdown();
+                });
+            }
+
             if (command.StartsWith("removeitem ", StringComparison.OrdinalIgnoreCase))
             {
                 string item = command.Substring(11).Trim();
@@ -1480,6 +1640,120 @@ namespace MudServer
                         return CombatManager.StartOrJoin(player, matches[0], _world, _dbConnection);
                     }
 
+                //Below are the lead/release/hitch/unhitch commands
+
+                case "lead":
+                    {
+                        var partsLead = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (partsLead.Length < 2) return MessageHandler.System("Usage: lead <npc>");
+                        var targetExpr = partsLead[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple matches: {list}");
+                        }
+
+                        try
+                        {
+                            LeadService.LeadNpc(player, matches[0], _world, _dbConnection);
+                            return null; // LeadService sends messages directly
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][LEAD] Failed: {ex.Message}");
+                            return MessageHandler.System("Failed to lead due to server error.");
+                        }
+                    }
+
+                case "release":
+                    {
+                        var partsRelease = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (partsRelease.Length < 2) return MessageHandler.System("Usage: release <npc>");
+                        var targetExpr = partsRelease[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple matches: {list}");
+                        }
+
+                        try
+                        {
+                            LeadService.ReleaseNpc(player, matches[0], _world, _dbConnection);
+                            return null; // LeadService sends messages directly
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][RELEASE] Failed: {ex.Message}");
+                            return MessageHandler.System("Failed to release due to server error.");
+                        }
+                    }
+
+                case "hitch":
+                    {
+                        var partsHitch = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (partsHitch.Length < 2) return MessageHandler.System("Usage: hitch <npc>");
+                        var targetExpr = partsHitch[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple matches: {list}");
+                        }
+
+                        try
+                        {
+                            LeadService.HitchNpc(player, matches[0], _world, _dbConnection);
+                            return null; // LeadService sends messages directly
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][HITCH] Failed: {ex.Message}");
+                            return MessageHandler.System("Failed to hitch due to server error.");
+                        }
+                    }
+
+                case "unhitch":
+                    {
+                        var partsUnhitch = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (partsUnhitch.Length < 2) return MessageHandler.System("Usage: unhitch <npc>");
+                        var targetExpr = partsUnhitch[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0) return MessageHandler.System($"No NPC matching '{targetExpr}' here.");
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple matches: {list}");
+                        }
+
+                        try
+                        {
+                            LeadService.UnhitchNpc(player, matches[0], _world, _dbConnection);
+                            return null; // LeadService sends messages directly
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][UNHITCH] Failed: {ex.Message}");
+                            return MessageHandler.System("Failed to unhitch due to server error.");
+                        }
+                    }
+
                 case "who":
                     {
                         var names = _world.Players
@@ -1494,7 +1768,20 @@ namespace MudServer
                         return MessageHandler.System($"Players currently online: {list}");
                     }
 
-                    
+                case "listhitched":
+                    {
+                        try
+                        {
+                            return LeadService.ListHitched(player, _world);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][LISTHITCHED] Failed: {ex.Message}");
+                            return MessageHandler.System("Failed to list hitched creatures due to server error.");
+                        }
+                    }
+
+
                 case "talk":
                     {
                         // Minimal 'talk' command: "talk <npcnamekeyword>"
@@ -1519,10 +1806,10 @@ namespace MudServer
                             return MessageHandler.System($"Multiple targets match '{targetExpr}'. Choose one to talk to:\n{list}\nType the number of the NPC to talk to.");
                         }
 
-                        // Single match: start talk session (NpcTalk.BeginTalkSession will set PendingAction appropriately)
+                        // Single match: start talk session with world and db connection
                         try
                         {
-                            return MudCore.Actions.NpcTalk.BeginTalkSession(player, matches[0]);
+                            return MudCore.Actions.NpcTalk.BeginTalkSession(player, matches[0], _world, _dbConnection);
                         }
                         catch (Exception ex)
                         {
@@ -1637,6 +1924,21 @@ namespace MudServer
                         }
                         catch { }
 
+                        // NEW: Refresh stamina from DB to ensure we're showing current value
+                        // (async writes from DecreaseStamina/IncreaseStamina may not have completed yet)
+                        try
+                        {
+                            using var cmd = _dbConnection.CreateCommand();
+                            cmd.CommandText = "SELECT Stamina FROM Player WHERE PlayerID = @pid";
+                            cmd.Parameters.AddWithValue("@pid", player.DbPlayerID);
+                            var obj = cmd.ExecuteScalar();
+                            if (obj != null && !(obj is DBNull))
+                            {
+                                player.Stamina = Convert.ToInt32(obj);
+                            }
+                        }
+                        catch { /* best-effort; use in-memory value */ }
+
                         var flags = player.Flags ?? new List<string>();
                         var buffs = player.Buffs ?? new List<string>();
                         var debuffs = player.Debuffs ?? new List<string>();
@@ -1658,6 +1960,7 @@ namespace MudServer
         $"Xp to Next Level: {(xpToNext > 0 ? xpToNext.ToString() : "(max level)")}",
         $"Unspent Skill Points: {player.SkillPoints}",
         $"Health: {player.Health}/{player.MaxHealth}",
+        $"Stamina: {player.Stamina}/{player.MaxStamina}",
         $"Size (SizeEnum): {player.SizeEnum}",
         $"Effective Mass: {player.EffMass:F2}",
         $"Effective Combat Skill: {player.EffCombatSkill:F2}",
@@ -1698,6 +2001,21 @@ namespace MudServer
                         {
                             Console.WriteLine($"[CMD] Mill command failed: {ex.Message}");
                             return MessageHandler.System("Milling failed due to a server error.");
+                        }
+                    }
+
+                case string s when s.StartsWith("repair", StringComparison.OrdinalIgnoreCase):
+                    {
+                        var idx = command.IndexOf(' ');
+                        var args = idx >= 0 ? command.Substring(idx + 1).Trim() : string.Empty;
+                        try
+                        {
+                            return MudCore.Actions.Crafting.Repair(player, args, _world, _dbConnection);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD] Repair command failed: {ex.Message}");
+                            return MessageHandler.System("Repair failed due to a server error.");
                         }
                     }
 
@@ -1755,6 +2073,10 @@ namespace MudServer
                         return _adminService.DebugItems(player);
                     }
 
+                case string s when s.StartsWith("editarea", StringComparison.OrdinalIgnoreCase):
+                    if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+                    return _adminService.HandleEditArea(player, command);
+
                 case string s when s.Equals("adminhelp", StringComparison.OrdinalIgnoreCase):
                     {
                         if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
@@ -1776,7 +2098,10 @@ namespace MudServer
             "additem - Add item to room",
             "removeitem - Remove item",
             "listitems - List items in room",
-            "anchor - Prevents item pickup"
+            "anchor - Prevents item pickup",
+            "teleport - Move to room",
+            "togglevis - Toggle invisibility",
+            "shutdown - Shutdown server"
         };
 
                         var header = "=== Admin Commands ===";
@@ -3028,32 +3353,19 @@ namespace MudServer
                     return MessageHandler.System($"You cannot {(isDrink ? "drink" : "eat")} a container. Use 'drink <liquid> from <container>' to consume the contents.");
                 }
 
-                // Determine if item provides healing (Heal flag)
-                bool canHeal = (toConsume.Flags != null && toConsume.Flags.Any(f => f.Equals("Heal", StringComparison.OrdinalIgnoreCase)))
-                               || (!string.IsNullOrEmpty(toConsume.FlagsJson) && toConsume.FlagsJson.IndexOf("\"Heal\"", StringComparison.OrdinalIgnoreCase) >= 0);
+                // NEW: Use centralized healing method to apply item healing and persist to DB
+                int appliedHeal = player.ApplyItemHealing(toConsume);
 
-                int proposedHeal = 0;
-                int appliedHeal = 0;
-                if (canHeal)
+                // NEW: Apply refresh (stamina) if item has Refresh flag
+                int appliedRefresh = 0;
+                try
                 {
-                    try
-                    {
-                        proposedHeal = Effects.ComputeHealAmount(toConsume, Effects.HealSource.Food);
-                        appliedHeal = Effects.ComputeAppliedHeal(player, proposedHeal);
-                    }
-                    catch { /* best-effort */ }
-
-                    // DEBUG LOG: show expected heal calculation and item weight/flags
-                    try
-                    {
-                        Console.WriteLine($"[EAT][DEBUG] Player='{player?.Name}' Consuming ItemID={toConsume.ItemID} Template='{toConsume.TemplateID}' Name='{toConsume.Name}' Weight={toConsume.Weight:F3} FlagsJson='{toConsume.FlagsJson ?? "[]"}' ProposedHeal={proposedHeal} AppliedHeal={appliedHeal} PlayerHPBefore={player.Health}/{player.MaxHealth}");
-                    }
-                    catch { /*best-effort*/ }
-
-                    if (appliedHeal > 0)
-                    {
-                        player.Health = Math.Min(player.MaxHealth, player.Health + appliedHeal);
-                    }
+                    appliedRefresh = player.ApplyItemRefresh(toConsume);
+                }
+                catch (Exception exRefresh)
+                {
+                    Console.WriteLine($"[EAT] ApplyItemRefresh failed for player {player.Name}: {exRefresh.Message}");
+                    appliedRefresh = 0; // fallback to no refresh
                 }
 
                 // Consume one unit from the item (respect stacking)
@@ -3080,9 +3392,6 @@ namespace MudServer
                 {
                     Console.WriteLine($"[EAT] Consumption error for ItemID={toConsume?.ItemID}: {ex.Message}");
                 }
-
-                // Persist player health
-                PersistPlayerHealth(player);
 
                 // If consumption was from a container, compute remaining in the container (DB authoritative)
                 int containerRemaining = -1;
@@ -3123,11 +3432,14 @@ namespace MudServer
                     }
                 }
 
+                
+
                 // Build response text
                 string verb = isDrink ? "drink" : "eat";
                 string prettyName = toConsume.Name ?? toConsume.TemplateID ?? "something";
                 string msg = $"You {verb} {prettyName}.";
-                if (canHeal && appliedHeal > 0) msg += $" You feel better (+{appliedHeal} HP).";
+                if (appliedHeal > 0) msg += $" You feel better (+{appliedHeal} HP).";
+                if (appliedRefresh > 0) msg += $" You feel energized (+{appliedRefresh} Stamina).";
 
                 // Show remaining: prefer container remaining when consumption originated from a container.
                 if (sourceContainer != null)
@@ -3140,16 +3452,6 @@ namespace MudServer
                     if (toConsume.Quantity > 0) msg += $" Remaining: {toConsume.Quantity}.";
                 }
 
-                // Additional debug: log applied heal and remaining
-                if (canHeal)
-                {
-                    try
-                    {
-                        Console.WriteLine($"[EAT][DEBUG] AppliedHeal={appliedHeal} PlayerHPAfter={player.Health}/{player.MaxHealth} ContainerRemaining={containerRemaining} ToConsumeQty={toConsume.Quantity}");
-                    }
-                    catch { }
-                }
-
                 return MessageHandler.System(msg);
             }
             catch (Exception ex)
@@ -3159,86 +3461,88 @@ namespace MudServer
             }
         } // end EatItem
 
-        // Persist player's current Health to the database.
+        
+
+        // moved to Player.cs
         // Centralized so future health updates (spells, regen, effects) reuse the same logic and logging.
-        private void PersistPlayerHealth(Player player)
-        {
-            if (player == null) return;
+        //private void PersistPlayerHealth(Player player)
+        //{
+        //    if (player == null) return;
 
-            // Primary save path: delegate to PlayerPersistence which already routes writes
-            // through the single-writer DbWriteQueue when available.
-            try
-            {
-                PlayerPersistence.SavePlayer(_dbConnection, player);
-                // Success — early return to avoid additional fallback attempts.
-                try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
-                try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
-                return;
-            }
-            catch (Exception ex)
-            {
-                // Log and attempt queued/fallback persists; do not throw.
-                Console.WriteLine($"[PLAYER] SavePlayer via PlayerPersistence failed: {ex.Message}");
-            }
+        //    // Primary save path: delegate to PlayerPersistence which already routes writes
+        //    // through the single-writer DbWriteQueue when available.
+        //    try
+        //    {
+        //        PlayerPersistence.SavePlayer(_dbConnection, player);
+        //        // Success — early return to avoid additional fallback attempts.
+        //        try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
+        //        try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+        //        return;
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        // Log and attempt queued/fallback persists; do not throw.
+        //        Console.WriteLine($"[PLAYER] SavePlayer via PlayerPersistence failed: {ex.Message}");
+        //    }
 
-            // Secondary: attempt to enqueue a small writer job to persist the minimal health state.
-            // This serializes with other writer activity and avoids ad-hoc direct writes from
-            // the networking/command layers.
-            try
-            {
-                MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
-                {
-                    using var cmd = wConn.CreateCommand();
-                    cmd.Transaction = wTx;
-                    if (player.DbPlayerID != 0)
-                    {
-                        cmd.CommandText = "UPDATE Player SET Health = @h WHERE PlayerID = @id";
-                        cmd.Parameters.AddWithValue("@h", player.Health);
-                        cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
-                    }
-                    else
-                    {
-                        // Fallback to name-based update when numeric id is not available.
-                        cmd.CommandText = "UPDATE Player SET Health = @h WHERE Name = @name";
-                        cmd.Parameters.AddWithValue("@h", player.Health);
-                        cmd.Parameters.AddWithValue("@name", player.Name ?? "");
-                    }
-                    cmd.ExecuteNonQuery();
-                    return (object?)null;
-                }, timeout: TimeSpan.FromSeconds(5));
+        //    // Secondary: attempt to enqueue a small writer job to persist the minimal health state.
+        //    // This serializes with other writer activity and avoids ad-hoc direct writes from
+        //    // the networking/command layers.
+        //    try
+        //    {
+        //        MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+        //        {
+        //            using var cmd = wConn.CreateCommand();
+        //            cmd.Transaction = wTx;
+        //            if (player.DbPlayerID != 0)
+        //            {
+        //                cmd.CommandText = "UPDATE Player SET Health = @h WHERE PlayerID = @id";
+        //                cmd.Parameters.AddWithValue("@h", player.Health);
+        //                cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
+        //            }
+        //            else
+        //            {
+        //                // Fallback to name-based update when numeric id is not available.
+        //                cmd.CommandText = "UPDATE Player SET Health = @h WHERE Name = @name";
+        //                cmd.Parameters.AddWithValue("@h", player.Health);
+        //                cmd.Parameters.AddWithValue("@name", player.Name ?? "");
+        //            }
+        //            cmd.ExecuteNonQuery();
+        //            return (object?)null;
+        //        }, timeout: TimeSpan.FromSeconds(5));
 
-                // Refresh extended combat fields and notify client (best-effort).
-                try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
-                try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
-                return;
-            }
-            catch (InvalidOperationException)
-            {
-                // Queue not started — fall through to direct legacy fallback below.
-            }
-            catch (Exception exQueue)
-            {
-                Console.WriteLine($"[PLAYER] Queued health persist failed: {exQueue.Message}");
-            }
+        //        // Refresh extended combat fields and notify client (best-effort).
+        //        try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
+        //        try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+        //        return;
+        //    }
+        //    catch (InvalidOperationException)
+        //    {
+        //        // Queue not started — fall through to direct legacy fallback below.
+        //    }
+        //    catch (Exception exQueue)
+        //    {
+        //        Console.WriteLine($"[PLAYER] Queued health persist failed: {exQueue.Message}");
+        //    }
 
-            // Final conservative fallback: direct write on provided connection (preserve prior behavior).
-            try
-            {
-                using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
-                    "UPDATE Player SET Health = @h WHERE PlayerID = @id", _dbConnection);
-                cmd.Parameters.AddWithValue("@h", player.Health);
-                cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
-                cmd.ExecuteNonQuery();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[PLAYER][FALLBACK] Direct health persist failed: {ex.Message}");
-            }
+        //    // Final conservative fallback: direct write on provided connection (preserve prior behavior).
+        //    try
+        //    {
+        //        using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
+        //            "UPDATE Player SET Health = @h WHERE PlayerID = @id", _dbConnection);
+        //        cmd.Parameters.AddWithValue("@h", player.Health);
+        //        cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
+        //        cmd.ExecuteNonQuery();
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"[PLAYER][FALLBACK] Direct health persist failed: {ex.Message}");
+        //    }
 
-            // Refresh extended combat fields and notify client (best-effort).
-            try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
-            try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
-        }
+        //    // Refresh extended combat fields and notify client (best-effort).
+        //    try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
+        //    try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
+        //}
 
         // Add this helper method inside the CommandHandler class (near other private helpers)
         private (int quantity, bool explicitQuantity, string itemExpr, string containerName, string? error) ParseQuantityItemContainer(List<string> tokens, int startIdx)
@@ -3562,7 +3866,7 @@ namespace MudServer
                 try
                 {
                     // Delegate to the session manager (will handle 'end'/'cancel' and clear player.PendingAction when appropriate)
-                    return MudCore.Actions.NpcTalk.HandleTalkCommand(player, input);
+                    return MudCore.Actions.NpcTalk.HandleTalkCommand(player, input, _world, _dbConnection);
                 }
                 catch (Exception ex)
                 {
@@ -3754,7 +4058,7 @@ namespace MudServer
                     player.PendingAction = null!;
                     try
                     {
-                        return MudCore.Actions.NpcTalk.BeginTalkSession(player, live);
+                        return MudCore.Actions.NpcTalk.BeginTalkSession(player, live, _world, _dbConnection);
                     }
                     catch (Exception ex)
                     {

@@ -1,0 +1,14 @@
+{
+  "Id": "breastplate_bronze",
+  "Name": "Bronze Breastplate",
+  "ItemCategory": "Armor",
+  "Weight": 4.0,
+  "Value": 45,
+  "ShortDesc": "A simple bronze breastplate",
+  "LongDesc": "A breastplate made of bronze and lined with leather and felt, decent torso protection.",
+  "WearLoc": "Body",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 8.0
+}

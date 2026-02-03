@@ -8,7 +8,7 @@
   "LongDesc": "This is a cup of water, use this in recipes.",
   "WearLoc": "",
   "HandLoc": 0,
-  "Flags": [ "IsLiquid" ],
+  "Flags": [ "IsLiquid" , "Stackable" ],
   "Material": "Organic",
-  "Stackable": "false"
+  "Stackable": "true"
 }

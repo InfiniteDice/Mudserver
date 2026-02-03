@@ -1,0 +1,14 @@
+{
+  "Id": "bread_wheat",
+  "Name": "Bread",
+  "ItemCategory": "Food",
+  "Weight": 0.6,
+  "Value": 5,
+  "ShortDesc": "A plain bread",
+  "LongDesc": "A bread made from wheat, this is good to eat.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Heal"],
+  "Material": "Organic",
+  "Stackable": "false"
+}

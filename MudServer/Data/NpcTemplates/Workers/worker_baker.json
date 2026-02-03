@@ -1,0 +1,100 @@
+{
+  "Id": "worker_baker",
+  "Name": "Baker",
+  "Alignment": "Neutral",
+  "Description": "A baker, uses an oven to cook or bake foods.",
+  "IdleActions": [
+    "plays with the spatula",
+    "says: smells great, it makes me hungry!",
+    "adjusts the hat",
+    "checks all measurements twice!"
+  ],
+  "WanderChance": 0.0047741,
+  "WanderAreas": [],
+  "AiBehaviors": [
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "Morning",
+      "Chance": 1.0,
+      "Location": "Npc",
+      "CreatedPerChance": 4,
+      "Max": 12,
+      "ItemTemplate": "biscuit_wheat",
+      "RequiresItem": [ "flour_wheat:1", "egg_chicken:1", "yeast:1", "milk_raw:1" ],
+      "RequiresTool": "tool_spatula",
+      "RequiresRoomFlag": "Oven",
+      "ConsumesReqs": "true"
+    },
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "Afternoon",
+      "Chance": 1.0,
+      "Location": "Npc",
+      "CreatedPerChance": 4,
+      "Max": 4,
+      "ItemTemplate": "yeast",
+      "RequiresItem": [ "flour_wheat:1", "water:1" ],
+      "RequiresTool": "None",
+      "RequiresRoomFlag": "None",
+      "ConsumesReqs": "true"
+    },
+    {
+      "Behavior": "ItemCreator",
+      "TimePeriod": "Night",
+      "Chance": 1.0,
+      "Location": "Npc",
+      "CreatedPerChance": 1,
+      "Max": 4,
+      "ItemTemplate": "bread_wheat",
+      "RequiresItem": [ "flour_wheat:1", "egg_chicken:1", "yeast:1", "water:1" ],
+      "RequiresTool": "tool_spatula",
+      "RequiresRoomFlag": "Oven",
+      "ConsumesReqs": "true"
+    }
+  ],
+  "AiTaskList": [ "CollectWater:59:Noon" ],
+  "CurrentAiTask": null,
+  "HealthMax": 100,
+  "Health": 100,
+  "Flags": ["Carnivore"],
+  "Level": 2,
+  "Mass": 75.0,
+  "EffMass": 75.0,
+  "SizeEnum": 4,
+  "CombatSkill": 49.0,
+  "EffCombatSkill": 49.0,
+  "BaseDmgDice": 2.15,
+  "EffDmgDice": 2.15,
+  "BaseArmorClass": 12.0,
+  "EffArmorClass": 12.0,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": ["tool_spatula"],
+  "DropChance": 0.70,
+  "DropCountMin": 1,
+  "DropCountMax": 4,
+  "DropPool": [
+    {
+      "TemplateId": "coin_copper",
+      "Weight": 60,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 6,
+      "Stackable": true,
+      "Notes": "coins"
+    },
+    {
+      "TemplateId": "biscuit_wheat",
+      "Weight": 40,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 4,
+      "Stackable": true,
+      "Notes": "food"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 0,
+  "VisualTrait": "",
+  "VisualTraitType": "Generalhumanoid"
+}

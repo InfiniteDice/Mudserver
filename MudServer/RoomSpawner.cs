@@ -19,13 +19,24 @@ namespace MudServer
     ///       a quantity suffix using ':' like "mushroom_brown:5" to request spawning a stack.
     ///   SpawnChance (0..100) and SpawnDelayMinutes control timing
     ///   SpawnMaxRoom limits simultaneous instances of those templates
-    ///     - For non-stackable templates SpawnMaxRoom limits the number of separate item rows.
-    ///     - For stackable templates SpawnMaxRoom limits the total quantity in the room for that template+flags.
+    ///     - For NPCs: counts NPCs with matching TemplateID in CurrentRoomID (checks DB)
+    ///     - For Items: counts items with OwnerType='Room' and OwnerID=RoomID where TemplateID matches (checks DB)
+    ///     SAMPLE PROHBABILITIES:
+    /// Formula: `1 / probability = 1 / 0.08 = 12.5 checks`
+    /// **12.5 checks × 60 seconds = 750 seconds = 12.5 minutes**
+    /// **Most likely:** Success within **5-20 minutes**
+    /// **Average:** Success at **12.5 minutes**
+    ///  **Rare but possible:** Could take up to **30-60 minutes** for unlucky streaks
     /// </summary>
     public static class RoomSpawner
     {
         private static readonly Random _rng = new Random();
         static bool useVerboseLogging = false;
+
+        // NEW: Exposed spawn check interval - how often to roll SpawnChance (in seconds)
+        public static int SpawnCheckIntervalSeconds { get; set; } = 60; // Check every 60 seconds - Important, the room spawner sets SpawnDelayMinutes in minutes this must also be passed in order to work correctly.
+
+        private static DateTime _lastSpawnCheckTime = DateTime.MinValue;
 
         public static void ProcessSpawns(World world, SqliteConnection conn)
         {
@@ -45,6 +56,16 @@ namespace MudServer
             }
 
             var now = DateTime.UtcNow;
+
+            // NEW: Only process spawns every SpawnCheckIntervalSeconds
+            
+            if ((now - _lastSpawnCheckTime).TotalSeconds < SpawnCheckIntervalSeconds)
+            {
+                return; // Not time to check spawns yet
+            }
+
+            _lastSpawnCheckTime = now;
+            if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Spawn check interval passed, processing spawns...");
 
             int spawnerRooms = world.Rooms.Count(r => r.IsSpawner);
             if (spawnerRooms == 0)
@@ -68,33 +89,24 @@ namespace MudServer
                         ? double.PositiveInfinity
                         : (now - room.LastSpawnTime).TotalMinutes;
 
+                    // FIXED: Only skip if delay hasn't passed yet
                     if (room.SpawnDelayMinutes > 0 && elapsedMinutes < room.SpawnDelayMinutes)
                     {
                         if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delaying: elapsed={elapsedMinutes:F1} < delay={room.SpawnDelayMinutes}.");
                         continue;
                     }
 
-                    //DEPRECATED// Previously we attempted spawn every tick once delay elapsed.
-                    // New: consume the window immediately to allow exactly one attempt per delay period.
-                    room.LastSpawnTime = now;
-                    try
-                    {
-                        RoomPersistence.SaveRoom(conn, room);
-                    }
-                    catch (Exception exSave)
-                    {
-                        // Log but do not rethrow — a DB hiccup here should not crash the loop.
-                        Console.WriteLine($"[Spawner][WARN] Failed to persist LastSpawnTime for Room {room.RoomID}: {exSave.Message}");
-                    }
-
-                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} check: Type={room.SpawnType}, Chance={room.SpawnChance}, DelayMin={room.SpawnDelayMinutes}, ElapsedMin={elapsedMinutes:F1}, Templates=[{string.Join(',', room.SpawnTemplateList)}]");
+                    // EVERY TICK: Roll SpawnChance (this happens every 3 seconds when delay has passed)
+                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} delay passed (elapsed={elapsedMinutes:F1}), rolling chance: Type={room.SpawnType}, Chance={room.SpawnChance}, Templates=[{string.Join(',', room.SpawnTemplateList)}]");
 
                     int roll = _rng.Next(100);
                     if (roll >= Math.Clamp(room.SpawnChance, 0, 100))
                     {
-                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} chance roll={roll} >= SpawnChance={room.SpawnChance}; no spawn this tick.");
-                        continue;
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} chance roll FAILED ({roll} >= {room.SpawnChance}); no spawn this tick.");
+                        continue; // Don't update LastSpawnTime - try again next tick
                     }
+
+                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} chance roll PASSED ({roll} < {room.SpawnChance}), will attempt spawn.");
 
                     // Select template entry (may include ':' quantity suffix) up-front.
                     // NEW: support optional per-template trailing weight token, e.g. "goblin70" or "goblin_assassin20".
@@ -125,9 +137,16 @@ namespace MudServer
                                 // parse trailing digits as weight: e.g. "goblin70" -> id="goblin", weight=70
                                 int weight = 0;
                                 string tid = left;
+                                // parse trailing digits as weight: e.g. "goblin70" -> id="goblin", weight=70
+                                // FIXED: Use greedy group for id with explicit underscore/letter boundary
+                                // The pattern requires the weight digits to follow a non-digit character
+                                
                                 try
                                 {
-                                    var m = System.Text.RegularExpressions.Regex.Match(left, @"^(?<id>.+?)(?<wt>\d+)$");
+                                    // Match: everything up to (and including) the last non-digit, then capture trailing digits
+                                    // This ensures "goblin_boss10" -> id="goblin_boss", wt=10
+                                    // And "goblin65" -> id="goblin", wt=65
+                                    var m = System.Text.RegularExpressions.Regex.Match(left, @"^(?<id>.*[^0-9])(?<wt>\d+)$");
                                     if (m.Success && !string.IsNullOrWhiteSpace(m.Groups["id"].Value))
                                     {
                                         tid = m.Groups["id"].Value;
@@ -185,11 +204,24 @@ namespace MudServer
                             // strip qty if present
                             var idxCol = rawEntry.IndexOf(':');
                             var left = idxCol >= 0 ? rawEntry.Substring(0, idxCol).Trim() : rawEntry.Trim();
-                            var m = System.Text.RegularExpressions.Regex.Match(left, @"^(?<id>.+?)(?<wt>\d+)$");
-                            if (m.Success && !string.IsNullOrWhiteSpace(m.Groups["id"].Value))
-                                templateId = m.Groups["id"].Value;
-                            else
-                                templateId = left;
+                            // parse trailing digits as weight: e.g. "goblin70" -> id="goblin", weight=70
+                            // FIXED: Use greedy group for id with explicit underscore/letter boundary
+                            // The pattern requires the weight digits to follow a non-digit character
+                            int weight = 0;
+                            string tid = left;
+                            try
+                            {
+                                // Match: everything up to (and including) the last non-digit, then capture trailing digits
+                                // This ensures "goblin_boss10" -> id="goblin_boss", wt=10
+                                // And "goblin65" -> id="goblin", wt=65
+                                var m = System.Text.RegularExpressions.Regex.Match(left, @"^(?<id>.*[^0-9])(?<wt>\d+)$");
+                                if (m.Success && !string.IsNullOrWhiteSpace(m.Groups["id"].Value))
+                                {
+                                    tid = m.Groups["id"].Value;
+                                    if (!int.TryParse(m.Groups["wt"].Value, out weight)) weight = 0;
+                                }
+                            }
+                            catch { /* best-effort parse */ }
                             requestedQty = 1;
                             selectedRaw = rawEntry;
                         }
@@ -224,6 +256,33 @@ namespace MudServer
                             continue;
                         }
 
+                        // CRITICAL FIX: Check SpawnMaxRoom BEFORE spawning NPC
+                        int maxAllowed = Math.Max(1, room.SpawnMaxRoom);
+                        int currentCount = 0;
+
+                        try
+                        {
+                            using var countCmd = conn.CreateCommand();
+                            countCmd.CommandText = "SELECT COUNT(*) FROM Npc WHERE TemplateID = @template AND CurrentRoomID = @roomid";
+                            countCmd.Parameters.AddWithValue("@template", templateId);
+                            countCmd.Parameters.AddWithValue("@roomid", room.RoomID);
+                            var result = countCmd.ExecuteScalar();
+                            currentCount = result != null ? Convert.ToInt32(result) : 0;
+                        }
+                        catch (Exception exCount)
+                        {
+                            Console.WriteLine($"[Spawner][ERROR] Failed to count NPCs for template '{templateId}' in room {room.RoomID}: {exCount.Message}");
+                            continue;
+                        }
+
+                        if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} NPC count: {currentCount}/{maxAllowed} for template '{templateId}'");
+
+                        if (currentCount >= maxAllowed)
+                        {
+                            if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} NPC limit reached ({currentCount}/{maxAllowed}); skipping spawn.");
+                            continue;
+                        }
+
                         // Extra sanity: log essential template fields
                         if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Template '{templateId}' ok: Name='{tmpl.Name}', Level={tmpl.Level ?? 0}, IsHumanoid={tmpl.IsHumanoid}, CS={tmpl.CombatSkill ?? 0}");
 
@@ -245,8 +304,51 @@ namespace MudServer
 
                         // Persist core fields including description/humanoid/CS
                         npc.CurrentAreaID = room.AreaID;
+
+                        // ===== NEW: IfSpawnSetWanderAreas flag processing =====
+                        // If room has a flag like "IfSpawnSetWanderAreas:1,7,8", inherit those area IDs into the spawned NPC's WanderAreas
+                        try
+                        {
+                            if (room.Flags != null)
+                            {
+                                foreach (var flag in room.Flags)
+                                {
+                                    if (string.IsNullOrWhiteSpace(flag)) continue;
+                                    if (flag.StartsWith("IfSpawnSetWanderAreas:", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        var payload = flag.Substring("IfSpawnSetWanderAreas:".Length).Trim();
+                                        if (!string.IsNullOrWhiteSpace(payload))
+                                        {
+                                            var parts = payload.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                                            if (npc.WanderAreas == null)
+                                                npc.WanderAreas = new List<int>();
+
+                                            foreach (var p in parts)
+                                            {
+                                                if (int.TryParse(p.Trim(), out int areaId) && areaId > 0)
+                                                {
+                                                    if (!npc.WanderAreas.Contains(areaId))
+                                                        npc.WanderAreas.Add(areaId);
+                                                }
+                                            }
+
+                                            if (useVerboseLogging)
+                                                Console.WriteLine($"[Spawner][TRACE] NPC '{npc.Name}' inherited WanderAreas from room flag: [{string.Join(",", npc.WanderAreas)}]");
+                                        }
+                                        break; // Only process first matching flag
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception exWander)
+                        {
+                            Console.WriteLine($"[Spawner][WARN] Failed to process IfSpawnSetWanderAreas for NPC '{npc.Name}': {exWander.Message}");
+                        }
+                        // ===== END IfSpawnSetWanderAreas processing =====
+
                         if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] NPC {npc.Name} WanderAreas={JsonSerializer.Serialize(npc.WanderAreas ?? new List<int>())} CurrentAreaID={npc.CurrentAreaID}");
                         int newId = NpcPersistence.InsertNpc(conn, npc);
+                                                
                         npc.NpcID = newId;
 
                         // Persist trader initial state into Flags if this NPC is a trader and an ItemTrader instance exists.
@@ -325,14 +427,22 @@ namespace MudServer
                         }
 
                         Console.WriteLine($"[Spawner] NPC '{npc.Name}' spawned in room {room.RoomID}.");
-                        foreach (var p in room.Players)
+
+                        // CRITICAL FIX: Update LastSpawnTime AFTER successful spawn
+                        room.LastSpawnTime = now;
+                        try
                         {
-                            MudNetworking.MessageHandler.SendSystem(p, room.SpawnMessage?.Length > 0 ? room.SpawnMessage : $"An NPC appears: {npc.Name}");
+                            RoomPersistence.SaveRoom(conn, room);
+                            if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Updated LastSpawnTime for room {room.RoomID} after NPC spawn.");
+                        }
+                        catch (Exception exTime)
+                        {
+                            Console.WriteLine($"[Spawner][WARN] Failed to persist LastSpawnTime for Room {room.RoomID}: {exTime.Message}");
                         }
                     }
                     else
                     {
-                        // Item spawn branch — unchanged selection applied for item creation.
+                        // Item spawn branch
                         if (world.ItemFactory == null)
                         {
                             Console.WriteLine("[Spawner][WARN] ItemFactory missing - cannot spawn Item.");
@@ -344,7 +454,7 @@ namespace MudServer
                             // Determine effective per-room limit (CUMULATIVE across all spawnable templates)
                             int max = Math.Max(1, room.SpawnMaxRoom);
 
-                            // NEW: Count TOTAL spawnable items currently in room (cumulative check)
+                            // CRITICAL FIX: Query DB for authoritative item count
                             // Extract template IDs from spawn list (handles "template:qty" and "template80" weight syntax)
                             var spawnableTemplateIds = room.SpawnTemplateList
                                 .Where(s => !string.IsNullOrWhiteSpace(s))
@@ -356,18 +466,45 @@ namespace MudServer
                                     if (idxColon >= 0)
                                         cleaned = cleaned.Substring(0, idxColon).Trim();
                                     // Strip trailing weight digits (e.g., "mushroom80" -> "mushroom")
-                                    var m = System.Text.RegularExpressions.Regex.Match(cleaned, @"^(?<id>.+?)(?<wt>\d+)$");
+                                    var m = System.Text.RegularExpressions.Regex.Match(cleaned, @"^(?<id>.*[^0-9])(?<wt>\d+)$");
                                     if (m.Success && !string.IsNullOrWhiteSpace(m.Groups["id"].Value))
                                         cleaned = m.Groups["id"].Value;
                                     return cleaned;
                                 })
                                 .Where(tid => !string.IsNullOrWhiteSpace(tid))
-                                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                                .ToList();
 
-                            // Count ALL spawnable items in room (both stackable and non-stackable)
-                            int totalExistingCount = room.Inventory
-                                .Where(i => !string.IsNullOrEmpty(i.TemplateID) && spawnableTemplateIds.Contains(i.TemplateID))
-                                .Sum(i => Math.Max(1, i.Quantity)); // For non-stackable this is just count, for stackable it's total qty
+                            // Query DB for current count (authoritative)
+                            int totalExistingCount = 0;
+                            try
+                            {
+                                if (spawnableTemplateIds.Count > 0)
+                                {
+                                    var placeholders = string.Join(",", spawnableTemplateIds.Select((_, i) => $"@tid{i}"));
+                                    using var countCmd = conn.CreateCommand();
+                                    countCmd.CommandText = $@"
+                                        SELECT COALESCE(SUM(Quantity), 0) 
+                                        FROM Item 
+                                        WHERE OwnerType = 'Room' 
+                                          AND OwnerID = @roomid 
+                                          AND TemplateID IN ({placeholders})";
+                                    countCmd.Parameters.AddWithValue("@roomid", room.RoomID);
+                                    for (int i = 0; i < spawnableTemplateIds.Count; i++)
+                                    {
+                                        countCmd.Parameters.AddWithValue($"@tid{i}", spawnableTemplateIds[i]);
+                                    }
+                                    var result = countCmd.ExecuteScalar();
+                                    totalExistingCount = result != null ? Convert.ToInt32(result) : 0;
+                                }
+                            }
+                            catch (Exception exCount)
+                            {
+                                Console.WriteLine($"[Spawner][ERROR] Failed to query item count for room {room.RoomID}: {exCount.Message}");
+                                // Fallback to in-memory count
+                                totalExistingCount = room.Inventory
+                                    .Where(i => !string.IsNullOrEmpty(i.TemplateID) && spawnableTemplateIds.Contains(i.TemplateID))
+                                    .Sum(i => Math.Max(1, i.Quantity));
+                            }
 
                             if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Room {room.RoomID} TOTAL spawnable items = {totalExistingCount}, limit={max}");
 
@@ -412,7 +549,7 @@ namespace MudServer
                                 item.RoomID = room.RoomID;
                                 item.OwnerAreaID = room.AreaID;
 
-                                // --- convert StartsBuriedN (template) into persistent BuriedN flag on created item ---
+                                // Convert StartsBuriedN (template) into persistent BuriedN flag on created item
                                 try
                                 {
                                     if (item.Flags == null)
@@ -458,11 +595,18 @@ namespace MudServer
                                 {
                                     Console.WriteLine($"[Spawner][WARN] Failed to convert StartsBuried flag for spawned item '{item.Name}': {exFlag.Message}");
                                 }
-                                // --- end buried conversion ---
 
                                 try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
                                 if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Pre-SaveItem: Template='{templateId}', Name='{item.Name}', Quantity={item.Quantity}, FlagsJson='{item.FlagsJson}'.");
+
+                                // Track if this is a NEW item or MERGED item
+                                bool itemWasMerged = false;
+                                int qtyBeforeSave = room.Inventory
+                                    .Where(i => i != null &&
+                                                i.TemplateID == templateId &&
+                                                string.Equals(i.FlagsJson ?? "[]", item.FlagsJson ?? "[]", StringComparison.Ordinal))
+                                    .Sum(i => Math.Max(1, i.Quantity));
 
                                 ItemPersistence.SaveItem(conn, item);
 
@@ -474,27 +618,30 @@ namespace MudServer
                                 }
                                 else
                                 {
-                                    // reflect merged/updated row into in-memory room.Inventory
-                                    var existing = room.Inventory.FirstOrDefault(i => i.ItemID == item.ItemID);
-                                    if (existing != null)
+                                    // CRITICAL FIX: Find existing in-memory item by TemplateID + Flags (NOT by ItemID)
+                                    var existingInMemory = room.Inventory.FirstOrDefault(i =>
+                                        i != null &&
+                                        !string.IsNullOrEmpty(i.TemplateID) &&
+                                        i.TemplateID == templateId &&
+                                        string.Equals(i.FlagsJson ?? "[]", item.FlagsJson ?? "[]", StringComparison.Ordinal));
+
+                                    if (existingInMemory != null)
                                     {
-                                        existing.Quantity = item.Quantity;
+                                        // Item was MERGED in DB - update the in-memory object
+                                        existingInMemory.ItemID = item.ItemID;
+                                        existingInMemory.Quantity = item.Quantity;
+                                        itemWasMerged = true;
+
+                                        if (useVerboseLogging)
+                                            Console.WriteLine($"[Spawner][TRACE] MERGED: ItemID={existingInMemory.ItemID}, OldQty={qtyBeforeSave}, NewQty={existingInMemory.Quantity}");
                                     }
                                     else
                                     {
-                                        var merged = room.Inventory.FirstOrDefault(i =>
-                                            !string.IsNullOrEmpty(i.TemplateID) &&
-                                            i.TemplateID == item.TemplateID &&
-                                            string.Equals(i.FlagsJson ?? "[]", item.FlagsJson ?? "[]", StringComparison.Ordinal));
-                                        if (merged != null)
-                                        {
-                                            merged.Quantity = item.Quantity;
-                                            merged.ItemID = item.ItemID;
-                                        }
-                                        else
-                                        {
-                                            room.Inventory.Add(item);
-                                        }
+                                        // New item - add to room
+                                        room.Inventory.Add(item);
+
+                                        if (useVerboseLogging)
+                                            Console.WriteLine($"[Spawner][TRACE] NEW: Added ItemID={item.ItemID}, Qty={item.Quantity}");
                                     }
 
                                     room.IsDirty = true;
@@ -502,6 +649,7 @@ namespace MudServer
 
                                 try { RoomPersistence.SaveRoom(conn, room); } catch (Exception exRoomSave) { Console.WriteLine($"[Spawner][WARN] Failed to save room after item spawn: {exRoomSave.Message}"); }
 
+                                // Send room update and message ONLY if item was newly created (not merged)
                                 foreach (var p in room.Players)
                                 {
                                     p.PendingMessageQueue.Add(MessageHandler.Room(
@@ -510,22 +658,43 @@ namespace MudServer
                                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                         world));
 
-                                    // Only announce explicit spawn message when the item is NOT buried.
-                                    try
+                                    // CRITICAL FIX: Only send "appears" message if this was a NEW item, not a merge
+                                    if (!itemWasMerged)
                                     {
-                                        bool isBuried = item.Flags != null && item.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase));
-                                        if (!isBuried)
+                                        try
                                         {
-                                            var text = string.IsNullOrEmpty(room.SpawnMessage)
-                                                ? $"{item.Name} appears."
-                                                : room.SpawnMessage;
-                                            MessageHandler.SendSystem(p, text);
+                                            bool isBuried = item.Flags != null && item.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase));
+                                            if (!isBuried)
+                                            {
+                                                var text = string.IsNullOrEmpty(room.SpawnMessage)
+                                                    ? $"{item.Name} appears."
+                                                    : room.SpawnMessage;
+                                                MessageHandler.SendSystem(p, text);
+                                            }
                                         }
+                                        catch { /* best-effort */ }
                                     }
-                                    catch { /* best-effort */ }
                                 }
 
-                                if (useVerboseLogging) Console.WriteLine($"[Spawner] Item '{proto.Name}' spawned in room {room.RoomID} (qty added={spawnQty}, newTotal={room.Inventory.FirstOrDefault(i => i.TemplateID == templateId && string.Equals(i.FlagsJson ?? "[]", protoFlagsJson, StringComparison.Ordinal))?.Quantity}).");
+                                if (useVerboseLogging)
+                                {
+                                    var finalQty = room.Inventory
+                                        .Where(i => i != null && i.TemplateID == templateId && string.Equals(i.FlagsJson ?? "[]", protoFlagsJson, StringComparison.Ordinal))
+                                        .Sum(i => Math.Max(1, i.Quantity));
+                                    Console.WriteLine($"[Spawner] Item '{proto.Name}' spawned in room {room.RoomID} (wasMerged={itemWasMerged}, totalQty={finalQty}).");
+                                }
+
+                                // CRITICAL FIX: Update LastSpawnTime AFTER successful item spawn
+                                room.LastSpawnTime = now;
+                                try
+                                {
+                                    RoomPersistence.SaveRoom(conn, room);
+                                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Updated LastSpawnTime for room {room.RoomID} after item spawn.");
+                                }
+                                catch (Exception exTime)
+                                {
+                                    Console.WriteLine($"[Spawner][WARN] Failed to persist LastSpawnTime for Room {room.RoomID}: {exTime.Message}");
+                                }
                             }
                             else
                             {
@@ -548,7 +717,7 @@ namespace MudServer
                                     item.RoomID = room.RoomID;
                                     item.OwnerAreaID = room.AreaID;
 
-                                    // --- convert StartsBuriedN -> BuriedN on non-stackable item
+                                    // Convert StartsBuriedN -> BuriedN on non-stackable item
                                     try
                                     {
                                         if (item.Flags == null)
@@ -593,7 +762,6 @@ namespace MudServer
                                     {
                                         Console.WriteLine($"[Spawner][WARN] Failed to convert StartsBuried flag for spawned item '{item.Name}': {exFlag.Message}");
                                     }
-                                    // --- end buried conversion ---
 
                                     try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
@@ -638,24 +806,23 @@ namespace MudServer
                                 try { RoomPersistence.SaveRoom(conn, room); } catch (Exception exRoomSave) { Console.WriteLine($"[Spawner][WARN] Failed to save room after non-stack item spawn: {exRoomSave.Message}"); }
 
                                 Console.WriteLine($"[Spawner] Spawned up to {allowedToSpawn} non-stack item(s) '{templateId}' in room {room.RoomID}.");
+
+                                // CRITICAL FIX: Update LastSpawnTime AFTER successful non-stackable item spawn
+                                room.LastSpawnTime = now;
+                                try
+                                {
+                                    RoomPersistence.SaveRoom(conn, room);
+                                    if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Updated LastSpawnTime for room {room.RoomID} after non-stackable item spawn.");
+                                }
+                                catch (Exception exTime)
+                                {
+                                    Console.WriteLine($"[Spawner][WARN] Failed to persist LastSpawnTime for Room {room.RoomID}: {exTime.Message}");
+                                }
                             }
                         }
                         catch (Exception iex)
                         {
                             Console.WriteLine($"[Spawner][ERROR] Item spawn exception (TemplateID='{templateId}', Room={room.RoomID}): {iex}");
-                        }
-                    }
-
-                    if ((now - room.LastSpawnTime).TotalSeconds < 1)
-                    {
-                        room.LastSpawnTime = now;
-                        try
-                        {
-                            RoomPersistence.SaveRoom(conn, room);
-                        }
-                        catch (Exception exSaveAgain)
-                        {
-                            Console.WriteLine($"[Spawner][WARN] Failed to persist LastSpawnTime for Room {room.RoomID} (second save): {exSaveAgain.Message}");
                         }
                     }
                 }

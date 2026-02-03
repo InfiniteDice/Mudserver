@@ -1,0 +1,14 @@
+{
+  "Id": "mead",
+  "Name": "Mead",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 5,
+  "ShortDesc": "It's mead",
+  "LongDesc": "This is a portion of mead, drink it straight.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" , "Stackable" , "Refresh" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

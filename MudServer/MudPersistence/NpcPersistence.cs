@@ -166,7 +166,7 @@ namespace MudPersistence
 
             // Include optional columns when present
             cmd.CommandText = @"
-        INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID"
+        INSERT INTO Npc (TemplateID, Name, Alignment, MaxHealth, Health, CurrentRoomID, IsPersistent, VisualTrait, CurrentAreaID, IsBeingLed, LedByPlayerId, IsHitched, HitchedWithRopeId, HitchedByPlayerId"
                                 + (Has("Description") ? ", Description" : "")
                                 + (Has("IsHumanoid") ? ", IsHumanoid" : "")
                                 + (Has("WanderChance") ? ", WanderChance" : "")
@@ -176,7 +176,7 @@ namespace MudPersistence
                                 + (Has("Flags") ? ", Flags" : "")
                                 + (Has("Hunger") ? ", Hunger" : "")
                                 + (Has("AiBehaviors") ? ", AiBehaviors" : "") + @")
-        VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area"
+        VALUES (@tid, @name, @align, @maxhp, @hp, @room, @persist, @trait, @area, @isBeingLed, @ledByPlayerId, @isHitched, @hitchedWithRopeId, @hitchedByPlayerId"
                                 + (Has("Description") ? ", @desc" : "")
                                 + (Has("IsHumanoid") ? ", @isHumanoid" : "")
                                 + (Has("WanderChance") ? ", @wc" : "")
@@ -206,6 +206,11 @@ namespace MudPersistence
             cmd.Parameters.AddWithValue("@persist", npc.IsPersistent ? 1 : 0);
             cmd.Parameters.AddWithValue("@trait", npc.VisualTrait ?? "");
             cmd.Parameters.AddWithValue("@area", npc.CurrentAreaID);
+            cmd.Parameters.AddWithValue("@isBeingLed", npc.IsBeingLed ? 1 : 0);
+            cmd.Parameters.AddWithValue("@ledByPlayerId", npc.LedByPlayerId);
+            cmd.Parameters.AddWithValue("@isHitched", npc.IsHitched ? 1 : 0);
+            cmd.Parameters.AddWithValue("@hitchedWithRopeId", npc.HitchedWithRopeId);
+            cmd.Parameters.AddWithValue("@hitchedByPlayerId", npc.HitchedByPlayerId);
 
             if (Has("Description")) cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
             if (Has("IsHumanoid")) cmd.Parameters.AddWithValue("@isHumanoid", npc.IsHumanoid ? 1 : 0);
@@ -375,6 +380,11 @@ namespace MudPersistence
             Name = @name,
             CurrentRoomID = @room,
             VisualTrait = @trait,
+            IsBeingLed = @isBeingLed,
+            LedByPlayerId = @ledByPlayerId,
+            IsHitched = @isHitched,
+            HitchedWithRopeId = @hitchedWithRopeId,
+            HitchedByPlayerId = @hitchedByPlayerId,
             CurrentAreaID = @area"
                         + (Has("Description") ? ", Description = @desc" : "")
                         + (Has("IsHumanoid") ? ", IsHumanoid = @isHumanoid" : "")
@@ -395,6 +405,11 @@ namespace MudPersistence
             // Preserve existing behavior: use current room's AreaID if available
             cmd.Parameters.AddWithValue("@area", npc.CurrentRoom?.AreaID ?? 0);
             cmd.Parameters.AddWithValue("@id", npc.NpcID);
+            cmd.Parameters.AddWithValue("@isBeingLed", npc.IsBeingLed ? 1 : 0);
+            cmd.Parameters.AddWithValue("@ledByPlayerId", npc.LedByPlayerId);
+            cmd.Parameters.AddWithValue("@isHitched", npc.IsHitched ? 1 : 0);
+            cmd.Parameters.AddWithValue("@hitchedWithRopeId", npc.HitchedWithRopeId);
+            cmd.Parameters.AddWithValue("@hitchedByPlayerId", npc.HitchedByPlayerId);
             if (Has("Description")) cmd.Parameters.AddWithValue("@desc", npc.Description ?? "");
             if (Has("IsHumanoid")) cmd.Parameters.AddWithValue("@isHumanoid", npc.IsHumanoid ? 1 : 0);
             if (Has("WanderChance")) cmd.Parameters.AddWithValue("@wc", npc.WanderChance);
@@ -1059,6 +1074,15 @@ namespace MudPersistence
                         npc.MoveSchedules = new List<Npc.MoveSchedule>();
                     }
 
+                    // Around line 400-600 where properties are read from DataReader
+
+                    // ADD after existing property reads (find a spot after similar integer/bool columns):
+                    try { npc.IsBeingLed = !rdr.IsDBNull(rdr.GetOrdinal("IsBeingLed")) && rdr.GetInt32(rdr.GetOrdinal("IsBeingLed")) != 0; } catch { npc.IsBeingLed = false; }
+                    try { npc.LedByPlayerId = !rdr.IsDBNull(rdr.GetOrdinal("LedByPlayerId")) ? rdr.GetInt32(rdr.GetOrdinal("LedByPlayerId")) : 0; } catch { npc.LedByPlayerId = 0; }
+                    try { npc.IsHitched = !rdr.IsDBNull(rdr.GetOrdinal("IsHitched")) && rdr.GetInt32(rdr.GetOrdinal("IsHitched")) != 0; } catch { npc.IsHitched = false; }
+                    try { npc.HitchedWithRopeId = !rdr.IsDBNull(rdr.GetOrdinal("HitchedWithRopeId")) ? rdr.GetInt32(rdr.GetOrdinal("HitchedWithRopeId")) : 0; } catch { npc.HitchedWithRopeId = 0; }
+                    try { npc.HitchedByPlayerId = !rdr.IsDBNull(rdr.GetOrdinal("HitchedByPlayerId")) ? rdr.GetInt32(rdr.GetOrdinal("HitchedByPlayerId")) : 0; } catch { npc.HitchedByPlayerId = 0; }
+
                     npc.Description = Has("Description") ? GetString(rdr, "Description", "") : npc.Description;
 
                     npc.CurrentRoom = world.Rooms.Find(r => r.RoomID == npc.CurrentRoomID);
@@ -1079,6 +1103,12 @@ namespace MudPersistence
                                     if (Has("AiBehaviors")) aiBehJson = GetStringOrNull(rdr, "AiBehaviors");
                                     if (string.IsNullOrWhiteSpace(aiBehJson) && Has("AiBehaviorConfigs"))
                                         aiBehJson = GetStringOrNull(rdr, "AiBehaviorConfigs");
+
+                                    //if (npc.NpcID == 820)
+                                    //{
+                                    //    Console.WriteLine($"[NPC-820-DEBUG] Raw AiBehaviors JSON from database:");
+                                    //    Console.WriteLine(aiBehJson ?? "(null)");
+                                    //}
                                 }
                                 catch { aiBehJson = null; }
 
@@ -1086,109 +1116,121 @@ namespace MudPersistence
                                 {
                                     try
                                     {
-                                        var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                                        List<NpcTemplate.AiBehaviorConfig>? configs = null;
-
-                                        // Try direct deserialization into structured configs first
-                                        try
+                                        // QUICK CHECK: treat empty array "[]" or trivially short JSON as no override to avoid noisy warnings
+                                        var trimmed = aiBehJson.Trim();
+                                        if (trimmed.Length <= 2 || string.Equals(trimmed, "[]", StringComparison.Ordinal))
                                         {
-                                            configs = JsonSerializer.Deserialize<List<NpcTemplate.AiBehaviorConfig>>(aiBehJson, opts);
-                                        }
-                                        catch
-                                        {
-                                            configs = null;
-                                        }
-
-                                        // If direct failed, parse manually via JsonDocument to handle mixed forms robustly
-                                        if (configs == null)
-                                        {
-                                            try
-                                            {
-                                                var docs = JsonDocument.Parse(aiBehJson);
-                                                if (docs.RootElement.ValueKind == JsonValueKind.Array)
-                                                {
-                                                    configs = new List<NpcTemplate.AiBehaviorConfig>();
-                                                    foreach (var el in docs.RootElement.EnumerateArray())
-                                                    {
-                                                        try
-                                                        {
-                                                            if (el.ValueKind == JsonValueKind.Object)
-                                                            {
-                                                                var raw = el.GetRawText();
-                                                                var cfg = JsonSerializer.Deserialize<NpcTemplate.AiBehaviorConfig>(raw, opts);
-                                                                if (cfg != null) configs.Add(cfg);
-                                                            }
-                                                            else if (el.ValueKind == JsonValueKind.String)
-                                                            {
-                                                                var s = el.GetString();
-                                                                if (!string.IsNullOrWhiteSpace(s))
-                                                                {
-                                                                    // Some templates may have stringified JSON inside the array; try to parse it
-                                                                    var trimmed = s.Trim();
-                                                                    if ((trimmed.StartsWith("{") && trimmed.EndsWith("}")) || (trimmed.StartsWith("[") && trimmed.EndsWith("]")))
-                                                                    {
-                                                                        try
-                                                                        {
-                                                                            var inner = JsonDocument.Parse(trimmed);
-                                                                            if (inner.RootElement.ValueKind == JsonValueKind.Object)
-                                                                            {
-                                                                                var cfg = JsonSerializer.Deserialize<NpcTemplate.AiBehaviorConfig>(trimmed, opts);
-                                                                                if (cfg != null) configs.Add(cfg);
-                                                                            }
-                                                                            // else: skip arrays of primitives as legacy – not supported to structured config
-                                                                        }
-                                                                        catch
-                                                                        {
-                                                                            // ignore inner parse failures
-                                                                        }
-                                                                    }
-                                                                    else
-                                                                    {
-                                                                        // Legacy simple string behavior token (e.g., "ItemMover") — synthesize minimal config
-                                                                        var cfg = new NpcTemplate.AiBehaviorConfig { Behavior = s };
-                                                                        configs.Add(cfg);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        catch { /* best-effort per-element */ }
-                                                    }
-                                                }
-                                            }
-                                            catch { configs = null; }
-                                        }
-
-                                        // If we got structured configs, clone template and attach them; else fallback to shared template
-                                        if (configs != null && configs.Count > 0)
-                                        {
-                                            // Deep-clone the template so we don't mutate the shared template instance in TemplateManager.
-                                            var cloneJson = JsonSerializer.Serialize(tmpl, new JsonSerializerOptions { WriteIndented = false });
-                                            var tmplClone = JsonSerializer.Deserialize<NpcTemplate>(cloneJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                                            if (tmplClone != null)
-                                            {
-                                                tmplClone.AiBehaviorConfigs = configs;
-                                                // Also preserve raw AiBehaviorsRaw if db contained objects/strings – keep both representations for fidelity
-                                                try
-                                                {
-                                                    var rawList = JsonSerializer.Deserialize<List<JsonElement>>(aiBehJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                                                    if (rawList != null && rawList.Count > 0)
-                                                        tmplClone.AiBehaviorsRaw = rawList;
-                                                }
-                                                catch { /* best-effort */ }
-
-                                                npc.Template = tmplClone;
-                                            }
-                                            else
-                                            {
-                                                npc.Template = tmpl; // fallback
-                                            }
+                                            // No per-NPC configs present -> use shared template silently
+                                            npc.Template = tmpl;
                                         }
                                         else
                                         {
-                                            // Could not parse structured configs – keep shared template and log for diagnosis
-                                            Console.WriteLine($"[NpcPersistence][WARN] AiBehaviors JSON present but could not be parsed into configs for NpcID={npc.NpcID}. Raw length={aiBehJson.Length}");
-                                            // preserve raw on the shared template only for visibility (do not mutate global object)
-                                            npc.Template = tmpl;
+                                            var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                                            List<NpcTemplate.AiBehaviorConfig>? configs = null;
+
+                                            // Try direct deserialization into structured configs first
+                                            try
+                                            {
+                                                configs = JsonSerializer.Deserialize<List<NpcTemplate.AiBehaviorConfig>>(aiBehJson, opts);
+                                            }
+                                            catch (Exception exDes)
+                                            {
+                                                Console.WriteLine($"[NpcPersistence][ERROR] Failed to deserialize AiBehaviors for NpcID={npc.NpcID}: {exDes.Message}");
+                                                Console.WriteLine($"[NpcPersistence][ERROR] JSON was: {aiBehJson}");
+                                                configs = null;
+                                            }
+
+                                            // If direct failed, parse manually via JsonDocument to handle mixed forms robustly
+                                            if (configs == null)
+                                            {
+                                                try
+                                                {
+                                                    var docs = JsonDocument.Parse(aiBehJson);
+                                                    if (docs.RootElement.ValueKind == JsonValueKind.Array)
+                                                    {
+                                                        configs = new List<NpcTemplate.AiBehaviorConfig>();
+                                                        foreach (var el in docs.RootElement.EnumerateArray())
+                                                        {
+                                                            try
+                                                            {
+                                                                if (el.ValueKind == JsonValueKind.Object)
+                                                                {
+                                                                    var raw = el.GetRawText();
+                                                                    var cfg = JsonSerializer.Deserialize<NpcTemplate.AiBehaviorConfig>(raw, opts);
+                                                                    if (cfg != null) configs.Add(cfg);
+                                                                }
+                                                                else if (el.ValueKind == JsonValueKind.String)
+                                                                {
+                                                                    var s = el.GetString();
+                                                                    if (!string.IsNullOrWhiteSpace(s))
+                                                                    {
+                                                                        // Some templates may have stringified JSON inside the array; try to parse it
+                                                                        var trimmedInner = s.Trim();
+                                                                        if ((trimmedInner.StartsWith("{") && trimmedInner.EndsWith("}")) || (trimmedInner.StartsWith("[") && trimmedInner.EndsWith("]")))
+                                                                        {
+                                                                            try
+                                                                            {
+                                                                                var inner = JsonDocument.Parse(trimmedInner);
+                                                                                if (inner.RootElement.ValueKind == JsonValueKind.Object)
+                                                                                {
+                                                                                    var cfg = JsonSerializer.Deserialize<NpcTemplate.AiBehaviorConfig>(trimmedInner, opts);
+                                                                                    if (cfg != null) configs.Add(cfg);
+                                                                                }
+                                                                                // else: skip arrays of primitives as legacy – not supported to structured config
+                                                                            }
+                                                                            catch
+                                                                            {
+                                                                                // ignore inner parse failures
+                                                                            }
+                                                                        }
+                                                                        else
+                                                                        {
+                                                                            // Legacy simple string behavior token (e.g., "ItemMover") — synthesize minimal config
+                                                                            var cfg = new NpcTemplate.AiBehaviorConfig { Behavior = s };
+                                                                            configs.Add(cfg);
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            catch { /* best-effort per-element */ }
+                                                        }
+                                                    }
+                                                }
+                                                catch { configs = null; }
+                                            }
+
+                                            // If we got structured configs, clone template and attach them; else fallback to shared template
+                                            if (configs != null && configs.Count > 0)
+                                            {
+                                                // Deep-clone the template so we don't mutate the shared template instance in TemplateManager.
+                                                var cloneJson = JsonSerializer.Serialize(tmpl, new JsonSerializerOptions { WriteIndented = false });
+                                                var tmplClone = JsonSerializer.Deserialize<NpcTemplate>(cloneJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                                                if (tmplClone != null)
+                                                {
+                                                    tmplClone.AiBehaviorConfigs = configs;
+                                                    // Also preserve raw AiBehaviorsRaw if db contained objects/strings – keep both representations for fidelity
+                                                    try
+                                                    {
+                                                        var rawList = JsonSerializer.Deserialize<List<JsonElement>>(aiBehJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                                                        if (rawList != null && rawList.Count > 0)
+                                                            tmplClone.AiBehaviorsRaw = rawList;
+                                                    }
+                                                    catch { /* best-effort */ }
+
+                                                    npc.Template = tmplClone;
+                                                }
+                                                else
+                                                {
+                                                    npc.Template = tmpl; // fallback
+                                                }
+                                            }
+                                            else
+                                            {
+                                                // Could not parse structured configs – keep shared template and log for diagnosis
+                                                Console.WriteLine($"[NpcPersistence][WARN] AiBehaviors JSON present but could not be parsed into configs for NpcID={npc.NpcID}. Raw length={aiBehJson.Length}");
+                                                // preserve raw on the shared template only for visibility (do not mutate global object)
+                                                npc.Template = tmpl;
+                                            }
                                         }
                                     }
                                     catch (Exception exDes)
@@ -1280,6 +1322,20 @@ namespace MudPersistence
                     catch (Exception exReg)
                     {
                         Console.WriteLine($"[NpcPersistence] Failed to create/register ItemTrader for NpcID={npc.NpcID}: {exReg.Message}");
+                    }
+
+                    // Register BarTender if configured on this NPC (ensure persisted NPCs get barkeep behavior)
+                    try
+                    {
+                        var barkeep = MudCore.AI.BarTender.CreateIfConfigured(npc, world);
+                        if (barkeep != null)
+                        {
+                            MudCore.AI.BarTenderManager.Register(npc, barkeep);
+                        }
+                    }
+                    catch (Exception exReg)
+                    {
+                        Console.WriteLine($"[NpcPersistence] Failed to create/register BarTender for NpcID={npc.NpcID}: {exReg.Message}");
                     }
                 }
                 catch (Exception ex)

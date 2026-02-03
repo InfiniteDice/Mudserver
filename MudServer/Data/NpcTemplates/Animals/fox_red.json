@@ -11,7 +11,7 @@
   ],
   "WanderChance": 0.03,
   "WanderAreas": [],
-  "AiBehaviors": [ "FindFood", "Evade" ],
+  "AiBehaviors": null,
   "AiTaskList": [],
   "CurrentAiTask": null,
   "HealthMax": 10,

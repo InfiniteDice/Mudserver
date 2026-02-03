@@ -1,0 +1,14 @@
+{
+  "Id": "meat_snake_giant",
+  "Name": "Giant Snake Meat",
+  "ItemCategory": "Food",
+  "Weight": 2.0,
+  "Value": 32,
+  "ShortDesc": "Some raw meat from a giant snake",
+  "LongDesc": "A portion of meat from a giant snake, I bet this is gourmet.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "false"
+}

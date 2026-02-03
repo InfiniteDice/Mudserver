@@ -41,7 +41,7 @@
   "CurrentAiTask": null,
   "HealthMax": 100,
   "Health": 100,
-  "Flags": [ "Carnivore", "Sleep:36:Night:Dawn" , "Move:59:Noon", "Move:81:Evening"],
+  "Flags": [ "AiCanTalk" , "Carnivore", "Sleep:36:Night:Dawn" , "Move:59:Noon", "Move:81:Evening"],
   "Level": 10,
   "Mass": 75.0,
   "EffMass": 75.0,

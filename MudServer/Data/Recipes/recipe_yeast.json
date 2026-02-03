@@ -1,0 +1,28 @@
+{
+  "id": "recipe_yeast",
+  "result": {
+    "template": "yeast",
+    "quantity": 4
+  },
+  "ingredients": [
+    {
+      "template": "flour_wheat",
+      "qty": 1
+    },
+    {
+      "template": "water",
+      "qty": 1
+    }
+  ],
+  "container": [ "Pot" , "Bowl" ],
+  "requiredSkill": "skill_cooking",
+  "minSkillLevel": 1,
+  "toolsRequired": [ "Spoon" ],
+  "roomFlags": [],
+  "timeSeconds": 420, 
+  "allowSubstitutions": true,
+  "substitutions": {
+    "flour_wheat": ["flour_rye","flour_barley"]
+  },
+  "notes": "Simple starter yeast"
+}

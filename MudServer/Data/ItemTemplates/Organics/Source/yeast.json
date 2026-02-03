@@ -1,0 +1,14 @@
+{
+  "Id": "yeast",
+  "Name": "Yeast",
+  "ItemCategory": "Food",
+  "Weight": 0.05,
+  "Value": 3,
+  "ShortDesc": "Yeast, it's alive!",
+  "LongDesc": "Some starter yeast, I bet you could make something interesting with this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "true"
+}

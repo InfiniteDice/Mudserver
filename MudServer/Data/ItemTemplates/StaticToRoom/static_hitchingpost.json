@@ -1,0 +1,14 @@
+{
+  "Id": "static_hitchingpost",
+  "Name": "Hitching Post",
+  "ItemCategory": "Static",
+  "Weight": 500,
+  "Value": 1,
+  "ShortDesc": "A hitching post",
+  "LongDesc": "A wood hitching post, you can hitch something to this.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "AllowHitch" ],
+  "Material": "Oak",
+  "BaseACBonus": 0.0
+}

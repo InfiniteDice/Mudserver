@@ -188,6 +188,81 @@ namespace MudCore.World
             }
         }
 
+        private static readonly Dictionary<string, (int StartHour, int EndHour)> PeriodHourRanges =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Midnight", (0, 0) },
+            { "Dawn", (6, 6) },
+            { "Noon", (12, 12) },
+            { "Dusk", (18, 18) },
+            { "Night", (1, 5) },
+            { "Morning", (7, 11) },
+            { "Afternoon", (13, 17) },
+            { "Evening", (19, 23) }
+        };
+
+        public static string FormatPeriodHourRange(string periodName)
+        {
+            if (string.IsNullOrWhiteSpace(periodName)) return string.Empty;
+            if (!PeriodHourRanges.TryGetValue(periodName.Trim(), out var range)) return string.Empty;
+
+            string span = range.StartHour == range.EndHour
+                ? range.StartHour.ToString()
+                : $"{range.StartHour}-{range.EndHour}";
+
+            return $"{periodName} spans: {span}";
+        }
+
+        public static bool TryGetPeriodHourRange(string periodName, out (int StartHour, int EndHour) range)
+        {
+            if (string.IsNullOrWhiteSpace(periodName))
+            {
+                range = default;
+                return false;
+            }
+
+            return PeriodHourRanges.TryGetValue(periodName.Trim(), out range);
+        }
+
         public override string ToString() => ToIsoString();
+
+        /// <summary>
+        /// Calculates the season code based on the current month (1-12, where 1=January, 12=December).
+        /// Returns: 'W' (Winter), 'Sp' (Spring), 'Su' (Summer), 'F' (Fall)
+        /// Mapping:
+        /// - Winter: Dec(12), Jan(1), Feb(2) -> 'W'
+        /// - Spring: Mar(3), Apr(4), May(5) -> 'Sp'
+        /// - Summer: Jun(6), Jul(7), Aug(8) -> 'Su'
+        /// - Fall: Sep(9), Oct(10), Nov(11) -> 'F'
+        /// </summary>
+        public string CalculateSeason()
+        {
+            return CalculateSeason(this.Month);
+        }
+
+        /// <summary>
+        /// Static overload: Calculates season based on a given month (1-12).
+        /// Returns: 'W' (Winter), 'Sp' (Spring), 'Su' (Summer), 'F' (Fall)
+        /// </summary>
+        public static string CalculateSeason(int month)
+        {
+            // Clamp month to valid range (1-12)
+            month = Clamp(month, 1, MonthsPerYear);
+
+            // Winter: December(12), January(1), February(2)
+            if (month == 12 || month == 1 || month == 2)
+                return "W";
+
+            // Spring: March(3), April(4), May(5)
+            if (month >= 3 && month <= 5)
+                return "Sp";
+
+            // Summer: June(6), July(7), August(8)
+            if (month >= 6 && month <= 8)
+                return "Su";
+
+            // Fall: September(9), October(10), November(11)
+            return "F";
+        }
     }
 }

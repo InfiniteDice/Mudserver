@@ -96,6 +96,9 @@ namespace MudPersistence
             // NEW: AlignmentValue persisted as REAL/NUMERIC
             if (Has("AlignmentValue")) wanted.Add("AlignmentValue");
 
+            // NEW: Stamina persisted as INT
+            if (Has("Stamina")) wanted.Add("Stamina");
+
             if (wanted.Count == 0) return;
 
             var sql = $"SELECT {string.Join(",", wanted)} FROM Player WHERE PlayerID = @pid;";
@@ -165,6 +168,9 @@ namespace MudPersistence
                                         player.AlignmentValue = GetDoubleFlexible(rdr, ordinal, player.AlignmentValue);
                                     }
                                     catch { player.AlignmentValue = 0.0; }
+                                    break;
+                                case "Stamina":
+                                    player.Stamina = rdr.GetInt32(ordinal);
                                     break;
                             }
                         }
@@ -250,6 +256,9 @@ namespace MudPersistence
 
             // NEW: AlignmentValue persisted
             if (Has("AlignmentValue")) colAssignments.Add("AlignmentValue = @AlignmentValue");
+
+            // NEW: Stamina persisted
+            if (Has("Stamina")) colAssignments.Add("Stamina = @Stamina");
 
             var sql = $"UPDATE Player SET {string.Join(", ", colAssignments)} WHERE PlayerID = @pid;";
 
@@ -337,6 +346,17 @@ namespace MudPersistence
             catch
             {
                 if (Has("AlignmentValue")) cmd.Parameters.AddWithValue("@AlignmentValue", 0.0);
+            }
+
+            // NEW: Stamina parameter
+            try
+            {
+                if (Has("Stamina"))
+                    cmd.Parameters.AddWithValue("@Stamina", player.Stamina);
+            }
+            catch
+            {
+                if (Has("Stamina")) cmd.Parameters.AddWithValue("@Stamina", 0);
             }
 
             try

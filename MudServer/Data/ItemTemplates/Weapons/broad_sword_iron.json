@@ -1,0 +1,14 @@
+{
+  "Id": "broad_sword_iron",
+  "Name": "Iron Broad Sword",
+  "ItemCategory": "Weapon",
+  "Weight": 1.5,
+  "Value": 135,
+  "ShortDesc": "A simple iron broad sword.",
+  "LongDesc": "A sturdy iron broad sword, slightly worn but usable.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": ["SlashHit30T"],
+  "Material": "Iron",
+  "DmgDiceMult": 6.0
+}

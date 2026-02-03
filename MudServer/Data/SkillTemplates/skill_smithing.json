@@ -1,0 +1,42 @@
+{
+  "id": "skill_smithing",
+  "skill_type": "Trade",
+  "skill_prerequisites": [],
+  "skill_tiers": [
+    {
+      "level": 1,
+      "title": "Novice Smith",
+      "can_craft_material": "Bronze",
+      "repair_effectiveness": 70
+    },
+    {
+      "level": 2,
+      "title": "Apprentice Smith",
+      "can_craft_material": "Iron",
+      "repair_effectiveness": 80
+    },
+    {
+      "level": 3,
+      "title": "Journeyman Smith",
+      "can_craft_material": "Steel",
+      "repair_effectiveness": 90
+    },
+    {
+      "level": 4,
+      "title": "Master Smith",
+      "can_craft_material": "Meteoric",
+      "repair_effectiveness": 100
+    },
+    {
+      "level": 5,
+      "title": "Grandmaster Smith",
+      "can_craft_material": "All",
+      "repair_effectiveness": 100
+    }
+  ],
+
+  "notes_prerequisites": "No prerequisites is left as [], if the skill has another skill prerequisite then that skill must be known before this skill can be gained/learned",
+  "notes_item_creation": "Can craft material, these are cumulative, at lvl 4 the smith can use Meteoric, steel, iron, bronze... At 5 all materials in the game can be used. ",
+  "notes_repair": "Repair effectiveness is the maximum condition percentage the smith can achieve when repairing items. For example, a Novice Smith can repair items up to 70% condition, while a Grandmaster Smith can repair items to full condition (100%). Players with no smithing skill can still repair up to 25% (condition: 25)"
+}
+

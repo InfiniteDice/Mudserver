@@ -12,6 +12,176 @@ namespace MudCore.AI
     {
         public static bool DiagnosticsEnabled { get; set; } = false;
 
+        // ===== NEW: AvoidDaylight helpers =====
+
+        /// <summary>
+        /// Returns true if the current time period is considered daylight (Morning, Noon, Afternoon).
+        /// </summary>
+        public static bool IsDaylightPeriod(GameClock gc)
+        {
+            if (gc == null) return false;
+            var period = gc.GetPeriodDescriptor();
+            return string.Equals(period, "Morning", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(period, "Noon", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(period, "Afternoon", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Returns true if the NPC has the AvoidDaylight flag (instance or template).
+        /// </summary>
+        public static bool HasAvoidDaylightFlag(Npc npc)
+        {
+            if (npc == null) return false;
+
+            // Check instance flags
+            if (npc.Flags != null && npc.Flags.Any(f => string.Equals(f, "AvoidDaylight", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            // Check FlagsJson
+            if (!string.IsNullOrEmpty(npc.FlagsJson) && npc.FlagsJson.IndexOf("AvoidDaylight", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+
+            // Check template flags
+            if (npc.Template?.Flags != null && npc.Template.Flags.Any(f => string.Equals(f, "AvoidDaylight", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true if the NPC's current room or area is considered Indoor (safe from daylight).
+        /// </summary>
+        public static bool IsInIndoorLocation(Npc npc, World.World world)
+        {
+            if (npc == null || world == null) return false;
+
+            var room = npc.CurrentRoom;
+            if (room == null) return false;
+
+            // Check room flags for Indoor
+            if (room.Flags != null && room.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            // Check area Climate for Indoor
+            var area = world.Areas?.FirstOrDefault(a => a.AreaID == room.AreaID);
+            if (area != null && string.Equals(area.Climate, "Indoor", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true if the NPC is exposed to daylight (has AvoidDaylight, is daylight period, and not in Indoor location).
+        /// </summary>
+        public static bool IsExposedToDaylight(Npc npc, World.World world, GameClock gc)
+        {
+            if (!HasAvoidDaylightFlag(npc)) return false;
+            if (!IsDaylightPeriod(gc)) return false;
+            if (IsInIndoorLocation(npc, world)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Find the nearest Indoor room the NPC can flee to.
+        /// Priority: 1) Any room in WanderAreas with Indoor climate, 2) BFS to find room with Indoor flag.
+        /// Returns null if no safe room found.
+        /// </summary>
+        public static int? FindNearestIndoorRoom(Npc npc, World.World world)
+        {
+            if (npc == null || world == null) return null;
+
+            // 1) Check WanderAreas for any area with Climate == "Indoor"
+            var wanderAreas = npc.WanderAreas ?? new List<int>();
+            foreach (var areaId in wanderAreas)
+            {
+                var area = world.Areas?.FirstOrDefault(a => a.AreaID == areaId);
+                if (area != null && string.Equals(area.Climate, "Indoor", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Return first room in this area
+                    var safeRoom = world.Rooms?.FirstOrDefault(r => r.AreaID == areaId);
+                    if (safeRoom != null)
+                    {
+                        if (DiagnosticsEnabled) Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] NpcID={npc.NpcID} found Indoor area {areaId}, target RoomID={safeRoom.RoomID}");
+                        return safeRoom.RoomID;
+                    }
+                }
+            }
+
+            // 2) BFS from current room to find any room with Indoor flag
+            var startRoom = npc.CurrentRoom;
+            if (startRoom == null) return null;
+
+            var visited = new HashSet<int> { startRoom.RoomID };
+            var queue = new Queue<int>();
+            queue.Enqueue(startRoom.RoomID);
+
+            int maxSteps = 50; // Limit search depth
+            int steps = 0;
+
+            while (queue.Count > 0 && steps < maxSteps)
+            {
+                steps++;
+                var curId = queue.Dequeue();
+                var curRoom = world.Rooms?.FirstOrDefault(r => r.RoomID == curId);
+                if (curRoom == null) continue;
+
+                // Check if this room is Indoor
+                if (curRoom.Flags != null && curRoom.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (DiagnosticsEnabled) Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] NpcID={npc.NpcID} BFS found Indoor room RoomID={curRoom.RoomID}");
+                    return curRoom.RoomID;
+                }
+
+                // Check if this room's area is Indoor climate
+                var curArea = world.Areas?.FirstOrDefault(a => a.AreaID == curRoom.AreaID);
+                if (curArea != null && string.Equals(curArea.Climate, "Indoor", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (DiagnosticsEnabled) Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] NpcID={npc.NpcID} BFS found Indoor-climate room RoomID={curRoom.RoomID}");
+                    return curRoom.RoomID;
+                }
+
+                // Enqueue neighbors
+                foreach (var exit in curRoom.Exits ?? Enumerable.Empty<Room.RoomExit>())
+                {
+                    if (exit == null) continue;
+                    if (!visited.Contains(exit.ToRoomID))
+                    {
+                        visited.Add(exit.ToRoomID);
+                        queue.Enqueue(exit.ToRoomID);
+                    }
+                }
+            }
+
+            if (DiagnosticsEnabled) Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] NpcID={npc.NpcID} no Indoor room found within {maxSteps} steps");
+            return null;
+        }
+
+        /// <summary>
+        /// Check if a target room is safe for an AvoidDaylight NPC during daylight.
+        /// </summary>
+        public static bool IsTargetRoomSafeFromDaylight(int targetRoomId, World.World world)
+        {
+            if (world == null) return true; // Assume safe if we can't check
+
+            var targetRoom = world.Rooms?.FirstOrDefault(r => r.RoomID == targetRoomId);
+            if (targetRoom == null) return true;
+
+            // Check room Indoor flag
+            if (targetRoom.Flags != null && targetRoom.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            // Check area Indoor climate
+            var targetArea = world.Areas?.FirstOrDefault(a => a.AreaID == targetRoom.AreaID);
+            if (targetArea != null && string.Equals(targetArea.Climate, "Indoor", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        // ===== END AvoidDaylight helpers =====
+
+
+
         // Public enum describing movement categories
         public enum TravelType
         {
@@ -69,6 +239,17 @@ namespace MudCore.AI
         {
             var dec = new NpcTravelDecision { Selected = TravelType.None, Weight = 0.0, TargetRoomId = 0, Reason = "none" };
             if (npc == null || world == null || gc == null) return dec;
+
+            // Skip movement decisions for NPCs being led or hitched
+            if (npc.IsBeingLed || npc.IsHitched)
+            {
+                dec.Selected = TravelType.None;
+                dec.Weight = 0.0;
+                dec.Reason = npc.IsBeingLed ? "being-led" : "hitched";
+                if (DiagnosticsEnabled)
+                    Console.WriteLine($"[NpcTravelScheduler] NpcID={npc.NpcID} skipped: {dec.Reason}");
+                return dec;
+            }
 
             try
             {
@@ -189,9 +370,43 @@ namespace MudCore.AI
                 }
                 catch { sleepWeight = 0.0; }
 
+                // ===== NEW: AvoidDaylight forced move =====
+                double avoidDaylightWeight = 0.0;
+                int avoidDaylightTarget = 0;
+
+                try
+                {
+                    if (HasAvoidDaylightFlag(npc) && IsDaylightPeriod(gc))
+                    {
+                        bool currentlyIndoor = IsInIndoorLocation(npc, world);
+                        if (!currentlyIndoor)
+                        {
+                            int? safeRoom = FindNearestIndoorRoom(npc, world);
+                            if (safeRoom.HasValue)
+                            {
+                                avoidDaylightWeight = 0.95; // Very high priority - flee from daylight
+                                avoidDaylightTarget = safeRoom.Value;
+                                forcedWeight = avoidDaylightWeight; // Use ForcedMove type
+                                if (DiagnosticsEnabled)
+                                    Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] NpcID={npc.NpcID} fleeing daylight to RoomID={safeRoom.Value}");
+                            }
+                            else
+                            {
+                                if (DiagnosticsEnabled)
+                                    Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] NpcID={npc.NpcID} exposed to daylight but no safe room found");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (DiagnosticsEnabled) Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] Error: {ex.Message}");
+                }
+                // ===== END AvoidDaylight forced move =====
+
                 var candidates = new List<(TravelType Type, double Weight, int Target, string Reason)>
                 {
-                    (TravelType.ForcedMove, forcedWeight, 0, "forced"),
+                    (TravelType.ForcedMove, forcedWeight, avoidDaylightTarget > 0 ? avoidDaylightTarget : 0, avoidDaylightTarget > 0 ? "avoid-daylight" : "forced"),
                     (TravelType.ScheduledMove, scheduledWeight, scheduledTarget, scheduledWeight>0 ? "scheduled-match" : "not-active"),
                     (TravelType.SleepTravel, sleepWeight, sleepTarget, sleepWeight>0 ? "sleep-period" : "not-active"),
                     (TravelType.Wander, wanderWeight, npc.CurrentRoomID, "wander")
@@ -222,6 +437,32 @@ namespace MudCore.AI
                 dec.Weight = chosen.Weight;
                 dec.TargetRoomId = chosen.Target;
                 dec.Reason = chosen.Reason;
+
+                // ===== NEW: Block AvoidDaylight NPC from moving INTO daylight areas =====
+                try
+                {
+                    if (HasAvoidDaylightFlag(npc) && IsDaylightPeriod(gc) && dec.TargetRoomId > 0)
+                    {
+                        // If currently indoor and target is NOT indoor, block the move
+                        bool currentlyIndoor = IsInIndoorLocation(npc, world);
+                        bool targetSafe = IsTargetRoomSafeFromDaylight(dec.TargetRoomId, world);
+
+                        if (currentlyIndoor && !targetSafe)
+                        {
+                            if (DiagnosticsEnabled)
+                                Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] NpcID={npc.NpcID} BLOCKED from leaving Indoor safety to RoomID={dec.TargetRoomId}");
+                            dec.Selected = TravelType.None;
+                            dec.Weight = 0.0;
+                            dec.TargetRoomId = 0;
+                            dec.Reason = "avoid-daylight-blocked";
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (DiagnosticsEnabled) Console.WriteLine($"[NpcTravelScheduler][AvoidDaylight] Block check error: {ex.Message}");
+                }
+                // ===== END Block AvoidDaylight =====
 
                 if (DiagnosticsEnabled)
                 {

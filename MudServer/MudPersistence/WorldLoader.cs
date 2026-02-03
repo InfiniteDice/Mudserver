@@ -26,6 +26,16 @@ namespace MudPersistence
             EnsureOpen(conn);
             World world = LoadWorld(conn);
 
+            // Initialize EventCollector early so EventStorage.db is attached and tables exist.
+            try
+            {
+                EventCollector.Initialize(conn);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WorldLoader] EventCollector.Initialize failed: {ex.Message}");
+            }
+
             // Initialize template manager and factory here
             try
             {

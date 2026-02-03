@@ -1,0 +1,83 @@
+{
+  "Id": "worker_barmaid",
+  "Name": "Barmaid",
+  "Alignment": "Neutral",
+  "Description": "A barmaid, she helps around the bar, picks up glasses, and other things.",
+  "IdleActions": [
+    "adjusts her skirt",
+    "spins around on one heel, what a sight!",
+    "checks you up and down",
+    "says: Just leave the glass, I'll get it later!",
+    "says with a wink: I wish I was in bed sleeping!",
+    "sweeps the floor",
+    "says: Ask the bartender for the menu!"
+  ],
+  "WanderChance": 0.005,
+  "WanderAreas": [],
+  "AiBehaviors": [
+    {
+      "Behavior": "ItemMover",
+      "TimePeriod": "Night",
+      "GiveLocation": "Room",
+      "Action": "Gather",
+      "MaxCarryKg": 50,
+      "TakeItems": [ "glass_pint" ],
+      "TakeItemCategories": [ "Container" ],
+      "TakeProducerReqItemsBool": false,
+      "TargetNpcIdContains": "None",
+      "TargetNpcIdKeepsNumber": 0,
+      "IfDropToRoomFlag": "None",
+      "IfDropToContainerTemplate": "None"
+    },
+    {
+      "Behavior": "ItemMover",
+      "TimePeriod": "Dawn",
+      "GiveLocation": "Room",
+      "Action": "Drop",
+      "MaxCarryKg": 50,
+      "TakeItems": [],
+      "TakeItemCategories": [ "Container" ],
+      "TakeProducerReqItemsBool": false,
+      "TargetNpcIdContains": "None",
+      "TargetNpcIdKeepsNumber": 0,
+      "IfDropToRoomFlag": "None",
+      "IfDropToContainerTemplate": "None"
+    }
+  ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 100,
+  "Health": 100,
+  "Flags": ["Carnivore"],
+  "Level": 2,
+  "Mass": 75.0,
+  "EffMass": 75.0,
+  "SizeEnum": 4,
+  "CombatSkill": 59.0,
+  "EffCombatSkill": 59.0,
+  "BaseDmgDice": 3.15,
+  "EffDmgDice": 3.15,
+  "BaseArmorClass": 22.0,
+  "EffArmorClass": 22.0,
+  "IsHumanoid": true,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.70,
+  "DropCountMin": 1,
+  "DropCountMax": 1,
+  "DropPool": [
+    {
+      "TemplateId": "coin_copper",
+      "Weight": 100,
+      "Chance": 0.40,
+      "Min": 1,
+      "Max": 6,
+      "Stackable": true,
+      "Notes": "coins"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 0,
+  "VisualTrait": "",
+  "VisualTraitType": "Generalhumanoid"
+}

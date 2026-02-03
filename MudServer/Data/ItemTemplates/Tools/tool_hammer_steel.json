@@ -1,0 +1,14 @@
+{
+  "Id": "tool_hammer_steel",
+  "Name": "Steel Hammer",
+  "ItemCategory": "Handheld",
+  "Weight": 2.4,
+  "Value": 20,
+  "ShortDesc": "A smiths hammer",
+  "LongDesc": "A steel hammer, you need to hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": [],
+  "Material": "Steel",
+  "DmgDiceMult": 4.0
+}

@@ -9,7 +9,7 @@
     "flaps it's wings and does a short hop",
     "looks at you with a sideward glance"
   ],
-  "WanderChance": 0.03,
+  "WanderChance": 0.02,
   "WanderAreas": [],
   "AiBehaviors": [
     {
@@ -20,7 +20,10 @@
       "CreatedPerChance": 1,
       "Max": 1,
       "ItemTemplate": "egg_chicken",
-      "RequiresItem": "None"
+      "RequiresItem": null,
+      "ConsumesReqs": false,
+      "RequiresTool": "None",
+      "RequiresRoomFlag": "None"
     }
   ],
   "AiTaskList": [],

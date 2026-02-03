@@ -29,6 +29,23 @@ namespace MudCore.Actions
             {
                 p.PendingMessageQueue.Add(MessageHandler.System(messageText));
             }
+
+            // Notify any barkeeps in the room for possible rumor collection (best-effort)
+            try
+            {
+                foreach (var npc in player.CurrentRoom.Npcs ?? new System.Collections.Generic.List<Npc>())
+                {
+                    try
+                    {
+                        if (MudCore.AI.BarTenderManager.TryGet(npc, out var bt))
+                        {
+                            try { bt.OnPlayerSpoke(player, text, player.CurrentRoom != null ? null : null, null); } catch { }
+                        }
+                    }
+                    catch { /* per-npc best-effort */ }
+                }
+            }
+            catch { /* overall best-effort */ }
         }
 
         public static void Yell(Player player, string text, World.World world)
@@ -65,6 +82,23 @@ namespace MudCore.Actions
                     p.PendingMessageQueue.Add(MessageHandler.System($"From {player.CurrentRoom.Name}: {messageText}"));
                 }
             }
+
+            // Notify any barkeeps in the room for possible rumor collection (best-effort)
+            try
+            {
+                foreach (var npc in player.CurrentRoom.Npcs ?? new System.Collections.Generic.List<Npc>())
+                {
+                    try
+                    {
+                        if (MudCore.AI.BarTenderManager.TryGet(npc, out var bt))
+                        {
+                            try { bt.OnPlayerSpoke(player, text, world, null); } catch { }
+                        }
+                    }
+                    catch { /* per-npc best-effort */ }
+                }
+            }
+            catch { /* overall best-effort */ }
         }
     }
 }

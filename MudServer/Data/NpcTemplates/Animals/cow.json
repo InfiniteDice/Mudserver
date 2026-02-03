@@ -20,7 +20,7 @@
       "CreatedPerChance": 2,
       "Max": 6,
       "ItemTemplate": "milk_raw",
-      "RequiresItem": "None",
+      "RequiresItem": null,
       "ConsumesReqs": false,
       "RequiresTool": "None",
       "RequiresRoomFlag": "None"
@@ -33,10 +33,24 @@
       "CreatedPerChance": 2,
       "Max": 6,
       "ItemTemplate": "milk_raw",
-      "RequiresItem": "None",
+      "RequiresItem": null,
       "ConsumesReqs": false,
       "RequiresTool": "None",
       "RequiresRoomFlag": "None"
+    },
+    {
+      "Behavior": "ItemMover",
+      "TimePeriod": "Afternoon",
+      "GiveLocation": "Container",
+      "Action": "Drop",
+      "MaxCarryKg": 50,
+      "TakeItems": ["milk_raw"],
+      "TakeItemCategories": [ "Food" ],
+      "TakeProducerReqItemsBool": false,
+      "TargetNpcIdContains": "None",
+      "TargetNpcIdKeepsNumber": 0,
+      "IfDropToRoomFlag": "None",
+      "IfDropToContainerTemplate": "pail"
     }
   ],
   "AiTaskList": [],

@@ -1,0 +1,15 @@
+{
+  "Id": "fang_snake_giant",
+  "Name": "Giant Snake Fang",
+  "ItemCategory": "Component",
+  "Weight": 0.6,
+  "Value": 40,
+  "ShortDesc": "A fang from a giant snake",
+  "LongDesc": "A giant snake fang, you can likely use this for something.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "true"
+}

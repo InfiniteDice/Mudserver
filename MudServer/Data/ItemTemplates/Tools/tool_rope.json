@@ -1,0 +1,14 @@
+{
+  "Id": "tool_rope",
+  "Name": "Rope",
+  "ItemCategory": "Handheld",
+  "Weight": 0.5,
+  "Value": 12,
+  "ShortDesc": "A rope",
+  "LongDesc": "A rope made of hemp, you need to hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": [],
+  "Material": "Hemp",
+  "DmgDiceMult": 0.0
+}

@@ -8,7 +8,7 @@
   "LongDesc": "This is a cup of milk, straight from the cow.",
   "WearLoc": "",
   "HandLoc": 0,
-  "Flags": [ "IsLiquid" ],
+  "Flags": [ "IsLiquid" , "Stackable" ],
   "Material": "Organic",
-  "Stackable": "false"
+  "Stackable": "true"
 }

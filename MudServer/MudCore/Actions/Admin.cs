@@ -272,6 +272,37 @@ namespace MudCore.Actions
         }
         // --------------------------------------------------------------------
 
+        /// <summary>
+        /// Block an IP address
+        /// </summary>
+        public Message? HandleBlockIP(Player player, string command)
+        {
+            if (!player.IsAdmin) return MessageHandler.System("Admin only.");
+
+            var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2) return MessageHandler.System("Usage: blockip <ip_address> [reason]");
+
+            var ip = parts[1].Split(' ')[0];
+            var reason = parts.Length > 1 ? string.Join(" ", parts[1].Split(' ').Skip(1)) : "Admin block";
+
+            MudNetworking.SecurityLogger.BlockIP(ip, reason);
+            return MessageHandler.System($"IP {ip} has been blocked.");
+        }
+
+        /// <summary>
+        /// Unblock an IP address
+        /// </summary>
+        public Message? HandleUnblockIP(Player player, string command)
+        {
+            if (!player.IsAdmin) return MessageHandler.System("Admin only.");
+
+            var parts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2) return MessageHandler.System("Usage: unblockip <ip_address>");
+
+            var ip = parts[1].Trim();
+            MudNetworking.SecurityLogger.UnblockIP(ip);
+            return MessageHandler.System($"IP {ip} has been unblocked.");
+        }
 
         public Message? HandleCreateArea(Player player, string command)
         {
@@ -354,46 +385,29 @@ namespace MudCore.Actions
         // Allows editing: 1) Name, 2) IsPvPAllowed, 3) Climate, 4) Owner
         public Message? HandleEditArea(Player player, string command)
         {
-            if (player == null) return MessageHandler.System("Invalid player.");
-            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (player.CurrentRoom == null)
+                return MessageHandler.System("You are not in a room.");
 
-            // Parse optional areaid from command
-            var payload = (command ?? "").Trim();
-            if (payload.StartsWith("editarea", StringComparison.OrdinalIgnoreCase))
-                payload = payload.Substring("editarea".Length).Trim();
+            var area = _world.Areas?.FirstOrDefault(a => a?.AreaID == player.CurrentRoom.AreaID);
+            if (area == null)
+                return MessageHandler.System("Area not found.");
 
-            Area? targetArea = null;
-
-            if (!string.IsNullOrWhiteSpace(payload) && int.TryParse(payload, out int areaId))
-            {
-                targetArea = _world.Areas.FirstOrDefault(a => a.AreaID == areaId);
-                if (targetArea == null)
-                    return MessageHandler.System($"Area with ID {areaId} not found.");
-            }
-            else
-            {
-                // Use area of player's current room
-                var room = player.CurrentRoom;
-                if (room == null)
-                    return MessageHandler.System("You are not in a valid room.");
-
-                targetArea = _world.Areas.FirstOrDefault(a => a.AreaID == room.AreaID);
-                if (targetArea == null)
-                    return MessageHandler.System($"Current room's area (AreaID={room.AreaID}) not found.");
-            }
-
-            // Set up pending action for edit flow
             player.PendingAction = new PendingAction
             {
                 Command = "EditArea",
-                Step = "SelectField",
-                Data = new Dictionary<string, object> { { "AreaId", targetArea.AreaID } }
+                Step = "SelectField"
             };
 
-            var summary = $"Editing Area: ID={targetArea.AreaID}, Name='{targetArea.Name}', IsPvPAllowed={targetArea.IsPvPAllowed}, Climate='{targetArea.Climate}', Owner='{targetArea.Owner}'";
-            var menu = summary + "\n\nChoose a field to edit:\n1) Name\n2) IsPvPAllowed\n3) Climate\n4) Owner\nType the option number or name, or 'EndEdit' to finish.";
-
-            return MessageHandler.System(menu);
+            return MessageHandler.System(
+                $"Editing area: {area.Name}\n" +
+                "Choose a field to edit:\n" +
+                "1) Name\n" +
+                "2) IsPvPAllowed\n" +
+                "3) Climate\n" +
+                "4) Owner\n" +
+                "5) MaxNpcs\n" +
+                "Type the option name/number, or type EndEdit to finish."
+            );
         }
 
         public Message? HandleEditExit(Player player, string command)
@@ -528,31 +542,31 @@ namespace MudCore.Actions
                     Console.WriteLine($"[WORLD][TRACE] NPC already in world list: NpcID={newNpc.NpcID}");
                 }
 
-                // If template specifies equipment, instantiate items and assign to NPC
-                try
-                {
-                    var equipTemplates = newNpc.Template?.EquipmentTemplateIds;
-                    if (equipTemplates != null && equipTemplates.Count > 0 && _world.ItemFactory != null)
-                    {
-                        foreach (var equipTemplateId in equipTemplates)
-                        {
-                            try
-                            {
-                                var item = _world.ItemFactory.CreateItem(equipTemplateId, "NPC", newNpc.NpcID, newNpc.CurrentRoom?.RoomID ?? 0);
-                                MudPersistence.ItemPersistence.SaveItem(_db, item);
-                                newNpc.Inventory.Add(item);
-                            }
-                            catch (Exception iex)
-                            {
-                                Console.WriteLine($"[NPC] Failed to create/equip item '{equipTemplateId}' for NPC {newNpc.Name}: {iex.Message}");
-                            }
-                        }
-                    }
-                }
-                catch (Exception exEquip)
-                {
-                    Console.WriteLine($"[NPC] Equipment assignment error for NPC {newNpc.Name}: {exEquip.Message}");
-                }
+                //// If template specifies equipment, instantiate items and assign to NPC  //No longer instatiating items automatically - use drops instead.
+                //try
+                //{
+                //    var equipTemplates = newNpc.Template?.EquipmentTemplateIds;
+                //    if (equipTemplates != null && equipTemplates.Count > 0 && _world.ItemFactory != null)
+                //    {
+                //        foreach (var equipTemplateId in equipTemplates)
+                //        {
+                //            try
+                //            {
+                //                var item = _world.ItemFactory.CreateItem(equipTemplateId, "NPC", newNpc.NpcID, newNpc.CurrentRoom?.RoomID ?? 0);
+                //                MudPersistence.ItemPersistence.SaveItem(_db, item);
+                //                newNpc.Inventory.Add(item);
+                //            }
+                //            catch (Exception iex)
+                //            {
+                //                Console.WriteLine($"[NPC] Failed to create/equip item '{equipTemplateId}' for NPC {newNpc.Name}: {iex.Message}");
+                //            }
+                //        }
+                //    }
+                //}
+                //catch (Exception exEquip)
+                //{
+                //    Console.WriteLine($"[NPC] Equipment assignment error for NPC {newNpc.Name}: {exEquip.Message}");
+                //}
 
                 // Broadcast updated room so clients immediately see the NPC
                 foreach (var p in room.Players)
@@ -899,6 +913,8 @@ namespace MudCore.Actions
 
         public Message? ListItems(Player player)
         {
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are not in a valid room.");
 
@@ -907,6 +923,36 @@ namespace MudCore.Actions
 
             var lines = room.Inventory.Select((it, idx) => $"{idx + 1}) {it.Name} (Template: {it.TemplateID})");
             return MessageHandler.System("Items in room:\n" + string.Join("\n", lines));
+        }
+
+        // NEW: List items owned by an NPC
+        public Message? ListItemsForNpc(Player player, string npcIdExpr)
+        {
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            if (!int.TryParse(npcIdExpr.Trim(), out int npcId) || npcId <= 0)
+                return MessageHandler.System("Usage: listitems <npcid> — npcid must be a positive integer");
+
+            var npc = _world.Npcs?.FirstOrDefault(n => n != null && n.NpcID == npcId);
+            if (npc == null)
+                return MessageHandler.System($"NPC with NpcID {npcId} not found.");
+
+            if (npc.Inventory == null || npc.Inventory.Count == 0)
+                return MessageHandler.System($"NPC '{npc.Name}' (NpcID={npcId}) has no items.");
+
+            var lines = new List<string> { $"=== Items owned by '{npc.Name}' (NpcID={npcId}) ===" };
+
+            foreach (var item in npc.Inventory.OrderBy(i => i.Name))
+            {
+                int qty = Math.Max(1, item.Quantity);
+                string display = qty > 1 ? $"{item.Name} x{qty}" : item.Name;
+                lines.Add($"  {display} (Template: {item.TemplateID})");
+            }
+
+            lines.Add($"Total: {npc.Inventory.Count} item type(s)");
+            lines.Add("================================================");
+
+            return MessageHandler.System(string.Join("\n", lines));
         }
 
         public Message? DebugItems(Player player)
@@ -1012,16 +1058,20 @@ namespace MudCore.Actions
             "npccounts - Show NPC counts",
             "debugrooms - List all rooms",
             "debugitems - Print all items",
+            "debugareas - List all areas",
+            "debugnpcs - List NPCs in area",
             "kill <npc> - Remove NPCs",
             "createnpc - Spawn an NPC",
             "editnpc - Edit an NPC",
             "createarea - Create new area",
             "createroom - Create new room",
+            "editarea - Edit current area",
             "editroom - Edit current room",
             "editexit - Edit exit properties",
             "additem - Add item to room",
             "removeitem - Remove item",
             "listitems - List items in room",
+            "listitems [npcid] - List Npc items",
             "anchor - Prevents item pickup",
             "teleport - Move to room",
             "togglevis - Toggle invisibility",
@@ -2335,20 +2385,7 @@ namespace MudCore.Actions
                 }
 
                 // Resolve area from pa.Data
-                Area? ResolveAreaFromPa()
-                {
-                    try
-                    {
-                        if (pa.Data is Dictionary<string, object> dict && dict.TryGetValue("AreaId", out var aidObj) && int.TryParse(aidObj.ToString(), out var aid))
-                        {
-                            return _world.Areas.FirstOrDefault(a => a != null && a.AreaID == aid);
-                        }
-                    }
-                    catch { }
-                    return null;
-                }
-
-                var area = ResolveAreaFromPa();
+                var area = _world.Areas?.FirstOrDefault(a => a?.AreaID == player.CurrentRoom?.AreaID);
                 if (area == null)
                 {
                     player.PendingAction = null!;
@@ -2378,8 +2415,13 @@ namespace MudCore.Actions
                         pa.Step = "EditOwner";
                         return MessageHandler.System($"Current Owner is '{area.Owner}'. Enter new owner (or 'EndEdit'):");
                     }
+                    if (choice.Equals("5") || choice.Equals("MaxNpcs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pa.Step = "EditMaxNpcs";
+                        return MessageHandler.System($"Current MaxNpcs is '{area.MaxNpcs}'. Enter new max NPCs (or 'EndEdit'):");
+                    }
 
-                    return MessageHandler.System("Invalid option. Choose 1..4 or type the field name, or 'EndEdit'.");
+                    return MessageHandler.System("Invalid option. Choose 1..5 or type the field name, or 'EndEdit'.");
                 }
 
                 if (pa.Step == "EditName")
@@ -2506,6 +2548,36 @@ namespace MudCore.Actions
 
                     player.PendingAction = null!;
                     return MessageHandler.System($"Owner updated to '{area.Owner}'.");
+                }
+
+                if (pa.Step == "EditMaxNpcs")
+                {
+                    if (!int.TryParse((input ?? "").Trim(), out int newMax) || newMax < 1)
+                        return MessageHandler.System("MaxNpcs must be an integer >= 1.");
+
+                    area.MaxNpcs = newMax;
+                    try
+                    {
+                        DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                        {
+                            using var cmd = wConn.CreateCommand();
+                            cmd.Transaction = wTx;
+                            cmd.CommandText = "UPDATE Area SET MaxNpcs = @max WHERE AreaID = @aid;";
+                            cmd.Parameters.AddWithValue("@max", newMax);
+                            cmd.Parameters.AddWithValue("@aid", area.AreaID);
+                            cmd.ExecuteNonQuery();
+                            return (object?)null;
+                        }, timeout: TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADMIN][EditArea] Failed to persist MaxNpcs for AreaID={area.AreaID}: {ex.Message}");
+                        player.PendingAction = null!;
+                        return MessageHandler.System("Failed to save MaxNpcs due to a server error.");
+                    }
+
+                    player.PendingAction = null!;
+                    return MessageHandler.System($"MaxNpcs updated to {area.MaxNpcs}.");
                 }
 
                 return null;
@@ -4157,6 +4229,107 @@ namespace MudCore.Actions
             return MessageHandler.System(string.Join("\n", lines));
         }
 
+        /// <summary>
+        /// Admin command: debugareas
+        /// Lists all areas with their ID, name, climate, and PvP status.
+        /// </summary>
+        public Message? HandleDebugAreas(Player player)
+        {
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null) return MessageHandler.System("World unavailable.");
+
+            var areas = _world.Areas ?? Enumerable.Empty<Area>();
+
+            if (areas.Count() == 0)
+                return MessageHandler.System("No areas found.");
+
+            var lines = new List<string> { "=== Areas ===" };
+
+            foreach (var area in areas.OrderBy(a => a.AreaID))
+            {
+                string pvpStatus = area.IsPvPAllowed ? "PvP" : "NoPvP";
+                string climate = string.IsNullOrWhiteSpace(area.Climate) ? "(none)" : area.Climate;
+                lines.Add($"[{area.AreaID}] {area.Name} | Climate: {climate} | {pvpStatus}");
+            }
+
+            lines.Add("===============");
+            return MessageHandler.System(string.Join("\n", lines));
+        }
+
+        /// <summary>
+        /// Admin command: debugnpcs [areaid]
+        /// Lists all NPCs in the specified area (or current area if not specified).
+        /// Shows NpcID, Name, Template, Current Room, and RoomID.
+        /// </summary>
+        public Message? HandleDebugNpcs(Player player, string payload)
+        {
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+            if (_world == null) return MessageHandler.System("World unavailable.");
+
+            int? targetAreaId = null;
+
+            // Parse optional areaid argument
+            if (!string.IsNullOrWhiteSpace(payload))
+            {
+                if (int.TryParse(payload.Trim(), out int areaId))
+                {
+                    targetAreaId = areaId;
+                }
+                else
+                {
+                    return MessageHandler.System("Usage: debugnpcs [areaid] — areaid must be an integer");
+                }
+            }
+            else
+            {
+                // No argument provided; use current area
+                if (player.CurrentRoom != null)
+                {
+                    targetAreaId = player.CurrentRoom.AreaID;
+                }
+                else
+                {
+                    return MessageHandler.System("You are not in a valid room.");
+                }
+            }
+
+            // Filter NPCs by area
+            var npcs = (_world.Npcs ?? Enumerable.Empty<Npc>())
+                .Where(n => n != null &&
+                           (n.CurrentAreaID == targetAreaId ||
+                            (n.CurrentRoom != null && n.CurrentRoom.AreaID == targetAreaId)))
+                .OrderBy(n => n.NpcID)
+                .ToList();
+
+            if (npcs.Count == 0)
+            {
+                return MessageHandler.System($"No NPCs found in area {targetAreaId}.");
+            }
+
+            var lines = new List<string> { $"=== NPCs in Area {targetAreaId} ===" };
+
+            foreach (var npc in npcs)
+            {
+                string roomName = npc.CurrentRoom?.Name ?? "unknown";
+                string template = npc.TemplateID ?? npc.Template?.Id ?? "unknown";
+                lines.Add($"[{npc.NpcID}] {npc.Name,-20} | Template: {template,-30} | Room: {roomName,-40} (RoomID: {npc.CurrentRoomID})");
+            }
+
+            lines.Add("====================================");
+            lines.Add($"Total: {npcs.Count} NPC(s)");
+
+            // Limit output length to avoid excessive payload
+            const int maxLines = 500;
+            if (lines.Count > maxLines)
+            {
+                var head = lines.Take(maxLines).ToList();
+                head.Add($"... {lines.Count - maxLines} more lines (output limited).");
+                return MessageHandler.System(string.Join("\n", head));
+            }
+
+            return MessageHandler.System(string.Join("\n", lines));
+        }
+
         private static string OppositeDirection(string dir) => dir.ToUpper() switch
         {
             "N" => "S",
@@ -4192,5 +4365,6 @@ namespace MudCore.Actions
             catch { /* best-effort */ }
         }
     }
+    
 }
 

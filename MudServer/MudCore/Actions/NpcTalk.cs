@@ -401,7 +401,89 @@ namespace MudCore.Actions
             }
             sb.AppendLine();
 
-            // Familiar NPCs (only talk-capable)
+            // Overheard rumors (gossip collected by barkeeps and info collectors)
+            sb.AppendLine("Overheard gossip:");
+            try
+            {
+                var rumors = new List<string>();
+                var areaIds = new List<int>();
+                if (npc.WanderAreas != null) areaIds.AddRange(npc.WanderAreas);
+                if (npc.CurrentRoom != null && !areaIds.Contains(npc.CurrentRoom.AreaID)) areaIds.Add(npc.CurrentRoom.AreaID);
+
+                string eventDbPath = System.IO.Path.Combine(AppContext.BaseDirectory, "EventStorage.db");
+                if (mainConn != null)
+                {
+                    try
+                    {
+                        using var q = mainConn.CreateCommand();
+                        q.CommandText = "PRAGMA database_list;";
+                        using var rdr = q.ExecuteReader();
+                        string mainFile = "";
+                        while (rdr.Read())
+                        {
+                            var name = rdr.IsDBNull(1) ? null : rdr.GetString(1);
+                            var file = rdr.IsDBNull(2) ? null : rdr.GetString(2);
+                            if (string.Equals(name, "main", StringComparison.OrdinalIgnoreCase))
+                            {
+                                mainFile = file ?? "";
+                                break;
+                            }
+                        }
+                        rdr.Close();
+                        if (!string.IsNullOrWhiteSpace(mainFile))
+                        {
+                            var mainDir = System.IO.Path.GetDirectoryName(mainFile) ?? AppContext.BaseDirectory;
+                            var candidate = System.IO.Path.Combine(mainDir, "EventStorage.db");
+                            if (System.IO.File.Exists(candidate)) eventDbPath = candidate;
+                        }
+                    }
+                    catch { /* best-effort */ }
+                }
+
+                if (areaIds.Count > 0 && System.IO.File.Exists(eventDbPath))
+                {
+                    var csb = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder { DataSource = eventDbPath, Mode = SqliteOpenMode.ReadOnly, Cache = SqliteCacheMode.Shared };
+                    using var evConn = new Microsoft.Data.Sqlite.SqliteConnection(csb.ToString());
+                    evConn.Open();
+
+                    var whereParts = new List<string>();
+                    var cmd = evConn.CreateCommand();
+                    for (int i = 0; i < areaIds.Count; i++)
+                    {
+                        var pname = $"@a{i}";
+                        whereParts.Add($"AreaID = {pname}");
+                        cmd.Parameters.AddWithValue(pname, areaIds[i]);
+                    }
+
+                    cmd.CommandText = $"SELECT RumorText, CreatedUtc, IsFake FROM Rumors WHERE ({string.Join(" OR ", whereParts)}) AND CreatedUtc > datetime('now', '-24 hours') ORDER BY CreatedUtc DESC LIMIT 5;";
+                    using var r = cmd.ExecuteReader();
+                    int added = 0;
+                    while (r.Read() && added < 5)
+                    {
+                        try
+                        {
+                            var rumorText = r.IsDBNull(0) ? "(something)" : r.GetString(0);
+                            var isFake = r.IsDBNull(2) ? 0 : r.GetInt32(2);
+
+                            // Mark fake rumors so NPC can be skeptical
+                            var prefix = isFake == 1 ? "[questionable] " : "";
+                            rumors.Add(prefix + rumorText);
+                            added++;
+                        }
+                        catch { /* per-row ignore */ }
+                    }
+                }
+
+                if (rumors.Count == 0) sb.AppendLine(" - (none recently)");
+                else foreach (var r in rumors) sb.AppendLine(" - " + r);
+            }
+            catch
+            {
+                sb.AppendLine(" - (failed to gather rumors)");
+            }
+            sb.AppendLine();
+
+            // Familiar NPCs (only talk-capable):
             sb.AppendLine("Familiar NPCs (talk-capable):");
             try
             {

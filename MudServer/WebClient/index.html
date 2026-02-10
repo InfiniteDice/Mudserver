@@ -108,9 +108,52 @@
     </div>
 
     <script>
-        const host = location.hostname || 'localhost';
-        const port = 9250;
-        const ws = new WebSocket(`ws://${host}:${port}`);
+        //const host = location.hostname || 'localhost';
+        //const port = 9250;
+        //const ws = new WebSocket(`ws://${host}:${port}`);
+        //const ws = new WebSocket("wss://mythmud.com"); //this is old way
+
+        // NEW: Session token reconnection support
+        let ws;
+        function initWebSocket() {
+            ws = new WebSocket("wss://mythmud.com");
+
+            // NEW: On successful connection, check if we have a stored session token
+            ws.addEventListener('open', () => {
+                addLog('Connected to server', 'system');
+
+                // Check for stored session token
+                const storedToken = sessionStorage.getItem('sessionToken');
+                const storedName = sessionStorage.getItem('playerName');
+
+                if (storedToken && storedName) {
+                    console.log('[SESSION] Attempting auto-reconnect with stored token');
+                    ws.send(JSON.stringify({
+                        type: 'reconnect',
+                        sessionToken: storedToken,
+                        playerName: storedName
+                    }));
+                }
+            });
+
+            ws.addEventListener('close', () => {
+                addLog('Disconnected from server', 'system');
+                // Don't clear session token - allow reconnect on refresh
+            });
+
+            ws.addEventListener('error', e => {
+                addLog('WebSocket error', 'error');
+            });
+
+            // Rest of message handler...
+            ws.addEventListener('message', evt => {
+                console.log('[WS rx]', evt.data);
+                // ... existing message handler code continues here
+            });
+        }
+
+        // Initialize WebSocket
+        initWebSocket();
 
         const playerNameEl = document.getElementById('playerName');
         const hpEl = document.getElementById('hp');
@@ -403,6 +446,13 @@
                         document.title = siteTitleEl.textContent;
                     }
 
+                    // NEW: Store session token if server sent it
+                    if (msg.sessionToken) {
+                        sessionStorage.setItem('sessionToken', msg.sessionToken);
+                        sessionStorage.setItem('playerName', msg.name || '');
+                        console.log('[SESSION] Token stored:', msg.sessionToken.substring(0, 8) + '...');
+                    }
+
                     return;
                 }
 
@@ -429,10 +479,13 @@
             });
         });
 
-        function sendCommand(text) {
+        function sendCommand(text, isSensitive = false) {
             const payload = JSON.stringify({ type: 'command', text });
             ws.send(payload);
-            addLog('> ' + text, 'you');
+            // NEW: Don't echo sensitive inputs (passwords) to the log
+            if (!isSensitive) {
+                addLog('> ' + text, 'you');
+            }
         }
 
         const history = [];
@@ -470,7 +523,12 @@
             const text = cmdInput.value.trim();
             if (!text) return;
             recordCommand(text);
-            sendCommand(text);
+
+            // NEW: Check if the last system message was a password prompt
+            const lastLogLine = logEl.lastElementChild?.textContent || '';
+            const isPasswordPrompt = lastLogLine.includes('password') || lastLogLine.includes('Password');
+
+            sendCommand(text, isPasswordPrompt);
             cmdInput.value = '';
         });
 

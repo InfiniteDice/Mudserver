@@ -41,8 +41,27 @@ namespace MudServer
 
         public Message? ProcessCommand(Player player, string rawCommand)
         {
+            // NEW: Never process auth pending actions as commands
+            if (player.PendingAction != null && player.PendingAction.Command == "Auth")
+            {
+                var authMsg = _auth.HandleAuthPending(player, rawCommand);
+                if (authMsg != null) player.PendingMessageQueue.Add(authMsg);
+                // Important: return null so password is NOT treated as an unknown command
+                return null;
+            }
+
             var pendingMsg = CheckPendingAction(player, rawCommand);
             if (pendingMsg != null) return pendingMsg;
+
+            // NEW: Refresh session token on each command (extends timeout)
+            if (player.IsAuthenticated && !string.IsNullOrWhiteSpace(player.SessionToken))
+            {
+                try
+                {
+                    MudNetworking.SessionManager.Instance.RefreshSession(player.SessionToken, 30);
+                }
+                catch { /* best-effort */ }
+            }
 
             string command = ExtractCommandText(rawCommand).Trim();
 
@@ -1575,6 +1594,21 @@ namespace MudServer
                 return _adminService.HandleToggleVisible(player);
             }
 
+            // NEW: debugareas command
+            if (command.StartsWith("debugareas", StringComparison.OrdinalIgnoreCase))
+            {
+                return _adminService.HandleDebugAreas(player);
+            }
+
+            // NEW: debugnpcs command
+            if (command.StartsWith("debugnpcs", StringComparison.OrdinalIgnoreCase))
+            {
+                var payload = command.Trim();
+                if (payload.StartsWith("debugnpcs", StringComparison.OrdinalIgnoreCase))
+                    payload = payload.Substring("debugnpcs".Length).Trim();
+                return _adminService.HandleDebugNpcs(player, payload);
+            }
+
             // Admin teleport command - handles admin or admin forced player teleports
             if (normalized == "teleport" || command.StartsWith("teleport ", StringComparison.OrdinalIgnoreCase))
             {
@@ -1600,8 +1634,17 @@ namespace MudServer
                 return _adminService.RemoveItem(player, item);
             }
 
-            if (command.Equals("listitems", StringComparison.OrdinalIgnoreCase))
+            if (command.StartsWith("listitems", StringComparison.OrdinalIgnoreCase))
             {
+                var payload = command.Trim();
+                if (payload.StartsWith("listitems", StringComparison.OrdinalIgnoreCase))
+                    payload = payload.Substring("listitems".Length).Trim();
+
+                // If payload provided, treat as NpcID
+                if (!string.IsNullOrWhiteSpace(payload))
+                    return _adminService.ListItemsForNpc(player, payload);
+
+                // No payload: list room items
                 return _adminService.ListItems(player);
             }
 
@@ -2071,6 +2114,16 @@ namespace MudServer
                 case "debugitems":
                     {
                         return _adminService.DebugItems(player);
+                    }
+
+                case "blockip":
+                    {
+                        return _adminService.HandleBlockIP(player, command);
+                    }
+
+                case "unblockip":
+                    {
+                        return _adminService.HandleUnblockIP(player, command);
                     }
 
                 case string s when s.StartsWith("editarea", StringComparison.OrdinalIgnoreCase):

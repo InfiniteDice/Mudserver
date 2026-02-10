@@ -27,7 +27,7 @@
     },
     {
       "Behavior": "ItemCreator",
-      "TimePeriod": "Afternoon",
+      "TimePeriod": "Dusk",
       "Chance": 1.0,
       "Location": "Npc",
       "CreatedPerChance": 4,

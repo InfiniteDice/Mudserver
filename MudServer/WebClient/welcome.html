@@ -137,6 +137,7 @@
     </style>
 </head>
 <body>
+    
     <div class="card">
         <h1><b>Welcome to Mythica</b></h1>
         <p class="muted">A small test welcome page and command reference.</p>
@@ -304,12 +305,13 @@
 
         <div id="statusLog" class="log" aria-live="polite"></div>
     </div>
-
+    <script src='webaudio-tinysynth.min.js'></script>
     <script>
         (function () {
             // Use same-origin relative path so the page always queries the server that served it.
-            const statusPath = '/status';
-            document.getElementById('statusHost').textContent = location.origin + statusPath;
+            const statusPath = 'https://mythmud.com/status';
+	    const playPath = 'https://mythmud.com';
+	    document.getElementById('statusHost').textContent = statusPath;
 
             const serverBadge = document.getElementById('serverBadge');
             const totalPlayersEl = document.getElementById('totalPlayers');
@@ -318,7 +320,41 @@
             const statusLog = document.getElementById('statusLog');
             const checkNowBtn = document.getElementById('checkNow');
             const playBtn = document.getElementById('playBtn');
+            synth = new WebAudioTinySynth();
+            console.log('Synth object properties:', Object.keys(synth));
+            console.log('Synth object:', synth);
 
+            async function loadAndPlayMidi(filename) {
+                try {
+                    logStatus(`Loading MIDI: ${filename}`);
+
+                    const response = await fetch(filename);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status} - File not found`);
+                    }
+
+                    const arrayBuffer = await response.arrayBuffer();
+                    const midiData = new Uint8Array(arrayBuffer);
+
+                    logStatus(`MIDI loaded (${midiData.length} bytes), starting playback...`);
+
+                    synth.loadMIDI(midiData);
+
+                    // WebAudioTinySynth might auto-play, or you might need to call playMIDI()
+                    if (typeof synth.playMIDI === 'function') {
+                        synth.playMIDI();
+                        logStatus('Playback started');
+                    } else {
+                        logStatus('MIDI loaded (auto-playing)');
+                    }
+
+                } catch (err) {
+                    console.error('MIDI Error:', err);
+                    logStatus('ERROR: ' + err.message);
+                }
+            }
+
+            
             function logStatus(s) {
                 const d = document.createElement('div');
                 d.textContent = `${new Date().toISOString()} — ${s}`;
@@ -335,7 +371,7 @@
                     totalPlayersEl.textContent = '—';
                     playersOnlineEl.textContent = '—';
 
-                    const resp = await fetch(statusPath, { signal: controller.signal, cache: 'no-store' });
+                    const resp = await fetch(statusPath, { signal: controller.signal, cache: 'no-store', mode: 'cors' });
                     clearTimeout(id);
 
                     if (!resp.ok) {
@@ -387,20 +423,27 @@
                 serverBadge.textContent = 'Server: checking...';
             }
 
-            checkNowBtn.addEventListener('click', () => {
+            checkNowBtn.addEventListener('click', async () => {
                 logStatus('Manual check triggered.');
+
+                // Fire both at the same time without waiting
+                loadAndPlayMidi("u3shop.MID").catch(err => {
+                    logStatus('MIDI load failed: ' + err.message);
+                });
+
                 fetchStatus();
             });
 
             // Navigate to the application root (index.html) when Play is clicked
             playBtn.addEventListener('click', () => {
                 // Use location.origin so the scheme/host/port remain correct
-                window.location.href = location.origin + '/';
+                window.location.href = playPath;
             });
 
             // initial probe shortly after page load
             setTimeout(() => fetchStatus(), 250);
         })();
     </script>
+
 </body>
 </html>

@@ -552,7 +552,7 @@ namespace MudPersistence
             EnsureOpen(conn);
             var areas = new List<Area>();
             var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT AreaID, Name, Description, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner, Climate FROM Area WHERE WorldID = @wid";
+            cmd.CommandText = "SELECT AreaID, Name, Description, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner, Climate, MaxNpcs FROM Area WHERE WorldID = @wid";
             cmd.Parameters.AddWithValue("@wid", worldID);
 
             using var reader = cmd.ExecuteReader();
@@ -579,6 +579,8 @@ namespace MudPersistence
                 {
                     area.Climate = "Temperate";
                 }
+
+                area.MaxNpcs = reader.IsDBNull(9) ? 50 : reader.GetInt32(9);  // Column index 9 for MaxNpcs
 
                 areas.Add(area);
             }

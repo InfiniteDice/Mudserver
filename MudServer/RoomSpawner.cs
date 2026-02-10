@@ -256,6 +256,34 @@ namespace MudServer
                             continue;
                         }
 
+                        // NEW: Check area-level MaxNpcs limit before spawning
+                        var area = world.Areas?.FirstOrDefault(a => a?.AreaID == room.AreaID);
+                        if (area != null && area.MaxNpcs > 0)
+                        {
+                            int areaCurrentCount = 0;
+                            try
+                            {
+                                using var areaCountCmd = conn.CreateCommand();
+                                areaCountCmd.CommandText = "SELECT COUNT(*) FROM Npc WHERE CurrentAreaID = @areaId";
+                                areaCountCmd.Parameters.AddWithValue("@areaId", room.AreaID);
+                                var result = areaCountCmd.ExecuteScalar();
+                                areaCurrentCount = result != null ? Convert.ToInt32(result) : 0;
+                            }
+                            catch (Exception exAreaCount)
+                            {
+                                Console.WriteLine($"[Spawner][ERROR] Failed to count NPCs in area {room.AreaID}: {exAreaCount.Message}");
+                                continue;
+                            }
+
+                            if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Area {room.AreaID} NPC count: {areaCurrentCount}/{area.MaxNpcs}");
+
+                            if (areaCurrentCount >= area.MaxNpcs)
+                            {
+                                if (useVerboseLogging) Console.WriteLine($"[Spawner][TRACE] Area {room.AreaID} reached MaxNpcs limit ({areaCurrentCount}/{area.MaxNpcs}); skipping spawn.");
+                                continue;
+                            }
+                        }
+
                         // CRITICAL FIX: Check SpawnMaxRoom BEFORE spawning NPC
                         int maxAllowed = Math.Max(1, room.SpawnMaxRoom);
                         int currentCount = 0;
@@ -367,39 +395,39 @@ namespace MudServer
                         }
                         catch { /* best-effort */ }
 
-                        // Equip from template and persist to NPC ownership
-                        try
-                        {
-                            var equipTemplates = npc.Template?.EquipmentTemplateIds;
-                            if (equipTemplates != null && equipTemplates.Count > 0 && world.ItemFactory != null)
-                            {
-                                foreach (var equipTemplateId in equipTemplates)
-                                {
-                                    try
-                                    {
-                                        var item = world.ItemFactory.CreateItem(equipTemplateId, "NPC", npc.NpcID, room.RoomID);
-                                        item.OwnerType = "NPC";
-                                        item.OwnerID = npc.NpcID;
-                                        item.RoomID = room.RoomID;
-                                        item.OwnerAreaID = 0;
+                        //// Equip from template and persist to NPC ownership  // OLD SPAWN WITH ITEMS
+                        //try
+                        //{
+                        //    var equipTemplates = npc.Template?.EquipmentTemplateIds;
+                        //    if (equipTemplates != null && equipTemplates.Count > 0 && world.ItemFactory != null)
+                        //    {
+                        //        foreach (var equipTemplateId in equipTemplates)
+                        //        {
+                        //            try
+                        //            {
+                        //                var item = world.ItemFactory.CreateItem(equipTemplateId, "NPC", npc.NpcID, room.RoomID);
+                        //                item.OwnerType = "NPC";
+                        //                item.OwnerID = npc.NpcID;
+                        //                item.RoomID = room.RoomID;
+                        //                item.OwnerAreaID = 0;
 
-                                        // Ensure descriptor assigned for spawned/equipped items
-                                        try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
+                        //                // Ensure descriptor assigned for spawned/equipped items
+                        //                try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
 
-                                        ItemPersistence.SaveItem(conn, item);
-                                        npc.Inventory.Add(item);
-                                    }
-                                    catch (Exception iex)
-                                    {
-                                        Console.WriteLine($"[Spawner][NPC] Failed to create/equip item '{equipTemplateId}' for NPC {npc.Name}: {iex.Message}");
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception exEquip)
-                        {
-                            Console.WriteLine($"[Spawner][NPC] Equipment assignment error for NPC {npc.Name}: {exEquip.Message}");
-                        }
+                        //                ItemPersistence.SaveItem(conn, item);
+                        //                npc.Inventory.Add(item);
+                        //            }
+                        //            catch (Exception iex)
+                        //            {
+                        //                Console.WriteLine($"[Spawner][NPC] Failed to create/equip item '{equipTemplateId}' for NPC {npc.Name}: {iex.Message}");
+                        //            }
+                        //        }
+                        //    }
+                        //}
+                        //catch (Exception exEquip)
+                        //{
+                        //    Console.WriteLine($"[Spawner][NPC] Equipment assignment error for NPC {npc.Name}: {exEquip.Message}");
+                        //}
 
                         if (!world.Npcs.Any(n => n.NpcID == npc.NpcID))
                         {

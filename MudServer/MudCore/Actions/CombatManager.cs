@@ -291,7 +291,7 @@ namespace MudCore.Actions
                         }
 
                         // Refresh effective stats each tick
-                        RefreshEffectiveStats(state);
+                        RefreshEffectiveStats(state, world);
 
                         // CHANGED: sum as double, then cast to int where needed
                         double skillASum = state.TeamA.Members.Where(m => m.Alive).Sum(m => m.EffCombatSkill);
@@ -524,6 +524,20 @@ namespace MudCore.Actions
                         }
                         catch { /* best-effort only */ }
                     }
+
+                    // After the attack is calculated and processed:
+                    try
+                    {
+                        if (attacker.IsPlayer && attacker.AsPlayer != null)
+                        {
+                            MudNetworking.SessionManager.Instance.RefreshSession(attacker.AsPlayer.SessionToken);
+                        }
+                        if (defender.IsPlayer && defender.AsPlayer != null)
+                        {
+                            MudNetworking.SessionManager.Instance.RefreshSession(defender.AsPlayer.SessionToken);
+                        }
+                    }
+                    catch { /* best-effort */ }
 
                     // Ensure any affected player(s) receive an authoritative player_update (health + xp)
                     try
@@ -803,11 +817,18 @@ namespace MudCore.Actions
             return Math.Min(total, atkList.Count);
         }
 
-        private static void RefreshEffectiveStats(CombatState state)
+        private static void RefreshEffectiveStats(CombatState state, World.World world)
         {
             foreach (var p in state.AllParticipants())
             {
                 if (!p.Alive) continue;
+
+                // NEW: Re-equip NPC weapons each tick in case they degraded/broke
+                if (!p.IsPlayer && p.AsNpc != null && state.Room != null)
+                {
+                    Combat.EquipNpcWeapon(p.AsNpc, world); // or pass world as parameter
+                }
+
                 Combat.InitializeSizeDefaults(p.Entity);
                 Combat.UpdateEffectiveStats(p.Entity);
 
@@ -836,6 +857,9 @@ namespace MudCore.Actions
         // Phase 1 immediate attack helper (player -> npc)
         private static Message? PerformImmediateAttack_PlayerVsNpc(Player attacker, Npc defender, World.World world, SqliteConnection conn)
         {
+            // NEW: Equip NPC with weapon before combat
+            Combat.EquipNpcWeapon(defender, world);
+
             Combat.InitializeSizeDefaults(attacker);
             Combat.InitializeSizeDefaults(defender);
             Combat.UpdateEffectiveStats(attacker);
@@ -1040,6 +1064,9 @@ namespace MudCore.Actions
         // NPC -> Player immediate attack helper
         private static Message? PerformImmediateAttack_NpcVsPlayer(Npc attacker, Player defender, World.World world, SqliteConnection conn)
         {
+            // NEW: Equip NPC with weapon before combat
+            Combat.EquipNpcWeapon(attacker, world);
+
             Combat.InitializeSizeDefaults(attacker);
             Combat.InitializeSizeDefaults(defender);
             Combat.UpdateEffectiveStats(attacker);
@@ -1069,6 +1096,9 @@ namespace MudCore.Actions
         // NPC -> NPC immediate attack helper
         private static Message? PerformImmediateAttack_NpcVsNpc(Npc attacker, Npc defender, World.World world, SqliteConnection conn)
         {
+            Combat.EquipNpcWeapon(attacker, world);
+            Combat.EquipNpcWeapon(defender, world);
+
             Combat.InitializeSizeDefaults(attacker);
             Combat.InitializeSizeDefaults(defender);
             Combat.UpdateEffectiveStats(attacker);

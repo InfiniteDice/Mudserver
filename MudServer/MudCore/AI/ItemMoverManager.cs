@@ -787,7 +787,7 @@ namespace MudCore.AI
                                     {
                                         p.PendingMessageQueue.Add(MessageHandler.Room(
                                             room,
-                                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                                            room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                             room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                             world));
                                     }
@@ -1055,7 +1055,7 @@ namespace MudCore.AI
                                     {
                                         p.PendingMessageQueue.Add(MessageHandler.Room(
                                             room,
-                                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                                            room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                             room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                             world));
                                     }
@@ -1586,7 +1586,7 @@ namespace MudCore.AI
                                     {
                                         p.PendingMessageQueue.Add(MessageHandler.Room(
                                             room,
-                                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                                            room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                             room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                             world));
                                     }

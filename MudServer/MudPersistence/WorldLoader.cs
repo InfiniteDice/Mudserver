@@ -491,6 +491,9 @@ namespace MudPersistence
 
                         if (!world.Npcs.Any(n => n.NpcID == npc.NpcID))
                             world.Npcs.Add(npc);
+
+                        
+
                     }
 
                     Console.WriteLine($"[WORLD][TRACE] Loaded NPCs into world list: Count={world.Npcs.Count}");
@@ -504,6 +507,49 @@ namespace MudPersistence
             // Optional: assert templates present after world load for diagnostics
             if (world.TemplateManager == null)
                 Console.WriteLine("[WORLD][WARN] TemplateManager is null; NPC template-based features will fail until initialized.");
+
+            // NEW: One-time flying state check on server start (force landing for grounded NPCs in sky)
+            try
+            {
+                foreach (var npc in world.Npcs.Where(n => n != null && !n.IsFlying && n.CurrentRoom != null))
+                {
+                    bool isInSky = npc.CurrentRoom.Flags != null &&
+                                   npc.CurrentRoom.Flags.Any(f => string.Equals(f, "IsSkyRoom", StringComparison.OrdinalIgnoreCase));
+
+                    if (isInSky)
+                    {
+                        Console.WriteLine($"[WORLD-LOAD] {npc.DisplayName} (NpcID={npc.NpcID}) is grounded in sky room {npc.CurrentRoom.RoomID} - forcing immediate landing");
+
+                        var area = world.Areas?.FirstOrDefault(a => a?.AreaID == npc.CurrentRoom.AreaID);
+                        if (area != null)
+                        {
+                            var landingOptions = world.Rooms?.Where(r =>
+                                r != null &&
+                                r.AreaID == area.AreaID &&
+                                (r.Flags == null || !r.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase))) &&
+                                (r.Flags == null || !r.Flags.Any(f => string.Equals(f, "IsSkyRoom", StringComparison.OrdinalIgnoreCase)))
+                            ).ToList();
+
+                            if (landingOptions != null && landingOptions.Count > 0)
+                            {
+                                var landingRoom = landingOptions[Random.Shared.Next(landingOptions.Count)];
+
+                                // Move NPC to ground
+                                npc.CurrentRoom.Npcs.Remove(npc);
+                                npc.CurrentRoom = landingRoom;
+                                npc.CurrentRoomID = landingRoom.RoomID;
+                                landingRoom.Npcs.Add(npc);
+
+                                Console.WriteLine($"[WORLD-LOAD] {npc.DisplayName} forced landing to {landingRoom.Name} (RoomID={landingRoom.RoomID})");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WORLD-LOAD] Flying state check failed: {ex.Message}");
+            }
 
             return world;
         }//End LoadFromDatabase
@@ -552,7 +598,7 @@ namespace MudPersistence
             EnsureOpen(conn);
             var areas = new List<Area>();
             var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT AreaID, Name, Description, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner, Climate, MaxNpcs FROM Area WHERE WorldID = @wid";
+            cmd.CommandText = "SELECT AreaID, Name, Description, Theme, LevelRangeMin, LevelRangeMax, IsPvPAllowed, Owner, Climate, MaxNpcs, SkyRoomID, SkyExits FROM Area WHERE WorldID = @wid";
             cmd.Parameters.AddWithValue("@wid", worldID);
 
             using var reader = cmd.ExecuteReader();
@@ -581,6 +627,18 @@ namespace MudPersistence
                 }
 
                 area.MaxNpcs = reader.IsDBNull(9) ? 50 : reader.GetInt32(9);  // Column index 9 for MaxNpcs
+                area.SkyRoomID = reader.IsDBNull(10) ? null : (int?)reader.GetInt32(10);
+                // NEW: load SkyExits (Dictionary<string, int>) with safe deserialization
+                try
+                {
+                    area.SkyExits = reader.IsDBNull(11) ? null :
+                        JsonSerializer.Deserialize<Dictionary<string, int>>(reader.GetString(11));
+                }
+                catch (Exception exSky)
+                {
+                    Console.WriteLine($"[WorldLoader] Failed to parse SkyExits for AreaID={area.AreaID}: {exSky.Message}. Setting to null.");
+                    area.SkyExits = null;
+                }
 
                 areas.Add(area);
             }

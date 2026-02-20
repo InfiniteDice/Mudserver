@@ -1,0 +1,3 @@
+[2026-02-12T04:30:06.8087314Z] [SUSPICIOUS] Player=Amun (DbID=1) | Reason=SQL injection attempt detected: ; | Content={\"type\":\"command\",\"text\":\"cance;\"}
+[2026-02-13T03:52:03.0011660Z] [SUSPICIOUS] Player=Amun (DbID=1) | Reason=SQL injection attempt detected: drop | Content={\"type\":\"command\",\"text\":\"drop meat\"}
+[2026-02-16T23:01:51.3976143Z] [SUSPICIOUS] Player=Amun (DbID=1) | Reason=SQL injection attempt detected: drop | Content={\"type\":\"command\",\"text\":\"drop cup\"}

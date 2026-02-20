@@ -191,4 +191,36 @@ null	                    Disabled/no filter
 Time Reference:Time Periods
 
                Dawn  ? Morning  ? Noon   ? Afternoon ? Dusk  ? Evening  ? Midnight  ? Night    
-Hours (24h):   06    ? 07-11    ? 12     ? 13-17     ? 18    ? 19-24    ? 00        ? 01-05    
+Hours (24h):   06    ? 07-11    ? 12     ? 13-17     ? 18    ? 19-24    ? 00        ? 01-05 
+
+
+ISP changed External IP: Cloudflare
+
+Step 1 — Find your new public IP
+
+On your server, open a browser and go to:
+
+Whats my IP site.
+
+That gives you your new external IP.
+
+Step 2 — Update Cloudflare DNS
+
+Go to:
+
+Cloudflare ? DNS ? A record for mythmud.com
+
+Change:
+
+Old IP ? New IP
+
+
+Leave:
+
+SSL mode: Flexible
+
+Save.
+
+Step 3 — Wait a minute
+
+Cloudflare updates very fast (usually under 1–2 minutes).

@@ -573,7 +573,7 @@ namespace MudCore.Actions
                 {
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
-                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                         _world));
                 }
@@ -894,7 +894,7 @@ namespace MudCore.Actions
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
-                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                     room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
@@ -1724,7 +1724,7 @@ namespace MudCore.Actions
                         {
                             p.PendingMessageQueue.Add(MessageHandler.Room(
                                 room,
-                                room.Npcs.Select(n => n.DisplayName).ToList(),
+                                room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                 room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                 _world, _db));
                         }
@@ -1733,7 +1733,7 @@ namespace MudCore.Actions
                         {
                             p.PendingMessageQueue.Add(MessageHandler.Room(
                                 targetRoom,
-                                targetRoom.Npcs.Select(n => n.DisplayName).ToList(),
+                                targetRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                 targetRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                 _world, _db));
                         }
@@ -1971,7 +1971,7 @@ namespace MudCore.Actions
                         {
                             p.PendingMessageQueue.Add(MessageHandler.Room(
                                 room,
-                                room.Npcs.Select(n => n.DisplayName).ToList(),
+                                room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                 room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                 _world, _db));
                         }
@@ -2765,7 +2765,7 @@ namespace MudCore.Actions
                         if (room != null)
                         {
                             foreach (var p in room.Players)
-                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), _world));
+                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), _world));
                         }
                     }
                     catch { }
@@ -2976,7 +2976,7 @@ namespace MudCore.Actions
                         if (room != null)
                         {
                             foreach (var p in room.Players)
-                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), _world));
+                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), _world));
                         }
                     }
                     catch { }
@@ -3424,7 +3424,7 @@ namespace MudCore.Actions
                                 {
                                     p.PendingMessageQueue.Add(MessageHandler.Room(
                                         room,
-                                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                         _world));
                                 }
@@ -3530,7 +3530,7 @@ namespace MudCore.Actions
                             {
                                 p.PendingMessageQueue.Add(MessageHandler.Room(
                                     room,
-                                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                                    room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                     room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                     _world));
                             }
@@ -3782,7 +3782,7 @@ namespace MudCore.Actions
                             {
                                 p.PendingMessageQueue.Add(MessageHandler.Room(
                                     srcRoom,
-                                    srcRoom.Npcs.Select(n => n.DisplayName).ToList(),
+                                    srcRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                     srcRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                     _world));
                             }
@@ -3877,6 +3877,62 @@ namespace MudCore.Actions
                 string broadcastMsg = player.IsInvisibleToMortals
                     ? $"{player.Name} vanishes into the air!"
                     : $"{player.Name} appears in a flash of lightning!";
+
+                foreach (var p in player.CurrentRoom.Players.Where(p => p != player))
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.System(broadcastMsg));
+                }
+
+                // 5. Force immediate room refresh for all players
+                BroadcastRoomUpdates(player.CurrentRoom, _world, _db);
+            }
+
+            return null;
+        }
+
+        public Message? HandleToggleFly(Player player)
+        {
+            if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
+
+            // 1. Toggle IsFlying flag
+            if (player.Flags == null) player.Flags = new List<string>();
+
+            bool currentlyFlying = player.Flags.Any(f => string.Equals(f, "IsFlying", StringComparison.OrdinalIgnoreCase));
+
+            if (currentlyFlying)
+            {
+                // Remove flag
+                player.Flags.RemoveAll(f => string.Equals(f, "IsFlying", StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                // Add flag
+                player.Flags.Add("IsFlying");
+            }
+
+            // 2. Persist immediately
+            try
+            {
+                if (_db != null)
+                    PlayerPersistence.SavePlayer(_db, player);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN][ToggleFly] Failed to persist for {player.Name}: {ex.Message}");
+            }
+
+            // 3. Send confirmation to admin
+            string adminMsg = currentlyFlying
+                ? "You gently descend to the ground."
+                : "You lift off the ground and begin hovering!";
+            player.PendingMessageQueue.Add(MessageHandler.System(adminMsg));
+
+            // 4. Broadcast dramatic message to room
+            if (player.CurrentRoom != null)
+            {
+                string broadcastMsg = currentlyFlying
+                    ? $"{player.Name} gently descends to the ground."
+                    : $"{player.Name} lifts off the ground and begins hovering in the air!";
 
                 foreach (var p in player.CurrentRoom.Players.Where(p => p != player))
                 {
@@ -4330,6 +4386,203 @@ namespace MudCore.Actions
             return MessageHandler.System(string.Join("\n", lines));
         }
 
+        public Message? HandleCreateSky(Player player)
+        {
+            if (!player.IsAdmin)
+                return MessageHandler.System("Permission denied. Admins only.");
+
+            if (player.CurrentRoom == null)
+                return MessageHandler.System("You must be in a room to create a sky.");
+
+            var room = player.CurrentRoom;
+            var area = _world.Areas?.FirstOrDefault(a => a?.AreaID == room.AreaID);
+            if (area == null)
+                return MessageHandler.System("Area not found.");
+
+            // Validation 1: Room cannot be Indoor
+            if (room.Flags != null && room.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase)))
+                return MessageHandler.System("Can't create sky here as Room is Indoor!");
+
+            // Validation 2: Area cannot be Indoor
+            if (!string.IsNullOrWhiteSpace(area.Climate) && string.Equals(area.Climate, "Indoor", StringComparison.OrdinalIgnoreCase))
+                return MessageHandler.System("Can't create sky here as Area is Indoor!");
+
+            // Validation 3: Area must not already have a sky room
+            if (area.SkyRoomID.HasValue)
+                return MessageHandler.System($"This area already has a sky room (RoomID={area.SkyRoomID.Value}).");
+
+            // Validation 4: Area must have at least one outdoor room for landing
+            var outdoorRooms = _world.Rooms?.Where(r =>
+                r != null &&
+                r.AreaID == area.AreaID &&
+                (r.Flags == null || !r.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase)))
+            ).ToList() ?? new List<Room>();
+
+            if (outdoorRooms.Count == 0)
+                return MessageHandler.System("Cannot create sky - area has no outdoor rooms for landing!");
+
+            try
+            {
+                // Create sky room - use the same pattern as HandleCreateRoom
+                var skyRoom = new Room($"Sky above {area.Name}", $"You soar high above {area.Name}. Clouds drift past as you hover effortlessly. The land stretches out far below.\n\nType 'look down' to see where you can land, or 'land' to descend.")
+                {
+                    AreaID = area.AreaID,
+                    Flags = new List<string> { "IsSkyRoom", "Outdoor" }
+                };
+                skyRoom.Keywords.AddRange(new[] { "sky", "clouds", "air" });
+
+                // Single atomic DB write using DbWriteQueue - create room in DB and get assigned ID
+                int newRoomID = DbWriteQueue.Instance.RunWriteAndWait<int>((wConn, wTx) =>
+                {
+                    // Use World.CreateRoomInDB to persist the room (same as CreateRoom does)
+                    int roomId = _world.CreateRoomInDB(skyRoom, wConn, wTx);
+
+                    // CRITICAL FIX: Update the Flags column directly after room creation
+                    // (CreateRoomInDB doesn't persist Flags by default)
+                    using (var flagCmd = wConn.CreateCommand())
+                    {
+                        flagCmd.Transaction = wTx;
+                        flagCmd.CommandText = "UPDATE Room SET Flags = @flags WHERE RoomID = @rid";
+                        flagCmd.Parameters.AddWithValue("@flags", JsonSerializer.Serialize(skyRoom.Flags));
+                        flagCmd.Parameters.AddWithValue("@rid", roomId);
+                        flagCmd.ExecuteNonQuery();
+                    }
+
+                    // Update area with SkyRoomID in same transaction
+                    using (var cmd = wConn.CreateCommand())
+                    {
+                        cmd.Transaction = wTx;
+                        cmd.CommandText = "UPDATE Area SET SkyRoomID = @skyid WHERE AreaID = @aid";
+                        cmd.Parameters.AddWithValue("@skyid", roomId);
+                        cmd.Parameters.AddWithValue("@aid", area.AreaID);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    return roomId;
+                }, timeout: TimeSpan.FromSeconds(5));
+
+                // Update in-memory state (after DB success)
+                area.SkyRoomID = newRoomID;
+                skyRoom.RoomID = newRoomID;
+                _world.Rooms.Add(skyRoom);
+
+                Console.WriteLine($"[ADMIN] Sky room created for {area.Name} (RoomID={newRoomID})");
+                return MessageHandler.System($"Sky room created for {area.Name} (RoomID={newRoomID}).\nUse 'linksky' command to connect to adjacent area skies.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN] Failed to create sky room: {ex.Message}");
+                return MessageHandler.System("Failed to create sky room due to a server error.");
+            }
+        }//END HandleCreateSky
+
+        public Message? HandleLinkSky(Player player, string command)
+        {
+            if (!player.IsAdmin)
+                return MessageHandler.System("Permission denied. Admins only.");
+
+            // Usage: linksky <direction> <targetAreaID>
+            // Example: linksky north 2
+            // This creates a bidirectional link: current area's sky <-> target area's sky
+
+            var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 3)
+                return MessageHandler.System("Usage: linksky <direction> <targetAreaID>\nExample: linksky north 2");
+
+            var direction = NormalizeDirection(tokens[1].Trim().ToUpperInvariant());
+            if (string.IsNullOrWhiteSpace(direction) || !IsValidDirection(direction))
+            {
+                return MessageHandler.System("Invalid direction. Valid: N, S, E, W, NE, NW, SE, SW");
+            }
+
+            if (!int.TryParse(tokens[2], out int targetAreaID))
+                return MessageHandler.System("Invalid target area ID. Must be a number.");
+
+            var currentRoom = player.CurrentRoom;
+            if (currentRoom == null)
+                return MessageHandler.System("You must be in a room.");
+
+            var currentArea = _world.Areas?.FirstOrDefault(a => a?.AreaID == currentRoom.AreaID);
+            if (currentArea == null)
+                return MessageHandler.System("Current area not found.");
+
+            if (!currentArea.SkyRoomID.HasValue)
+                return MessageHandler.System("Current area has no sky room. Use 'createsky' first.");
+
+            var targetArea = _world.Areas?.FirstOrDefault(a => a?.AreaID == targetAreaID);
+            if (targetArea == null)
+                return MessageHandler.System($"Target area {targetAreaID} not found.");
+
+            if (!targetArea.SkyRoomID.HasValue)
+                return MessageHandler.System($"Target area '{targetArea.Name}' has no sky room. An admin must create one first.");
+
+            var currentSkyRoomID = currentArea.SkyRoomID.Value;
+            var targetSkyRoomID = targetArea.SkyRoomID.Value;
+
+            // Determine opposite direction for bidirectional link
+            var oppositeDir = OppositeDirection(direction);
+
+            try
+            {
+                DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                {
+                    // Load or initialize SkyExits dictionaries
+                    Dictionary<string, int> currentSkyExits;
+                    Dictionary<string, int> targetSkyExits;
+
+                    if (currentArea.SkyExits == null)
+                        currentSkyExits = new Dictionary<string, int>();
+                    else
+                        currentSkyExits = new Dictionary<string, int>(currentArea.SkyExits);
+
+                    if (targetArea.SkyExits == null)
+                        targetSkyExits = new Dictionary<string, int>();
+                    else
+                        targetSkyExits = new Dictionary<string, int>(targetArea.SkyExits);
+
+                    // 2) Add/update links
+                    currentSkyExits[direction] = targetSkyRoomID;
+                    targetSkyExits[oppositeDir] = currentSkyRoomID;
+
+                    // 3) Persist to DB
+                    using (var cmd = wConn.CreateCommand())
+                    {
+                        cmd.Transaction = wTx;
+                        cmd.CommandText = "UPDATE Area SET SkyExits = @exits WHERE AreaID = @aid";
+                        cmd.Parameters.AddWithValue("@exits", System.Text.Json.JsonSerializer.Serialize(currentSkyExits));
+                        cmd.Parameters.AddWithValue("@aid", currentArea.AreaID);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    using (var cmd = wConn.CreateCommand())
+                    {
+                        cmd.Transaction = wTx;
+                        cmd.CommandText = "UPDATE Area SET SkyExits = @exits WHERE AreaID = @aid";
+                        cmd.Parameters.AddWithValue("@exits", System.Text.Json.JsonSerializer.Serialize(targetSkyExits));
+                        cmd.Parameters.AddWithValue("@aid", targetArea.AreaID);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    return null;
+                }, timeout: TimeSpan.FromSeconds(5));
+
+                // Update in-memory state
+                currentArea.SkyExits = currentArea.SkyExits ?? new Dictionary<string, int>();
+                currentArea.SkyExits[direction] = targetSkyRoomID;
+
+                targetArea.SkyExits = targetArea.SkyExits ?? new Dictionary<string, int>();
+                targetArea.SkyExits[oppositeDir] = currentSkyRoomID;
+
+                Console.WriteLine($"[ADMIN] Sky link created: {currentArea.Name} ({direction}) <-> {targetArea.Name} ({oppositeDir})");
+                return MessageHandler.System($"Sky link created:\n{currentArea.Name} sky ({direction}) <-> {targetArea.Name} sky ({oppositeDir})");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ADMIN] LinkSky failed: {ex.Message}");
+                return MessageHandler.System("Failed to create sky link due to server error.");
+            }
+        }
+
         private static string OppositeDirection(string dir) => dir.ToUpper() switch
         {
             "N" => "S",
@@ -4357,7 +4610,7 @@ namespace MudCore.Actions
                 {
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
-                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                         room.Players.Where(pl => pl != p && !pl.IsInvisibleToMortals).Select(pl => pl.Name).ToList(),
                         world, db));
                 }

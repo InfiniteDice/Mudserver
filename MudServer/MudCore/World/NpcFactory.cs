@@ -159,6 +159,46 @@ namespace MudCore.World
                 Console.WriteLine($"[NpcFactory] Failed to create/register BarTender for NPC '{npc.Name}': {exReg.Message}");
             }
 
+            // NEW: Parse Flying:N flag and set initial state
+            if (template.Flags != null)
+            {
+                foreach (var flag in template.Flags)
+                {
+                    if (flag.StartsWith("Flying:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var percentStr = flag.Substring("Flying:".Length).Trim();
+                        if (int.TryParse(percentStr, out int chance) && chance > 0 && chance <= 100)
+                        {
+                            npc.FlyingChance = chance;
+
+                            // Roll initial flying state
+                            var roll = Random.Shared.Next(1, 101);
+                            npc.IsFlying = roll <= chance;
+
+                            // NEW: Add IsFlying flag for persistence
+                            if (npc.IsFlying)
+                            {
+                                if (npc.Flags == null) npc.Flags = new List<string>();
+                                if (!npc.Flags.Contains("IsFlying"))
+                                    npc.Flags.Add("IsFlying");
+                            }
+
+                            Console.WriteLine($"[NPC-SPAWN] {npc.DisplayName} spawned with Flying:{chance}%, IsFlying={npc.IsFlying}");
+                        }
+                    }
+                }
+            }
+
+            // NEW: Initialize encumbrance (EffMass and max load capacity caching)
+            try
+            {
+                Encumbrance.InitializeForNpc(npc);
+            }
+            catch (Exception exEnc)
+            {
+                Console.WriteLine($"[NpcFactory] Failed to initialize encumbrance for NPC '{npc.Name}': {exEnc.Message}");
+            }
+
             room.Npcs.Add(npc);
             return npc;
         }

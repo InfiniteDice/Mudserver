@@ -1,0 +1,14 @@
+{
+  "Id": "potion_flying",
+  "Name": "Potion of Flying",
+  "ItemCategory": "Food",
+  "Weight": 0.25,
+  "Value": 500,
+  "ShortDesc": "It's a potion of flying",
+  "LongDesc": "This is a potion of flying, drink it for temporary flight.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" , "Stackable" , "Flying:1" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

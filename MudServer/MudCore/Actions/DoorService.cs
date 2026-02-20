@@ -72,7 +72,7 @@ namespace MudCore.Actions
                             MessageHandler.SendSystem(p, "A door closes automatically.");
                             p.PendingMessageQueue.Add(MessageHandler.Room(
                                 room,
-                                room.Npcs.Select(n => n.DisplayName).ToList(),
+                                room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                 room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                 world, db));
                         }
@@ -317,7 +317,7 @@ namespace MudCore.Actions
                 {
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
-                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                         _world, _db));
                 }
@@ -412,7 +412,7 @@ namespace MudCore.Actions
                 {
                     p.PendingMessageQueue.Add(MessageHandler.Room(
                         room,
-                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                         _world, _db));
                 }

@@ -296,7 +296,7 @@ namespace MudCore.Actions
                         {
                             MessageHandler.SendSystem(p, $"{player.Name} uncovers something while {(action == "mine" ? "mining" : "digging")}.");
                             // push authoritative room update so clients refresh NPC/Item lists
-                            p.PendingMessageQueue.Add(MessageHandler.Room(startRoom, startRoom.Npcs.Select(n => n.DisplayName).ToList(), startRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                            p.PendingMessageQueue.Add(MessageHandler.Room(startRoom, startRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(), startRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
                         }
                     }
                     catch (Exception ex)

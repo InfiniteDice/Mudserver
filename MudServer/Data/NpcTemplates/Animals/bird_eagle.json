@@ -1,0 +1,73 @@
+{
+  "Id": "bird_eagle",
+  "Name": "Eagle",
+  "Alignment": "Neutral",
+  "Description": "A majestic bird of prey, sharp-eyed and swift.",
+  "IdleActions": [
+    "Looks for prey in the distance",
+    "keeps an eye out for prey",
+    "glances your way momentarily",
+    "looks around for food"
+  ],
+  "WanderChance": 0.03,
+  "WanderAreas": [],
+  "AiBehaviors": [
+    {
+      "Behavior": "SkyHunter",
+      "TimePeriod": ["Evening", "Morning", "Afternoon"],
+      "AttackChance": 70,
+      "AttacksPerPeriod": 2,
+      "CombatMoves": ["DeathFromAbove", "CrippleFlyer"],
+      "CombatMoveSkill": 3,
+      "MaxTargetSizeEnum": 3,
+      "AvoidRoomFlag": "Indoor",
+      "PreferredTarget": "hare",
+      "Notes": "DeathFromAbove is a ground attack move, CrippleFlyer is an air-air combat move"
+    }
+  ],
+  "AiTaskList": [],
+  "CurrentAiTask": null,
+  "HealthMax": 10,
+  "Health": 10,
+  "Flags": [ "Carnivore" , "Flying:70" ],
+  "Level": 1,
+  "Mass": 7.0,
+  "EffMass": 7.0,
+  "SizeEnum": 3,
+  "CombatSkill": 75.0,
+  "EffCombatSkill": 75.0,
+  "BaseDmgDice": 3.5,
+  "EffDmgDice": 3.5,
+  "BaseArmorClass": 0.0,
+  "EffArmorClass": 0.0,
+  "IsHumanoid": false,
+  "EquipmentTemplateIds": [],
+  "DropChance": 0.50,
+  "DropCountMin": 1,
+  "DropCountMax": 1,
+  "DropPool": [
+    {
+      "TemplateId": "feather_bird",
+      "Weight": 90,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 3,
+      "Stackable": false,
+      "Notes": "crafting component"
+    },
+    {
+      "TemplateId": "talon_eagle",
+      "Weight": 10,
+      "Chance": 0.80,
+      "Min": 1,
+      "Max": 1,
+      "Stackable": false,
+      "Notes": "spell/potion component"
+    }
+  ],
+  "Debuffs": [],
+  "Buffs": [],
+  "Hunger": 3,
+  "VisualTrait": "",
+  "VisualTraitType": "Animal"
+}

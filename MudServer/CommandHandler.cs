@@ -1122,7 +1122,7 @@ namespace MudServer
                                 {
                                     p.PendingMessageQueue.Add(MessageHandler.Room(
                                         room,
-                                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                         _world));
                                 }
@@ -1537,6 +1537,13 @@ namespace MudServer
                 return DropItem(player, itemExpr, forwardQty);
             }
 
+            // Sky landing commands (aliases for "down")
+            if (command.Equals("land", StringComparison.OrdinalIgnoreCase) ||
+                command.Equals("descend", StringComparison.OrdinalIgnoreCase))
+            {
+                return Move(player, "down");
+            }
+
             var normalized = NormalizeCommandAlias(command);
             if (IsValidDirection(normalized))
                 return Move(player, normalized);
@@ -1554,6 +1561,27 @@ namespace MudServer
             {
                 string text = command.Substring(5);
                 Chat.Yell(player, text, _world);
+                return null;
+            }
+
+            if (command.StartsWith("emote ", StringComparison.OrdinalIgnoreCase))
+            {
+                var args = command.Substring(6).Trim();
+                if (string.IsNullOrWhiteSpace(args))
+                    return MessageHandler.System("Usage: emote <action>");
+
+                var room = player.CurrentRoom;
+                if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+                // Send to self
+                MessageHandler.SendSystem(player, $"You {args}");
+
+                // Send to others
+                foreach (var p in room.Players.Where(p => p != player))
+                {
+                    MessageHandler.SendSystem(p, $"{player.Name} {args}");
+                }
+
                 return null;
             }
 
@@ -1594,10 +1622,29 @@ namespace MudServer
                 return _adminService.HandleToggleVisible(player);
             }
 
+            // NEW: togglefly command
+            if (command.StartsWith("togglefly", StringComparison.OrdinalIgnoreCase))
+            {
+                return _adminService.HandleToggleFly(player);
+            }
+
             // NEW: debugareas command
             if (command.StartsWith("debugareas", StringComparison.OrdinalIgnoreCase))
             {
                 return _adminService.HandleDebugAreas(player);
+            }
+
+            // In ProcessCommand, add with other admin commands:
+            if (command.StartsWith("createsky", StringComparison.OrdinalIgnoreCase))
+            {
+                return _adminService.HandleCreateSky(player);
+            }
+
+            // Add after createsky command (around line 1100-1150):
+
+            if (command.StartsWith("linksky", StringComparison.OrdinalIgnoreCase))
+            {
+                return _adminService.HandleLinkSky(player, command);
             }
 
             // NEW: debugnpcs command
@@ -1967,6 +2014,13 @@ namespace MudServer
                         }
                         catch { }
 
+                        // NEW: Refresh encumbrance before displaying stats
+                        try
+                        {
+                            Encumbrance.UpdateEffMass(player);
+                        }
+                        catch { /* best-effort */ }
+
                         // NEW: Refresh stamina from DB to ensure we're showing current value
                         // (async writes from DecreaseStamina/IncreaseStamina may not have completed yet)
                         try
@@ -2005,6 +2059,7 @@ namespace MudServer
         $"Health: {player.Health}/{player.MaxHealth}",
         $"Stamina: {player.Stamina}/{player.MaxStamina}",
         $"Size (SizeEnum): {player.SizeEnum}",
+        GetEncumbranceStatLine(player),
         $"Effective Mass: {player.EffMass:F2}",
         $"Effective Combat Skill: {player.EffCombatSkill:F2}",
         $"Effective Armor Class: {player.EffArmorClass:F2}",
@@ -2146,6 +2201,8 @@ namespace MudServer
             "editnpc - Edit an NPC",
             "createarea - Create new area",
             "createroom - Create new room",
+            "createsky - Create sky room for area",
+            "linksky - Link sky rooms",
             "editroom - Edit current room",
             "editexit - Edit exit properties",
             "additem - Add item to room",
@@ -2185,14 +2242,104 @@ namespace MudServer
 
         private Message? HandleLookCommand(Player player, string command)
         {
-            var lookParts = command.Split(' ', 2); if (lookParts.Length == 1) return Look(player);
+            var lookParts = command.Split(' ', 2);
+            if (lookParts.Length == 1) return Look(player);
+
             var targetExpr = lookParts[1].Trim();
             var room = player.CurrentRoom;
             if (room == null) return MessageHandler.System("You are lost in the void.");
 
+            // NEW: Check if it's too dark to see distant (hours 21-24 and 0-5 are dark)
+            try
+            {
+                if (_world?.GameTime != null)
+                {
+                    int hour = _world.GameTime.Hour;
+                    if ((hour >= 21 && hour <= 23) || (hour >= 0 && hour <= 5))
+                    {
+                        return MessageHandler.System("It is too dark to see that far!");
+                    }
+                }
+            }
+            catch { /* best-effort; continue to normal logic */ }
+
+            // Check if player is in a sky room first (before direction logic)
+            bool isInSky = room.Flags != null &&
+                           room.Flags.Any(f => string.Equals(f, "IsSkyRoom", StringComparison.OrdinalIgnoreCase));
+
+            // NEW: "look down" in sky rooms shows landing menu
+            if (isInSky && targetExpr.Equals("down", StringComparison.OrdinalIgnoreCase))
+            {
+                var area = _world.Areas?.FirstOrDefault(a => a?.AreaID == room.AreaID);
+                if (area == null)
+                    return MessageHandler.System("Area not found.");
+
+                var landingOptions = _world.Rooms?.Where(r =>
+                    r != null &&
+                    r.AreaID == area.AreaID &&
+                    (r.Flags == null || !r.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase))) &&
+                    (r.Flags == null || !r.Flags.Any(f => string.Equals(f, "IsSkyRoom", StringComparison.OrdinalIgnoreCase)))
+                ).ToList() ?? new List<Room>();
+
+                if (landingOptions.Count == 0)
+                    return MessageHandler.System("You gaze down but see no clear landing spots.");
+
+                // Build numbered list
+                var menu = new System.Text.StringBuilder();
+                menu.AppendLine("Looking down, you can see these areas below:");
+                menu.AppendLine();
+                for (int i = 0; i < landingOptions.Count; i++)
+                {
+                    menu.AppendLine($"{i + 1}) {landingOptions[i].Name}");
+                }
+                menu.AppendLine();
+                menu.AppendLine("Type 'look <number>' to view a location's distant description, or 'land' to descend.");
+
+                return MessageHandler.System(menu.ToString());
+            }
+
+            // NEW: "look <number>" in sky rooms shows distant description
+            if (isInSky && int.TryParse(targetExpr, out int lookIdx))
+            {
+                var area = _world.Areas?.FirstOrDefault(a => a?.AreaID == room.AreaID);
+                if (area == null)
+                    return MessageHandler.System("Area not found.");
+
+                var landingOptions = _world.Rooms?.Where(r =>
+                    r != null &&
+                    r.AreaID == area.AreaID &&
+                    (r.Flags == null || !r.Flags.Any(f => string.Equals(f, "Indoor", StringComparison.OrdinalIgnoreCase))) &&
+                    (r.Flags == null || !r.Flags.Any(f => string.Equals(f, "IsSkyRoom", StringComparison.OrdinalIgnoreCase)))
+                ).ToList() ?? new List<Room>();
+
+                if (lookIdx < 1 || lookIdx > landingOptions.Count)
+                    return MessageHandler.System($"Invalid number. Choose 1-{landingOptions.Count} or use 'look down' to see the list.");
+
+                var targetRoom = landingOptions[lookIdx - 1];
+
+                // Show distant description (or fallback to name if distant is empty)
+                string distant = string.IsNullOrWhiteSpace(targetRoom.DistantDescription)
+                    ? $"You see {targetRoom.Name} far below."
+                    : targetRoom.DistantDescription;
+
+                var response = new System.Text.StringBuilder();
+                response.AppendLine($"Looking down at {targetRoom.Name}:");
+                response.AppendLine();
+                response.AppendLine(distant);
+
+                return MessageHandler.System(response.ToString());
+            }
+
+            // EXISTING: Direction-based look (preserved exactly as before)
             var dirToken = NormalizeCommandAlias(targetExpr).ToUpperInvariant();
             if (IsValidDirection(dirToken))
             {
+                // NEW: Handle UP direction with sky visibility or standard exit logic
+                if (dirToken.Equals("UP", StringComparison.OrdinalIgnoreCase) || dirToken.Equals("U", StringComparison.OrdinalIgnoreCase))
+                {
+                    return HandleLookUp(player);
+                }
+
                 var exit = room.Exits.FirstOrDefault(x => string.Equals(x.Direction, dirToken, StringComparison.OrdinalIgnoreCase));
                 if (exit == null)
                     exit = room.Exits.FirstOrDefault(x => string.Equals(NormalizeCommandAlias(x.Direction), NormalizeCommandAlias(targetExpr), StringComparison.OrdinalIgnoreCase));
@@ -2231,6 +2378,7 @@ namespace MudServer
                 return MessageHandler.System(distantText + movementHint);
             }
 
+            // EXISTING: NPC look (preserved exactly)
             var npcMatches = NpcTargeting.FindMatches(room, targetExpr);
             if (npcMatches.Count > 0)
             {
@@ -2254,8 +2402,7 @@ namespace MudServer
                 return MessageHandler.System(text);
             }
 
-            // Support "look all <query>" to return descriptions for every matching item in the room.
-            // Example: "look all iron" -> items whose material/descriptor/name/token matches "iron".
+            // EXISTING: "look all <query>" functionality (preserved exactly)
             try
             {
                 if (targetExpr.StartsWith("all ", StringComparison.OrdinalIgnoreCase))
@@ -2347,7 +2494,7 @@ namespace MudServer
             }
             catch { /* non-fatal; fall through to single-item lookup below */ }
 
-            // Use ItemParser to resolve room items (supports descriptor/material tokens)
+            // EXISTING: Single item look with ItemParser (preserved exactly)
             var opts = new ItemParserOptions { IncludeDescriptorTokens = true, IncludeMaterialTokens = true, AllowStartsWith = true };
             var pres = ItemParser.ResolveForGet(player, targetExpr, opts);
 
@@ -3406,6 +3553,24 @@ namespace MudServer
                     return MessageHandler.System($"You cannot {(isDrink ? "drink" : "eat")} a container. Use 'drink <liquid> from <container>' to consume the contents.");
                 }
 
+                // NEW: Apply timed effects from item flags (e.g. "Flying:1")
+                try
+                {
+                    if (toConsume.Flags != null)
+                    {
+                        foreach (var f in toConsume.Flags)
+                        {
+                            if (string.IsNullOrWhiteSpace(f)) continue;
+                            var parts = f.Split(':', 2);
+                            if (parts.Length == 2 && int.TryParse(parts[1], out int minutes))
+                            {
+                                Effects.ApplyTimedEffect(player, parts[0], minutes, _dbConnection, _world);
+                            }
+                        }
+                    }
+                }
+                catch (Exception exEff) { Console.WriteLine($"[EAT] Timed effect application failed: {exEff.Message}"); }
+
                 // NEW: Use centralized healing method to apply item healing and persist to DB
                 int appliedHeal = player.ApplyItemHealing(toConsume);
 
@@ -3513,90 +3678,8 @@ namespace MudServer
                 return MessageHandler.System("Failed to eat/drink due to a server error.");
             }
         } // end EatItem
-
         
-
-        // moved to Player.cs
-        // Centralized so future health updates (spells, regen, effects) reuse the same logic and logging.
-        //private void PersistPlayerHealth(Player player)
-        //{
-        //    if (player == null) return;
-
-        //    // Primary save path: delegate to PlayerPersistence which already routes writes
-        //    // through the single-writer DbWriteQueue when available.
-        //    try
-        //    {
-        //        PlayerPersistence.SavePlayer(_dbConnection, player);
-        //        // Success — early return to avoid additional fallback attempts.
-        //        try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
-        //        try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
-        //        return;
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        // Log and attempt queued/fallback persists; do not throw.
-        //        Console.WriteLine($"[PLAYER] SavePlayer via PlayerPersistence failed: {ex.Message}");
-        //    }
-
-        //    // Secondary: attempt to enqueue a small writer job to persist the minimal health state.
-        //    // This serializes with other writer activity and avoids ad-hoc direct writes from
-        //    // the networking/command layers.
-        //    try
-        //    {
-        //        MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
-        //        {
-        //            using var cmd = wConn.CreateCommand();
-        //            cmd.Transaction = wTx;
-        //            if (player.DbPlayerID != 0)
-        //            {
-        //                cmd.CommandText = "UPDATE Player SET Health = @h WHERE PlayerID = @id";
-        //                cmd.Parameters.AddWithValue("@h", player.Health);
-        //                cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
-        //            }
-        //            else
-        //            {
-        //                // Fallback to name-based update when numeric id is not available.
-        //                cmd.CommandText = "UPDATE Player SET Health = @h WHERE Name = @name";
-        //                cmd.Parameters.AddWithValue("@h", player.Health);
-        //                cmd.Parameters.AddWithValue("@name", player.Name ?? "");
-        //            }
-        //            cmd.ExecuteNonQuery();
-        //            return (object?)null;
-        //        }, timeout: TimeSpan.FromSeconds(5));
-
-        //        // Refresh extended combat fields and notify client (best-effort).
-        //        try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
-        //        try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
-        //        return;
-        //    }
-        //    catch (InvalidOperationException)
-        //    {
-        //        // Queue not started — fall through to direct legacy fallback below.
-        //    }
-        //    catch (Exception exQueue)
-        //    {
-        //        Console.WriteLine($"[PLAYER] Queued health persist failed: {exQueue.Message}");
-        //    }
-
-        //    // Final conservative fallback: direct write on provided connection (preserve prior behavior).
-        //    try
-        //    {
-        //        using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
-        //            "UPDATE Player SET Health = @h WHERE PlayerID = @id", _dbConnection);
-        //        cmd.Parameters.AddWithValue("@h", player.Health);
-        //        cmd.Parameters.AddWithValue("@id", player.DbPlayerID);
-        //        cmd.ExecuteNonQuery();
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        Console.WriteLine($"[PLAYER][FALLBACK] Direct health persist failed: {ex.Message}");
-        //    }
-
-        //    // Refresh extended combat fields and notify client (best-effort).
-        //    try { PlayerPersistence.LoadExtendedCombat(_dbConnection, player); } catch { }
-        //    try { MessageHandler.EnqueuePlayerUpdate(player); } catch { }
-        //}
-
+        
         // Add this helper method inside the CommandHandler class (near other private helpers)
         private (int quantity, bool explicitQuantity, string itemExpr, string containerName, string? error) ParseQuantityItemContainer(List<string> tokens, int startIdx)
         {
@@ -3703,8 +3786,24 @@ namespace MudServer
             }
             else
             {
-                dir = NormalizeCommandAlias(rawCommand.Trim()).ToUpper();
+                var raw = rawCommand.Trim();
+
+                // Handle land/descend specially - bypass NormalizeCommandAlias
+                if (raw.Equals("land", StringComparison.OrdinalIgnoreCase) ||
+                    raw.Equals("descend", StringComparison.OrdinalIgnoreCase) ||
+                    raw.Equals("down", StringComparison.OrdinalIgnoreCase) ||
+                    raw.Equals("d", StringComparison.OrdinalIgnoreCase))
+                {
+                    dir = "DOWN";
+                }
+                else
+                {
+                    dir = NormalizeCommandAlias(raw).ToUpper();
+                }
             }
+
+            // Add debug logging
+            Console.WriteLine($"[MOVE] Sending to AttemptMove: dir='{dir}'");
 
             return Movement.AttemptMove(player, dir, _world, _dbConnection);
         }
@@ -4040,6 +4139,233 @@ namespace MudServer
                 player.PendingAction = null!;
                 return MessageHandler.System("Server error while processing pending admin action.");
             }
+
+            // For IsFlying pending, expect the player to type "1" or "2" to choose normal exit or sky exit, or "cancel" to abort.
+            if (pa.Command == "ChooseUp")
+            {
+                // Extract the actual command text from JSON payload
+                var cInput = ExtractCommandText(rawCommand);
+
+                if (cInput.Equals("cancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    player.PendingAction = null;
+                    return MessageHandler.System("Cancelled.");
+                }
+
+                var choice = cInput.Trim();
+                if (choice != "1" && choice != "2")
+                {
+                    return MessageHandler.System("Invalid choice. Type 1 or 2, or 'cancel'.");
+                }
+
+                var data = pa.Data as Dictionary<string, object>;
+                if (data == null)
+                {
+                    player.PendingAction = null;
+                    return MessageHandler.System("Pending data lost. Try again.");
+                }
+
+                int targetRoomId = choice == "1"
+                    ? Convert.ToInt32(data["NormalExitRoomId"])
+                    : Convert.ToInt32(data["SkyRoomId"]);
+
+                player.PendingAction = null;
+
+                // Find the target room
+                var targetRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == targetRoomId);
+                if (targetRoom == null)
+                {
+                    return MessageHandler.System("Target room not found.");
+                }
+
+                var currentRoom = player.CurrentRoom;
+                if (currentRoom == null)
+                {
+                    return MessageHandler.System("You are not in a valid room.");
+                }
+
+                // Remove from current room
+                currentRoom.Players.Remove(player);
+
+                // Add to target room
+                player.CurrentRoom = targetRoom;
+                targetRoom.Players.Add(player);
+
+                // Persist
+                try
+                {
+                    PlayerPersistence.SavePlayer(_dbConnection, player);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[MOVE-UP] Failed to persist: {ex.Message}");
+                }
+
+                // Broadcast messages
+                string verb = choice == "2" ? "ascends into the sky" : "climbs upward";
+                foreach (var p in currentRoom.Players)
+                {
+                    MessageHandler.SendSystem(p, $"{player.Name} {verb}!");
+                }
+
+                foreach (var p in targetRoom.Players.Where(p => p != player))
+                {
+                    MessageHandler.SendSystem(p, $"{player.Name} arrives from below!");
+                }
+
+                // Send room update
+                player.PendingMessageQueue.Add(MessageHandler.Room(
+                    targetRoom,
+                    targetRoom.Npcs?.Select(n => n.DisplayName).ToList() ?? new List<string>(),
+                    targetRoom.Players.Where(pl => pl != player).Select(pl => MessageHandler.GetPlayerDisplayName(pl)).ToList(),
+                    _world, _dbConnection));
+
+                // Broadcast room updates
+                foreach (var p in currentRoom.Players)
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        currentRoom,
+                        currentRoom.Npcs?.Select(n => n.DisplayName).ToList() ?? new List<string>(),
+                        currentRoom.Players.Where(pl => pl != p).Select(pl => MessageHandler.GetPlayerDisplayName(pl)).ToList(),
+                        _world, _dbConnection));
+                }
+
+                foreach (var p in targetRoom.Players.Where(p => p != player))
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        targetRoom,
+                        targetRoom.Npcs?.Select(n => n.DisplayName).ToList() ?? new List<string>(),
+                        targetRoom.Players.Where(pl => pl != p).Select(pl => MessageHandler.GetPlayerDisplayName(pl)).ToList(),
+                        _world, _dbConnection));
+                }
+
+                return null;
+            }
+
+
+
+            if (pa.Command == "SkyDescend")
+            {
+                // Extract the actual command text from JSON payload
+                var cInput = ExtractCommandText(rawCommand);
+
+                if (cInput.Equals("cancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    player.PendingAction = null;
+                    return MessageHandler.System("You continue hovering in the sky.");
+                }
+
+                // Extract data
+                var data = pa.Data as Dictionary<string, object>;
+                if (data == null || !data.TryGetValue("AvailableRooms", out var roomIdsObj))
+                {
+                    player.PendingAction = null;
+                    return MessageHandler.System("Landing data lost. Try again.");
+                }
+
+                var availableRoomIds = (roomIdsObj as List<int>) ?? new List<int>();
+                if (availableRoomIds.Count == 0)
+                {
+                    player.PendingAction = null;
+                    return MessageHandler.System("No landing options available.");
+                }
+
+                Room targetRoom = null;
+
+                // Try parse as number (1-based index)
+                if (int.TryParse(cInput.Trim(), out int idx) && idx >= 1 && idx <= availableRoomIds.Count)
+                {
+                    int targetRoomId = availableRoomIds[idx - 1];
+                    targetRoom = _world.Rooms?.FirstOrDefault(r => r != null && r.RoomID == targetRoomId);
+                }
+                else
+                {
+                    // Try match by room name (partial, case-insensitive)
+                    var searchTerm = cInput.Trim().ToLowerInvariant();
+                    var matchingRooms = _world.Rooms?.Where(r =>
+                        r != null &&
+                        availableRoomIds.Contains(r.RoomID) &&
+                        !string.IsNullOrWhiteSpace(r.Name) &&
+                        r.Name.ToLowerInvariant().Contains(searchTerm)
+                    ).ToList();
+
+                    if (matchingRooms?.Count == 1)
+                    {
+                        targetRoom = matchingRooms[0];
+                    }
+                    else if (matchingRooms?.Count > 1)
+                    {
+                        player.PendingAction = null;
+                        return MessageHandler.System($"Multiple rooms match '{cInput}'. Please use the number instead.");
+                    }
+                }
+
+                if (targetRoom == null)
+                {
+                    return MessageHandler.System("Invalid choice. Type a number or room name, or 'cancel'.");
+                }
+
+                // Execute landing
+                var skyRoom = player.CurrentRoom;
+
+                // Remove from sky
+                skyRoom.Players.Remove(player);
+
+                // Add to target room
+                player.CurrentRoom = targetRoom;
+                targetRoom.Players.Add(player);
+
+                // Persist
+                try
+                {
+                    PlayerPersistence.SavePlayer(_dbConnection, player);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DESCEND] Failed to persist: {ex.Message}");
+                }
+
+                // Broadcast departure from sky
+                foreach (var p in skyRoom.Players)
+                {
+                    MessageHandler.SendSystem(p, $"{player.Name} descends and vanishes below!");
+                }
+
+                // Broadcast arrival to target room
+                foreach (var p in targetRoom.Players.Where(p => p != player))
+                {
+                    MessageHandler.SendSystem(p, $"{player.Name} descends from above and lands gracefully!");
+                }
+
+                // Send room update to landing player
+                player.PendingMessageQueue.Add(MessageHandler.Room(
+                    targetRoom,
+                    targetRoom.Npcs?.Select(n => n.DisplayName).ToList() ?? new List<string>(),
+                    targetRoom.Players.Where(pl => pl != player).Select(pl => MessageHandler.GetPlayerDisplayName(pl)).ToList(),
+                    _world, _dbConnection));
+
+                // Broadcast room updates to both rooms
+                foreach (var p in skyRoom.Players)
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        skyRoom,
+                        skyRoom.Npcs?.Select(n => n.DisplayName).ToList() ?? new List<string>(),
+                        skyRoom.Players.Where(pl => pl != p).Select(pl => MessageHandler.GetPlayerDisplayName(pl)).ToList(),
+                        _world, _dbConnection));
+                }
+
+                foreach (var p in targetRoom.Players.Where(p => p != player))
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        targetRoom,
+                        targetRoom.Npcs?.Select(n => n.DisplayName).ToList() ?? new List<string>(),
+                        targetRoom.Players.Where(pl => pl != p).Select(pl => MessageHandler.GetPlayerDisplayName(pl)).ToList(),
+                        _world, _dbConnection));
+                }
+
+                player.PendingAction = null;
+                return null; // Message already sent
+            }//END SkyDescend pending
 
             // AttackSelect pending
             if (pa.Command == "AttackSelect")
@@ -4584,7 +4910,7 @@ namespace MudServer
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
-                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                     room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
@@ -4694,7 +5020,7 @@ namespace MudServer
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
-                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                     room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
@@ -4861,7 +5187,7 @@ namespace MudServer
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
-                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                     room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
@@ -4943,7 +5269,7 @@ namespace MudServer
             {
                 p.PendingMessageQueue.Add(MessageHandler.Room(
                     room,
-                    room.Npcs.Select(n => n.DisplayName).ToList(),
+                    room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                     room.Players.Where(pl => pl != p).Select(pl => p.Name).ToList(),
                     _world));
             }
@@ -4951,6 +5277,8 @@ namespace MudServer
 
             return MessageHandler.System($"You unhold {target.Name}.");
         }
+
+
 
         private bool IsValidDirection(string dir)
         {
@@ -4999,6 +5327,286 @@ namespace MudServer
             return s.Trim(); // ensure final trimmed text
         }
 
+        /// <summary>
+        /// Helper: Build a descriptive message about sky creatures visible from ground level.
+        /// Visibility and detail depend on observer size (larger = better perception).
+        /// Returns null if no sky creatures or no skyroom in associated area.
+        /// 
+        /// Size-based visibility:
+        /// - Size 3 or less: "You can faintly make out something flying overhead!"
+        /// - Size 4-7: Shows humanoid vs creature count
+        /// - Size 8+: Shows accurate names and counts
+        /// </summary>
+        private string GetSkyCreaturesViewMessage(Player observer)
+        {
+            if (observer?.CurrentRoom == null || observer.CurrentRoom.Flags == null)
+                return null;
+
+            // Skip if player is already in sky
+            bool inSky = observer.CurrentRoom.Flags.Any(f =>
+                string.Equals(f, "IsSkyRoom", StringComparison.OrdinalIgnoreCase));
+            if (inSky) return null;
+
+            try
+            {
+                // Find associated skyroom for this area
+                var area = _world?.Areas?.FirstOrDefault(a => a?.AreaID == observer.CurrentRoom.AreaID);
+                if (area == null || !area.SkyRoomID.HasValue)
+                    return null;
+
+                var skyRoom = _world?.Rooms?.FirstOrDefault(r => r?.RoomID == area.SkyRoomID.Value);
+                if (skyRoom == null)
+                    return null;
+
+                // NEW: Collect both flying NPCs and players in skyroom
+                var flyingEntities = new List<(string name, bool isHumanoid, bool isNpc)>();
+
+                // Add flying NPCs
+                if (skyRoom.Npcs != null)
+                {
+                    var flyingNpcs = skyRoom.Npcs
+                        .Where(n => n != null && n.Health > 0 && (n.IsFlying || n.Flags?.Any(f =>
+                            string.Equals(f, "IsFlying", StringComparison.OrdinalIgnoreCase)) == true))
+                        .ToList();
+
+                    foreach (var npc in flyingNpcs)
+                    {
+                        flyingEntities.Add((npc.DisplayName ?? npc.Name ?? "Unknown", npc.IsHumanoid, true));
+                    }
+                }
+
+                // NEW: Add all players in skyroom (they're flying/in sky)
+                if (skyRoom.Players != null)
+                {
+                    var playersInSky = skyRoom.Players
+                        .Where(p => p != null && p.Health > 0 && p != observer) // Don't see yourself
+                        .ToList();
+
+                    foreach (var player in playersInSky)
+                    {
+                        // Players are always humanoid
+                        flyingEntities.Add((player.Name, true, false));
+                    }
+                }
+
+                if (flyingEntities.Count == 0)
+                    return null;
+
+                int observerSize = observer.SizeEnum;
+
+                // Size 3 or less: vague description
+                if (observerSize <= 3)
+                {
+                    return "You can faintly make out something flying overhead!";
+                }
+
+                // Size 4-7: categorize by humanoid vs creature
+                if (observerSize <= 7)
+                {
+                    var humanoidCount = flyingEntities.Count(e => e.isHumanoid);
+                    var creatureCount = flyingEntities.Count(e => !e.isHumanoid);
+
+                    var parts = new List<string>();
+
+                    if (humanoidCount > 0)
+                    {
+                        string humanDesc = humanoidCount == 1
+                            ? "a humanoid"
+                            : $"{NumberToWord(humanoidCount)} humanoids";
+                        parts.Add(humanDesc);
+                    }
+
+                    if (creatureCount > 0)
+                    {
+                        string creatureDesc = creatureCount == 1
+                            ? "a creature"
+                            : $"{NumberToWord(creatureCount)} creatures";
+                        parts.Add(creatureDesc);
+                    }
+
+                    if (parts.Count == 0)
+                        return null;
+
+                    string combined = string.Join(", and ", parts);
+                    return $"You can make out {combined} flying overhead!";
+                }
+
+                // Size 8+: show accurate names and counts
+                var groupedByName = flyingEntities
+                    .GroupBy(e => e.name)
+                    .OrderBy(g => g.Key)
+                    .ToList();
+
+                var descriptions = new List<string>();
+
+                foreach (var group in groupedByName)
+                {
+                    string name = group.Key;
+                    int count = group.Count();
+
+                    if (count == 1)
+                    {
+                        descriptions.Add($"a {name}");
+                    }
+                    else
+                    {
+                        descriptions.Add($"{NumberToWord(count)} {Pluralize(name)}");
+                    }
+                }
+
+                if (descriptions.Count == 0)
+                    return null;
+
+                string finalDesc = JoinDescriptions(descriptions);
+                return $"You can see {finalDesc} flying overhead!";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CommandHandler] GetSkyCreaturesViewMessage failed: {ex.Message}");
+                return null;
+            }
+        }//end GetSkyCreaturesViewMessage
+
+        /// <summary>
+        /// Helper: Convert number (1-100) to written form.
+        /// Supports up to 100 by tapping into base numbers for compound values.
+        /// </summary>
+        public string NumberToWord(int n)
+        {
+            // Handle single digits and teens
+            if (n <= 20)
+            {
+                return n switch
+                {
+                    1 => "one",
+                    2 => "two",
+                    3 => "three",
+                    4 => "four",
+                    5 => "five",
+                    6 => "six",
+                    7 => "seven",
+                    8 => "eight",
+                    9 => "nine",
+                    10 => "ten",
+                    11 => "eleven",
+                    12 => "twelve",
+                    13 => "thirteen",
+                    14 => "fourteen",
+                    15 => "fifteen",
+                    16 => "sixteen",
+                    17 => "seventeen",
+                    18 => "eighteen",
+                    19 => "nineteen",
+                    20 => "twenty",
+                    _ => n.ToString()
+                };
+            }
+
+            // Handle 21-99 by breaking into tens and ones
+            if (n < 100)
+            {
+                int tens = n / 10;
+                int ones = n % 10;
+
+                string tenWord = tens switch
+                {
+                    2 => "twenty",
+                    3 => "thirty",
+                    4 => "forty",
+                    5 => "fifty",
+                    6 => "sixty",
+                    7 => "seventy",
+                    8 => "eighty",
+                    9 => "ninety",
+                    _ => n.ToString()
+                };
+
+                if (ones == 0)
+                    return tenWord;
+
+                string oneWord = NumberToWord(ones);
+                return $"{tenWord}-{oneWord}";
+            }
+
+            // For 100+, just return the number
+            return n.ToString();
+        }//end NumberToWord
+
+        /// <summary>
+        /// Helper: Basic English pluralization - just adds 's'.
+        /// </summary>
+        private string Pluralize(string word)
+        {
+            if (string.IsNullOrWhiteSpace(word))
+                return word;
+
+            return word + "s";
+        }
+
+        /// <summary>
+        /// Helper: Join descriptions with proper grammar (e.g., "a dragon, two eagles, and a gryphon").
+        /// </summary>
+        private string JoinDescriptions(List<string> descriptions)
+        {
+            if (descriptions == null || descriptions.Count == 0)
+                return "";
+
+            if (descriptions.Count == 1)
+                return descriptions[0];
+
+            if (descriptions.Count == 2)
+                return $"{descriptions[0]} and {descriptions[1]}";
+
+            // More than 2: use Oxford comma
+            var all = string.Join(", ", descriptions.Take(descriptions.Count - 1));
+            return $"{all}, and {descriptions.Last()}";
+        }
+
+        /// <summary>
+        /// Call this in the HandleLookCommand when player looks UP with no valid up exit.
+        /// Returns sky visibility message if applicable, otherwise returns standard "no exit" message.
+        /// </summary>
+        private Message HandleLookUp(Player player)
+        {
+            if (player?.CurrentRoom == null)
+                return MessageHandler.System("You cannot look up from here.");
+
+            // First try: check if there's an actual UP exit
+            var upExit = player.CurrentRoom.Exits?.FirstOrDefault(e =>
+                string.Equals(Movement.NormalizeDirection(e.Direction), "UP", StringComparison.OrdinalIgnoreCase));
+
+            if (upExit != null)
+            {
+                var targetRoom = _world.Rooms?.FirstOrDefault(r => r?.RoomID == upExit.ToRoomID);
+                if (targetRoom != null)
+                {
+                    // Standard look distant room behavior
+                    return MessageHandler.System($"Looking up, you see {targetRoom.Name}.");
+                }
+            }
+
+            // No up exit: try sky creatures message
+            var skyMessage = GetSkyCreaturesViewMessage(player);
+            if (!string.IsNullOrWhiteSpace(skyMessage))
+            {
+                return MessageHandler.System(skyMessage);
+            }
+
+            // NEW: No UP exit and no sky creatures, but area has a skyroom - show default sky view
+            try
+            {
+                var area = _world?.Areas?.FirstOrDefault(a => a?.AreaID == player.CurrentRoom.AreaID);
+                if (area != null && area.SkyRoomID.HasValue)
+                {
+                    return MessageHandler.System("You look up and see the distant sky.");
+                }
+            }
+            catch { /* best-effort */ }
+
+            // Fall back to standard "no exit" message
+            return MessageHandler.System("There is no valid direction up.");
+        }
+
         private string OppositeDirection(string dir) => dir.ToUpper() switch
         {
             "N" => "S",
@@ -5023,6 +5631,43 @@ namespace MudServer
                 case "d": return "down";
                 default: return token;
             }
+        }
+
+        // Helper: build encumbrance stat line safely
+        private string GetEncumbranceStatLine(Player player)
+        {
+            try
+            {
+                double inventoryMass = Encumbrance.GetInventoryMass(player);
+                string loadDesc = Encumbrance.GetLoadDescription(player);
+                return $"Carried Weight: {inventoryMass:F1} kg ({loadDesc})";
+            }
+            catch
+            {
+                return "Carried Weight: <error>";
+            }
+        }
+
+        private List<int> ConvertToIntList(object obj)
+        {
+            if (obj == null) return new List<int>();
+
+            // Try direct cast first
+            if (obj is List<int> list) return list;
+
+            // Try IEnumerable<object> (common when deserialized from JSON)
+            if (obj is System.Collections.IEnumerable enumerable)
+            {
+                var result = new List<int>();
+                foreach (var item in enumerable)
+                {
+                    if (item is int i) result.Add(i);
+                    else if (int.TryParse(item?.ToString(), out var parsed)) result.Add(parsed);
+                }
+                return result;
+            }
+
+            return new List<int>();
         }
     }
 }

@@ -168,23 +168,25 @@ namespace MudServer
 
                         // If any candidate has a positive weight, perform weighted random selection.
                         var totalWeight = candidates.Sum(c => c.Weight);
-                        if (totalWeight > 0)
-                        {
-                            var pick = _rng.Next(totalWeight);
-                            int acc = 0;
-                            foreach (var c in candidates)
-                            {
-                                acc += c.Weight;
-                                if (pick < acc)
-                                {
-                                    selectedRaw = c.Raw;
-                                    templateId = c.Template;
-                                    requestedQty = c.Qty;
-                                    break;
-                                }
-                            }
-                        }
-                        else
+						if (totalWeight > 0)
+						{
+							var pick = _rng.Next(totalWeight);
+							int acc = 0;
+
+							foreach (var c in candidates)
+							{
+								int nextAcc = acc + c.Weight;
+								if (pick >= acc && pick < nextAcc)  // ← FIXED: Range check instead of accumulator check
+								{
+									selectedRaw = c.Raw;
+									templateId = c.Template;
+									requestedQty = c.Qty;
+									break;
+								}
+								acc = nextAcc;
+							}
+						}
+						else
                         {
                             // fallback: uniform random selection (preserves original behavior)
                             var idx = _rng.Next(candidates.Count);
@@ -444,7 +446,7 @@ namespace MudServer
                         {
                             p.PendingMessageQueue.Add(MessageHandler.Room(
                                 room,
-                                room.Npcs.Select(n => n.DisplayName).ToList(),
+                                room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                 room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                 world));
 
@@ -682,7 +684,7 @@ namespace MudServer
                                 {
                                     p.PendingMessageQueue.Add(MessageHandler.Room(
                                         room,
-                                        room.Npcs.Select(n => n.DisplayName).ToList(),
+                                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                         room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                         world));
 
@@ -809,7 +811,7 @@ namespace MudServer
                                     {
                                         p.PendingMessageQueue.Add(MessageHandler.Room(
                                             room,
-                                            room.Npcs.Select(n => n.DisplayName).ToList(),
+                                            room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
                                             room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
                                             world));
 

@@ -183,6 +183,8 @@ namespace MudPersistence
                         RefreshAlignmentFromValue(player);
                     }
                     catch { /* best-effort */ }
+
+                    
                 }
             }
             catch { }

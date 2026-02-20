@@ -1,12 +1,14 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
+using MudCore.AI;
 using MudCore.Entities;
 using MudCore.World;
 using MudNetworking;
 using MudPersistence;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using World = global::MudCore.World.World;
+
 
 namespace MudCore.Actions
 {
@@ -118,7 +120,7 @@ namespace MudCore.Actions
                         {
                             try
                             {
-                                p.PendingMessageQueue.Add(MessageHandler.Room(attacker.CurrentRoom, attacker.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(), attacker.CurrentRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                                p.PendingMessageQueue.Add(MessageHandler.Room(attacker.CurrentRoom, attacker.CurrentRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(), attacker.CurrentRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
                             }
                             catch { }
                         }
@@ -424,7 +426,7 @@ namespace MudCore.Actions
                                                 {
                                                     try
                                                     {
-                                                        p.PendingMessageQueue.Add(MessageHandler.Room(defender.AsPlayer.CurrentRoom, defender.AsPlayer.CurrentRoom.Npcs.Select(n => n.DisplayName).ToList(), defender.AsPlayer.CurrentRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                                                        p.PendingMessageQueue.Add(MessageHandler.Room(defender.AsPlayer.CurrentRoom, defender.AsPlayer.CurrentRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(), defender.AsPlayer.CurrentRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
                                                     }
                                                     catch { }
                                                 }
@@ -451,8 +453,55 @@ namespace MudCore.Actions
                     // Calculate damage and whether it was a critical
                     var (dmg, isCrit) = Combat.CalculateDamage(attacker.Entity, defender.Entity);
 
-                    // Persist transient actor state where appropriate (best-effort; writer queue preferable in hot paths)
-                    try
+					// NEW: CrippleFlyer special critical handling
+					bool isCrippleFlyerCrit = false;
+                    if (isCrit && attacker.AsNpc != null && defender.AsNpc != null)
+                    {
+						// Check if attacker has CrippleFlyer move
+						if (Combat.IsSkyHunterCrippleFlyer(attacker.AsNpc) && Combat.IsNaturalFlyer(defender.AsNpc))
+						{
+							// This was a critical hit on a natural flyer with CrippleFlyer
+							// Remove the Flying flag and crash them
+							isCrippleFlyerCrit = true;
+
+							try
+							{
+								// Remove "Flying:" flag from defender's template flags (permanent removal)
+								if (defender.AsNpc.Flags != null)
+								{
+									defender.AsNpc.Flags.RemoveAll(f =>
+										!string.IsNullOrWhiteSpace(f) &&
+										f.StartsWith("Flying:", StringComparison.OrdinalIgnoreCase));
+
+									// Persist flag removal
+									try { if (conn != null) NpcPersistence.UpdateNpc(conn, defender.AsNpc); } catch { }
+								}
+
+								// Crash defender to ground
+								try
+								{
+									NpcCombatAi.HandleNpcCrashToGround(defender.AsNpc, state.Room, world);
+								}
+								catch (Exception exCrash)
+								{
+									Console.WriteLine($"[COMBAT] CrippleFlyer crash failed: {exCrash.Message}");
+								}
+
+								// Notify room
+								foreach (var p in state.Room.Players)
+								{
+									MessageHandler.SendSystem(p, $"{attacker.DisplayName}'s critical hit strips {defender.DisplayName}'s ability to fly!");
+								}
+							}
+							catch (Exception exCripple)
+							{
+								Console.WriteLine($"[COMBAT] CrippleFlyer handler failed: {exCripple.Message}");
+							}
+						}
+					}
+
+						// Persist transient actor state where appropriate (best-effort; writer queue preferable in hot paths)
+						try
                     {
                         if (!attacker.IsPlayer && attacker.AsNpc != null)
                         {
@@ -696,7 +745,7 @@ namespace MudCore.Actions
                                     {
                                         try
                                         {
-                                            p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                                            p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
                                         }
                                         catch { }
                                     }
@@ -1276,7 +1325,14 @@ namespace MudCore.Actions
             }
             catch { /* best-effort */ }
 
-            state.Active = false;
+			// NEW: Clear SkyHunter first-attack multiplier tracking when combat ends
+			try
+			{
+				Combat.ClearSkyHunterTracking();
+			}
+			catch { /* best-effort */ }
+
+			state.Active = false;
             foreach (var pl in state.Room.Players)
                 MessageHandler.SendSystem(pl, "Combat ends.");
             if (DebugCombat) Console.WriteLine($"[COMBAT] End State={state.Id} Reason={reason}");
@@ -1419,7 +1475,7 @@ namespace MudCore.Actions
                                 MessageHandler.SendSystem(p, $"{responder.DisplayName} rushes in to assist!");
 
                             foreach (var p in room.Players)
-                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => n.DisplayName).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
+                                p.PendingMessageQueue.Add(MessageHandler.Room(room, room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(), room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(), world));
                         }
                         catch { }
 

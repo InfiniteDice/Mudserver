@@ -1,8 +1,9 @@
-﻿using System;
+﻿using MudCore.Entities;
+using MudNetworking;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
-using MudCore.Entities;
 
 namespace MudCore.Actions
 {
@@ -20,6 +21,235 @@ namespace MudCore.Actions
     public static class Effects
     {
         private static readonly Random _rng = new();
+
+        // Regex to match persistent timed effects: IsEffectName:Minutes
+        private static readonly Regex TimedEffectRegex = new Regex(@"^Is([A-Za-z_]+):(\d+)$", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Global check for player flight.
+        /// Checks for permanent "IsFlying" flag OR timed "IsFlying:Minutes" flag.
+        /// </summary>
+        public static bool IsPlayerFlying(Player player)
+        {
+            if (player == null || player.Flags == null) return false;
+            // Case-insensitive check for permanent or timed flying flag
+            return player.Flags.Any(f =>
+                string.Equals(f, "IsFlying", StringComparison.OrdinalIgnoreCase) ||
+                f.StartsWith("IsFlying:", StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Helper to sync flight messaging and room state for timed effects.
+        /// Matches the behavior of Admin flight toggles.
+        /// </summary>
+        private static void SyncFlightEffectMessages(Player player, World.World world, Microsoft.Data.Sqlite.SqliteConnection conn, bool isStarting)
+        {
+            Console.WriteLine($"[EFFECTS] SyncFlightEffectMessages called: player={player?.Name}, room={player?.CurrentRoom?.Name}, isStarting={isStarting}");
+
+            if (player == null || player.CurrentRoom == null)
+            {
+                Console.WriteLine($"[EFFECTS] SyncFlightEffectMessages early return: player={player?.Name}, room={player?.CurrentRoom?.Name}");
+                return;
+            }
+
+            // 1. Personal confirmation
+            string msg = isStarting
+                ? "You lift off the ground and begin hovering!"
+                : "You gently descend to the ground.";
+            MessageHandler.SendSystem(player, msg);
+
+            // 2. Room-wide dramatic broadcast
+            string broadcast = isStarting  
+                ? $"{player.Name} lifts off the ground and begins hovering in the air!"
+                : $"{player.Name} gently descends to the ground.";
+
+            foreach (var p in player.CurrentRoom.Players.Where(p => p != player))
+            {
+                MessageHandler.SendSystem(p, broadcast);
+            }
+
+            // 3. Force immediate room refresh for all players (updates flight icons/status in UI)
+            try
+            {
+                var room = player.CurrentRoom;
+                foreach (var p in room.Players)
+                {
+                    p.PendingMessageQueue.Add(MessageHandler.Room(
+                        room,
+                        room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
+                        room.Players.Where(pl => pl != p && !pl.IsInvisibleToMortals).Select(pl => pl.Name).ToList(),
+                        world, conn));
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[EFFECTS] Failed to show message {player.Name}: {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// Applies a timed effect to a player. 
+        /// Adds the flag "Is[effectName]:[minutes]" to the player's Flags and persists to DB.
+        /// </summary>
+        public static void ApplyTimedEffect(Player player, string effectName, int minutes, Microsoft.Data.Sqlite.SqliteConnection conn, World.World world = null)
+        {
+            if (player == null || string.IsNullOrWhiteSpace(effectName) || minutes <= 0) return;
+
+            Console.WriteLine($"[EFFECTS] ApplyTimedEffect: player={player.Name}, effectName={effectName}, minutes={minutes}, world={world != null}");
+            Console.WriteLine($"[EFFECTS] Current flags: {string.Join(", ", player.Flags ?? new List<string>())}");
+
+            string flagPrefix = $"Is{effectName}:";
+            var flags = player.Flags ?? new List<string>();
+
+            // Check if effect already exists; if so, we stack/extend the time.
+            var existing = flags.FirstOrDefault(f => f.StartsWith(flagPrefix, StringComparison.OrdinalIgnoreCase));
+            Console.WriteLine($"[EFFECTS] flagPrefix={flagPrefix}, existing={existing}, isNewEffect={existing == null}");
+
+            bool isNewEffect = existing == null;
+
+            if (existing != null)
+            {
+                var match = TimedEffectRegex.Match(existing);
+                if (match.Success && int.TryParse(match.Groups[2].Value, out int currentMinutes))
+                {
+                    minutes += currentMinutes;
+                }
+                flags.Remove(existing);
+            }
+
+            flags.Add($"{flagPrefix}{minutes}");
+            player.Flags = flags;
+            player.TimedEffectSeconds[effectName] = 60; // Initialize with a full minute of seconds
+
+            Console.WriteLine($"[EFFECTS] After adding flag: {string.Join(", ", player.Flags)}, isNewEffect={isNewEffect}");
+
+            // Persist immediately
+            try
+            {
+                MudPersistence.PlayerPersistence.SavePlayer(conn, player);
+            }
+            catch (Exception ex) { Console.WriteLine($"[EFFECTS] Failed to persist timed effect for {player.Name}: {ex.Message}"); }
+
+            // Specific flight start messaging (executes regardless of persistence success)
+            if (isNewEffect && world != null && string.Equals(effectName, "Flying", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"[EFFECTS] Calling SyncFlightEffectMessages with isStarting=true");
+                try
+                {
+                    SyncFlightEffectMessages(player, world, conn, true);
+                }
+                catch (Exception ex) { Console.WriteLine($"[EFFECTS] Failed to sync flight messages for {player.Name}: {ex.Message}"); }
+            }
+            else
+            {
+                Console.WriteLine($"[EFFECTS] NOT calling SyncFlightEffectMessages: isNewEffect={isNewEffect}, world={world != null}, effectName={effectName}");
+            }
+        }
+
+        /// <summary>
+        /// Processes timed effects for all authenticated players.
+        /// Called from GameLoop every tick (3s). 
+        /// Handles second-to-minute rollovers, DB persistence, and notifications.
+        /// </summary>
+        public static void ProcessTimedEffects(World.World world, Microsoft.Data.Sqlite.SqliteConnection conn)
+        {
+            if (world?.Players == null) return;
+            var players = world.Players.Where(p => p != null && p.IsAuthenticated).ToList();
+
+            foreach (var player in players)
+            {
+                var flags = player.Flags ?? new List<string>();
+                var timedFlags = flags.Where(f => TimedEffectRegex.IsMatch(f)).ToList();
+
+                foreach (var flag in timedFlags)
+                {
+                    var match = TimedEffectRegex.Match(flag);
+                    if (!match.Success) continue;
+
+                    string effectName = match.Groups[1].Value;
+                    int minutes = int.Parse(match.Groups[2].Value);
+
+                    if (!player.TimedEffectSeconds.TryGetValue(effectName, out int seconds))
+                    {
+                        seconds = 60; // Fallback for newly loaded players
+                    }
+
+                    // Decrement by the game tick duration (approx 24 seconds game-time / 3 seconds real-time tick)
+                    // We'll use 3 seconds real-time per tick as the baseline.
+                    seconds -= 3;
+
+                    // Persistence Threshold: Warning (15s before total expiry)
+                    if (minutes == 1 && seconds == 15)
+                    {
+                        NotifyEffectExpiring(player, effectName, world);
+                    }
+
+                    // Expiry logic
+                    if (minutes <= 1 && seconds <= 0)
+                    {
+                        flags.Remove(flag);
+                        player.Flags = flags;
+                        player.TimedEffectSeconds.Remove(effectName);
+
+                        if (string.Equals(effectName, "Flying", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Specific flight expiry messaging and sync
+                            SyncFlightEffectMessages(player, world, conn, false);
+
+                            // If flight expired while in sky, gravity takes over (fall processing)
+                            try { Movement.CheckSkyFall(player, world, conn); } catch { }
+                        }
+                        else
+                        {
+                            NotifyEffectExpired(player, effectName, world);
+                        }
+
+                        // Persist removal
+                        try { MudPersistence.PlayerPersistence.SavePlayer(conn, player); } catch { }
+                        continue;
+                    }
+
+                    // Minute rollover logic: update persistent flag
+                    if (seconds <= 0)
+                    {
+                        minutes--;
+                        seconds = 60;
+                        flags.Remove(flag);
+                        flags.Add($"Is{effectName}:{minutes}");
+                        player.Flags = flags;
+
+                        // Persist the minute decrement to DB
+                        try { MudPersistence.PlayerPersistence.SavePlayer(conn, player); } catch { }
+                    }
+
+                    player.TimedEffectSeconds[effectName] = seconds;
+                }
+            }
+        }
+
+        private static void NotifyEffectExpiring(Player player, string effect, World.World world)
+        {
+            try
+            {
+                MessageHandler.SendSystem(player, $"You feel the effects of {effect.ToLowerInvariant()} wearing off!");
+            }
+            catch { }
+        }
+
+        private static void NotifyEffectExpired(Player player, string effect, World.World world)
+        {
+            try
+            {
+                MessageHandler.SendSystem(player, $"The effects of {effect.ToLowerInvariant()} have worn off!");
+
+                // Observer message
+                if (player.CurrentRoom != null)
+                {
+                    foreach (var observer in player.CurrentRoom.Players.Where(p => p != player))
+                    {
+                        MessageHandler.SendSystem(observer, $"{player.Name} is no longer affected by {effect.ToLowerInvariant()}!");
+                    }
+                }
+            }
+            catch { }
+        }
 
         // --------------------------------------------------------------------
         // Healing utilities (preserved behavior)

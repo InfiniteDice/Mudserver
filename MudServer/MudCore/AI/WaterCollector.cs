@@ -17,7 +17,7 @@ namespace MudCore.AI
     /// </summary>
     public static class WaterCollector
     {
-        public static bool DiagnosticsEnabled { get; set; } = true;
+        public static bool DiagnosticsEnabled { get; set; } = false;
 
         // Track NPCs currently collecting water (NpcID -> target RoomID)
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> _collectingNpcs

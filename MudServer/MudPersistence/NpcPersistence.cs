@@ -710,8 +710,18 @@ namespace MudPersistence
                 if (tx != null) cmd.Transaction = tx;
                 cmd.CommandText = "DELETE FROM Npc WHERE NpcID = @id;";
                 cmd.Parameters.AddWithValue("@id", npcId);
-                cmd.ExecuteNonQuery();
-                Console.WriteLine($"[NpcPersistence] Deleted NPC NpcID={npcId} from DB.");
+                int rowsDeleted = cmd.ExecuteNonQuery();
+
+                // Only log if we actually deleted a row (prevent spam from duplicate deletes)
+                if (rowsDeleted > 0)
+                {
+                    Console.WriteLine($"[NpcPersistence] Deleted NPC NpcID={npcId} from DB.");
+                }
+                else
+                {
+                    // NPC already deleted - this is expected in concurrent scenarios
+                    if (false) Console.WriteLine($"[NpcPersistence][DBG] NpcID={npcId} already deleted (not found in DB)");
+                }
             }
             catch (Exception ex)
             {
@@ -1131,10 +1141,20 @@ namespace MudPersistence
                                             // Try direct deserialization into structured configs first
                                             try
                                             {
-                                                configs = JsonSerializer.Deserialize<List<NpcTemplate.AiBehaviorConfig>>(aiBehJson, opts);
+                                                // Skip SkyHunter - it's a custom behavior like Barkeep
+                                                if (aiBehJson.Contains("\"Behavior\":\"SkyHunter\"", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    Console.WriteLine($"[NpcPersistence][DBG] SkyHunter behavior found NpcID={npc.NpcID}, will be handled by NpcCombatAi");
+                                                    configs = null; // Intentionally skip - will be handled by NpcCombatAi
+                                                }
+                                                else
+                                                {
+                                                    configs = JsonSerializer.Deserialize<List<NpcTemplate.AiBehaviorConfig>>(aiBehJson, opts);
+                                                }
                                             }
                                             catch (Exception exDes)
                                             {
+                                                // Only log error if this wasn't an intentional SkyHunter skip
                                                 Console.WriteLine($"[NpcPersistence][ERROR] Failed to deserialize AiBehaviors for NpcID={npc.NpcID}: {exDes.Message}");
                                                 Console.WriteLine($"[NpcPersistence][ERROR] JSON was: {aiBehJson}");
                                                 configs = null;
@@ -1305,6 +1325,34 @@ namespace MudPersistence
                         }
                     }
                     catch { /* best-effort */ }
+
+
+                    // NEW: Check for IsFlying flag in Flags array (persisted state)
+                    try
+                    {
+                        // Check if NPC has persistent IsFlying flag
+                        if (npc.Flags != null && npc.Flags.Any(f => string.Equals(f, "IsFlying", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            npc.IsFlying = true;
+                            Console.WriteLine($"[NPC-LOAD] {npc.Name} (NpcID={npc.NpcID}) loaded with IsFlying flag from DB");
+                        }
+
+                        
+                    }
+                    catch
+                    {
+                        npc.IsFlying = false;
+                    }
+
+                    // NEW: Initialize encumbrance (EffMass and max load capacity caching)
+                    try
+                    {
+                        Encumbrance.InitializeForNpc(npc);
+                    }
+                    catch (Exception exEnc)
+                    {
+                        Console.WriteLine($"[NpcPersistence] Failed to initialize encumbrance for NPC NpcID={npc.NpcID}: {exEnc.Message}");
+                    }
 
                     if (npc.CurrentRoom != null)
                         npc.CurrentRoom.Npcs.Add(npc);

@@ -1,0 +1,15 @@
+{
+  "Id": "talon_eagle",
+  "Name": "Eagle Talon",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 10,
+  "ShortDesc": "A talon from an eagle",
+  "LongDesc": "A talon from an eagle, you can likely use this for something.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "true"
+}

@@ -151,8 +151,10 @@ namespace MudNetworking
         }
 
         // Pattern detection for injection attempts
+        // Refined to avoid false positives on common game commands like 'drop' (as in 'drop cup') or 'select'.
+        // We now check for SQL-specific command sequences rather than naked keywords that double as game verbs.
         private static readonly Regex SqlInjectionPattern = new Regex(
-            @"(DROP|DELETE|INSERT|UPDATE|SELECT|UNION|ALTER|EXEC|SCRIPT|<|>|--|;)",
+            @"\b(DROP\s+(TABLE|DATABASE|INDEX|VIEW|PROC)|DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+.*\s+SET|SELECT\s+.*\s+FROM|UNION\s+ALL|UNION\s+SELECT|ALTER\s+TABLE|EXEC\s*\()\b|--",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex CodeInjectionPattern = new Regex(

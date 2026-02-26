@@ -1,0 +1,34 @@
+{
+  "id": "Lightning",
+  "castingComponents": [
+    {
+      "template": "coin_silver",
+      "qty": 1
+    },
+    {
+      "template": "dust_fairy",
+      "qty": 1
+    }
+  ],
+  "container": [ "Pouch" ],
+  "requiredSkill": "skill_elemental_knowledge",
+  "minSkillLevel": 1,
+  "toolsRequired": [],
+  "powerCost": 10,
+  "roomFlags": [],
+  "spellEffects": [
+    {
+      "type": "Damage",
+      "target": "Target",
+      "dmgPerLevel": 15,
+      "effectDuration": 0,
+      "damageType": "Electric"
+    }
+  ],
+  "castTimeSeconds": 3, 
+  "allowSubstitutions": false,
+  "substitutions": {
+    "dust_fairy": ["iron_oxide"]
+  },
+  "notes": "The lightning spell, casts an arc of lightning from the casters hands to one defined target 'cast lightning at goblin' for example."
+}

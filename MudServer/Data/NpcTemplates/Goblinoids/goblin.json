@@ -28,7 +28,7 @@
   "BaseArmorClass": 0.0,
   "EffArmorClass": 0.0,
   "IsHumanoid": true,
-  "EquipmentTemplateIds": [ "knife_basic" ],
+  "EquipmentTemplateIds": [ "knife_basic","helmet_bronze" ],
   "DropChance": 0.60,
   "DropCountMin": 1,
   "DropCountMax": 2,

@@ -1,0 +1,14 @@
+{
+  "Id": "solleret_bronze",
+  "Name": "Bronze Solleret",
+  "ItemCategory": "Armor",
+  "Weight": 2.2,
+  "Value": 20,
+  "ShortDesc": "A simple bronze solleret",
+  "LongDesc": "A solleret made of bronze rings, decent foot protection.",
+  "WearLoc": "Feet",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 7.0
+}

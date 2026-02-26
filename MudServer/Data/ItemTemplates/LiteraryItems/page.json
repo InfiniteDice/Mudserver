@@ -1,0 +1,14 @@
+{
+  "Id": "page",
+  "Name": "Page",
+  "ItemCategory": "Page",
+  "Weight": 0.01,
+  "Value": 1,
+  "ShortDesc": "A blank page",
+  "LongDesc": "A blank page, ready to be written on.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": ["BlankPage"],
+  "Material": "Organic",
+  "Stackable": "true"
+}

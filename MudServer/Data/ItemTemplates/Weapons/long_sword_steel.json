@@ -1,0 +1,14 @@
+{
+  "Id": "long_sword_steel",
+  "Name": "Steel Long Sword",
+  "ItemCategory": "Weapon",
+  "Weight": 1.8,
+  "Value": 1350,
+  "ShortDesc": "A steel long sword.",
+  "LongDesc": "A sturdy steel long sword, slightly worn but usable.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": ["SlashHit40T"],
+  "Material": "Steel",
+  "DmgDiceMult": 7.0
+}

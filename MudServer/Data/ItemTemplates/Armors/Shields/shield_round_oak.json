@@ -1,0 +1,15 @@
+{
+  "Id": "shield_round_oak",
+  "Name": "Oak Round Shield",
+  "ItemCategory": "Handheld",
+  "Weight": 2.0,
+  "Value": 150,
+  "ShortDesc": "A sturdy oak round shield",
+  "LongDesc": "A sturdy oak round shield, rimmed with iron. Hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": [],
+  "Material": "Oak",
+  "DmgDiceMult": 2.0,
+  "BaseACBonus": 10.0
+}

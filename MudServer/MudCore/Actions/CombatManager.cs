@@ -15,7 +15,7 @@ namespace MudCore.Actions
     // Phase 1+2: Add tick-based multi-party combat loop (one attack per participant per tick)
     public static class CombatManager
     {
-        private static readonly bool DebugCombat = false;
+        private static readonly bool DebugCombat = true;
 
         private const int CAP_CS = 200;               // Max effective combat skill used in priority score
         private const int GLOBAL_TEAM_CAP = 5;        // Max attacks per team per tick
@@ -40,7 +40,16 @@ namespace MudCore.Actions
             public string DisplayName => IsPlayer ? (AsPlayer?.Name ?? "Player") : (AsNpc?.DisplayName ?? "NPC");
             public int CurrentHealth => IsPlayer ? (AsPlayer?.Health ?? 0) : (AsNpc?.Health ?? 0);
             public int MaxHealth => IsPlayer ? (AsPlayer?.MaxHealth ?? 0) : (AsNpc?.HealthMax ?? 0);
-        }
+
+			// NEW: Step 3 - Armor by body location (in-memory only, runtime collection)
+			// Maps BodyLocation -> List of Item (armor pieces protecting that location)
+			// Populated at combat start from worn items (player) or equipment templates (NPC)
+			public Dictionary<BodyLocation, List<Item>> ArmorByLocation { get; } = new();
+
+			// NEW: Humanoid flag for probability selection
+			// Determines whether to use humanoid (head/body/limbs) or non-humanoid (head/body) hit locations
+			public bool IsHumanoid { get; set; } = true;
+		}
 
         private class CombatTeam
         {
@@ -85,8 +94,19 @@ namespace MudCore.Actions
             // If player was digging/mining, starting an attack interrupts it immediately.
             try { MudCore.Actions.DigManager.CancelPending(attacker); } catch { /* best-effort */ }
 
-            // NEW: When a player starts combat against an NPC, ensure any pending trade sessions are terminated.
-            try
+			// NEW: If attacker is starting combat while memorizing, interrupt it first
+			try
+			{
+				var pa = attacker.PendingAction;
+				if (pa != null && string.Equals(pa.Command, "MemorizeSpell", StringComparison.OrdinalIgnoreCase))
+				{
+					MemorizationManager.InterruptMemorization(attacker, "You engage in combat.", conn);
+				}
+			}
+			catch { /* best-effort */ }
+
+			// NEW: When a player starts combat against an NPC, ensure any pending trade sessions are terminated.
+			try
             {
                 var pa = attacker.PendingAction;
                 if (pa != null && pa.Data is System.Collections.Generic.Dictionary<string, object> d)
@@ -130,6 +150,8 @@ namespace MudCore.Actions
             }
             catch { /* best-effort */ }
 
+
+
             var room = attacker.CurrentRoom;
             if (!_activeByRoom.TryGetValue(room.RoomID, out var state))
             {
@@ -137,7 +159,7 @@ namespace MudCore.Actions
                 _activeByRoom[room.RoomID] = state;
 
                 var pA = BuildParticipant(attacker);
-                var pD = BuildParticipant(defender);
+                var pD = BuildParticipant(defender, world);
                 state.TeamA.Members.Add(pA);
                 state.TeamB.Members.Add(pD);
 
@@ -159,8 +181,10 @@ namespace MudCore.Actions
             }
             else
             {
-                EnsureParticipantPresent(state, attacker, defender);
-                var targetTeam = state.GetTeamOf(defender) ?? state.TeamB;
+                EnsureParticipantPresent(state, attacker, defender, world);
+				// NEW: Reset shield focus when entering combat
+				CombatBlockManager.ResetFocusOnCombatStart(attacker);
+				var targetTeam = state.GetTeamOf(defender) ?? state.TeamB;
                 var attackTeam = state.Opposing(targetTeam);
                 var attackerTeam = state.GetTeamOf(attacker);
 
@@ -394,7 +418,21 @@ namespace MudCore.Actions
                     if (performed >= budget) break;
                     if (usedAttackers.Contains(attacker.Entity)) continue;
 
-                    var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
+					// NEW: Check if player attacker should autoflee
+					if (attacker.IsPlayer && attacker.AsPlayer != null && attacker.AsPlayer.AutoFlee > 0)
+					{
+						if (attacker.AsPlayer.Health <= attacker.AsPlayer.AutoFlee)
+						{
+							var fleeMsg = ExecutePlayerAutoFlee(attacker.AsPlayer, state.Room, world);
+							if (fleeMsg)
+							{
+								usedAttackers.Add(attacker.Entity);
+								continue; // Skip this attacker's normal attack
+							}
+						}
+					}
+
+					var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
                     if (defender == null) break;
 
                     // If the defender is a player, cancel any pending dig/mining action (they get interrupted by incoming attacks).
@@ -446,12 +484,75 @@ namespace MudCore.Actions
                                 }
                             }
                             catch { /* best-effort */ }
-                        }
+
+							// NEW: If defender is player actively memorizing, interrupt it
+							try
+							{
+								if (defender.IsPlayer && defender.AsPlayer != null)
+								{
+									var pa = defender.AsPlayer.PendingAction;
+									if (pa != null && string.Equals(pa.Command, "MemorizeSpell", StringComparison.OrdinalIgnoreCase))
+									{
+										MemorizationManager.InterruptMemorization(defender.AsPlayer, "You are under attack!", conn);
+										try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
+									}
+								}
+							}
+							catch { /* best-effort */ }
+						}
                     }
                     catch { /* best-effort */ }
 
-                    // Calculate damage and whether it was a critical
-                    var (dmg, isCrit) = Combat.CalculateDamage(attacker.Entity, defender.Entity);
+					// NEW: Step 5 - Select body location for this attack
+					var hitLocation = BodyLocationSelector.SelectHitLocation(attacker.Entity, defender.Entity, skillOverrideLocation: null);
+
+					// NEW: Create CombatHit to track location and armor
+					var hit = new CombatHit { TargetLocation = hitLocation };
+
+					// NEW: Step 6 - Lookup armor protecting this location
+					if (defender.ArmorByLocation.TryGetValue(hitLocation, out var armorList))
+					{
+						hit.ArmorHit = armorList;
+						// Sum AC from all armor pieces protecting this location
+						// ONLY count armor that is not broken (Condition > 0)
+						foreach (var armor in armorList)
+						{
+							if (armor != null && armor.Condition > 0)
+							{
+								hit.TotalArmorACApplied += (int)armor.BaseACBonus;
+							}
+						}
+					}
+
+					// NEW: Apply shield bonus if defender is player with shield
+					double shieldBonus = 0.0;
+					if (defender.IsPlayer && defender.AsPlayer != null)
+					{
+						var shieldBonuses = Combat.GetShieldBonusPerOpponent(defender.AsPlayer, state.Room);
+
+						int attackerId = attacker.IsPlayer ? (attacker.AsPlayer?.DbPlayerID ?? 0) : (attacker.AsNpc?.NpcID ?? 0);
+
+						if (shieldBonuses.TryGetValue(attackerId, out var bonus))
+						{
+							shieldBonus = bonus;
+						}
+					}
+
+					// Calculate damage and whether it was a critical (with armor AC + shield applied)
+					double defenderACWithShield = defender.EffArmorClass + shieldBonus;
+					double originalDefenderAC = defender.EffArmorClass;
+					defender.EffArmorClass += hit.TotalArmorACApplied;
+
+					// Calculate damage and whether it was a critical (with armor AC applied)
+					var (dmg, isCrit) = Combat.CalculateDamage(attacker.Entity, defender.Entity);
+
+					// NEW: Restore original AC (armor AC was only for this hit calculation)
+					defender.EffArmorClass = originalDefenderAC;
+
+					if (DebugCombat)
+					{
+						Console.WriteLine($"[COMBAT] Attack: {attacker.DisplayName} → {defender.DisplayName} at {BodyLocationMapper.GetBodyLocationName(hitLocation)} (Armor AC: +{hit.TotalArmorACApplied})");
+					}
 
 					// NEW: CrippleFlyer special critical handling
 					bool isCrippleFlyerCrit = false;
@@ -500,9 +601,115 @@ namespace MudCore.Actions
 						}
 					}
 
-						// Persist transient actor state where appropriate (best-effort; writer queue preferable in hot paths)
+					// NEW: Step 7 - Apply condition loss to armor after hit succeeds
+					// Only reduce condition if the hit actually connected (damage > 0)
+					var armorDamageLog = new Dictionary<Item, float>(); // Track condition loss per armor piece
+
+					if (dmg > 0 && hit.ArmorHit.Count > 0)
+					{
 						try
-                    {
+						{
+							foreach (var armor in hit.ArmorHit)
+							{
+								if (armor == null || armor.Condition <= 0)
+									continue;
+
+								// Get wear multiplier for armor material
+								double wearMultiplier = 1.0;
+								if (!string.IsNullOrWhiteSpace(armor.Material))
+								{
+									wearMultiplier = Crafting.GetMetalWearMultiplier(armor.Material);
+								}
+
+								// Base condition loss: 1 point per hit
+								// Multiplied by wear multiplier based on material
+								float conditionLoss = 1.0f * (float)wearMultiplier;
+
+								// Store original condition for messaging
+								float originalCondition = armor.Condition;
+
+								// Apply condition loss
+								armor.Condition = Math.Max(0.0f, armor.Condition - conditionLoss);
+
+								// Log the damage for Step 8 messaging
+								armorDamageLog[armor] = conditionLoss;
+
+								if (DebugCombat)
+								{
+									Console.WriteLine($"[COMBAT] Armor '{armor.Name}' condition: {originalCondition} → {armor.Condition}");
+								}
+							}
+						}
+						catch (Exception exCondition)
+						{
+							Console.WriteLine($"[COMBAT] Failed to apply armor condition loss: {exCondition.Message}");
+						}
+					}
+
+					// NEW: Step 8 - Messaging for armor damage
+					if (dmg > 0 && hit.ArmorHit.Count > 0)
+					{
+						try
+						{
+							foreach (var armor in hit.ArmorHit)
+							{
+								if (armor == null)
+									continue;
+
+								// Check if armor just broke (reached 0%)
+								bool justBroke = armor.Condition == 0 && armorDamageLog.TryGetValue(armor, out var conditionLoss) && (armor.Condition + conditionLoss) > 0;
+
+								if (justBroke)
+								{
+									// Armor is now destroyed
+									string defenderMsg = $"Your {armor.Name} is destroyed and no longer provides protection!";
+									if (defender.IsPlayer && defender.AsPlayer != null)
+									{
+										MessageHandler.SendSystem(defender.AsPlayer, defenderMsg);
+									}
+
+									// Room-wide message
+									foreach (var p in state.Room.Players)
+									{
+										if (p != defender.AsPlayer)
+											MessageHandler.SendSystem(p, $"{defender.DisplayName}'s {armor.Name} is destroyed!");
+									}
+
+									if (DebugCombat)
+									{
+										Console.WriteLine($"[COMBAT] Armor '{armor.Name}' destroyed");
+									}
+								}
+								else if (armor.Condition > 0 && armor.Condition < 50)
+								{
+									// Warn when armor is damaged but not destroyed
+									string wearMessage = armor.Condition < 25
+										? $"Your {armor.Name} is badly damaged ({armor.Condition}%)!"
+										: $"Your {armor.Name} is showing wear ({armor.Condition}%)";
+
+									if (defender.IsPlayer && defender.AsPlayer != null)
+									{
+										MessageHandler.SendSystem(defender.AsPlayer, wearMessage);
+									}
+
+									if (DebugCombat)
+									{
+										Console.WriteLine($"[COMBAT] Armor '{armor.Name}' damaged to {armor.Condition}%");
+									}
+								}
+							}
+						}
+						catch (Exception exMsg)
+						{
+							Console.WriteLine($"[COMBAT] Failed to send armor damage messages: {exMsg.Message}");
+						}
+					}
+
+					// Rest of existing code continues...
+
+					// Persist transient actor state where appropriate (best-effort; writer queue preferable in hot paths)
+					try
+					{
                         if (!attacker.IsPlayer && attacker.AsNpc != null)
                         {
                             // persisted updates for NPCs are done via writer queue elsewhere; keep lightweight here
@@ -985,13 +1192,24 @@ namespace MudCore.Actions
             if (attacker?.CurrentRoom == null || defender?.CurrentRoom == null || attacker.CurrentRoom != defender.CurrentRoom)
                 return MessageHandler.System("Target is not in your room.");
 
-            var room = attacker.CurrentRoom;
+			// NEW: If player defender is memorizing, interrupt it
+			try
+			{
+				if (defender.PendingAction != null && string.Equals(defender.PendingAction.Command, "MemorizeSpell", StringComparison.OrdinalIgnoreCase))
+				{
+					MemorizationManager.InterruptMemorization(defender, "You are under attack!", conn);
+					try { MessageHandler.EnqueuePlayerUpdate(defender); } catch { }
+				}
+			}
+			catch { /* best-effort */ }
+
+			var room = attacker.CurrentRoom;
             if (!_activeByRoom.TryGetValue(room.RoomID, out var state))
             {
                 state = new CombatState { RoomID = room.RoomID, Room = room, InitiatorTeamId = 0 };
                 _activeByRoom[room.RoomID] = state;
 
-                var pA = BuildParticipant(attacker);
+                var pA = BuildParticipant(attacker, world);
                 var pD = BuildParticipant(defender);
                 state.TeamA.Members.Add(pA);
                 state.TeamB.Members.Add(pD);
@@ -1016,13 +1234,15 @@ namespace MudCore.Actions
             }
             else
             {
-                EnsureParticipantPresent(state, attacker, defender);
-                var targetTeam = state.GetTeamOf(defender) ?? state.TeamB;
+                EnsureParticipantPresent(state, attacker, defender, world);
+				// NEW: Reset shield focus when player enters combat
+				CombatBlockManager.ResetFocusOnCombatStart(defender);
+				var targetTeam = state.GetTeamOf(defender) ?? state.TeamB;
                 var attackTeam = state.Opposing(targetTeam);
 
                 if (state.GetTeamOf(attacker) == null)
                 {
-                    var pAtt = BuildParticipant(attacker);
+                    var pAtt = BuildParticipant(attacker, world);
                     attackTeam.Members.Add(pAtt);
 
                     // NEW: mark newly-joined NPC attacker in-combat
@@ -1050,14 +1270,53 @@ namespace MudCore.Actions
             if (attacker?.CurrentRoom == null || defender?.CurrentRoom == null || attacker.CurrentRoom != defender.CurrentRoom)
                 return MessageHandler.System("Target is not in the same room.");
 
-            var room = attacker.CurrentRoom;
+			// NEW: Check if defender has NoAttack flag - flee instead
+			if (MudCore.Actions.Combat.HasNoAttackFlag(defender))
+			{
+				// Try to move defender to random adjacent room
+				var currentRoom = defender.CurrentRoom;
+				if (currentRoom != null)
+				{
+					var viableExits = currentRoom.Exits?
+						.Where(e => e != null && e.ToRoomID > 0)
+						.ToList() ?? new List<Room.RoomExit>();
+
+					if (viableExits.Count > 0)
+					{
+						var exitChosen = viableExits[new Random().Next(viableExits.Count)];
+						var nextRoom = world.Rooms.FirstOrDefault(r => r.RoomID == exitChosen.ToRoomID);
+
+						if (nextRoom != null)
+						{
+							// Move defender
+							try { currentRoom.Npcs.Remove(defender); } catch { }
+							defender.CurrentRoom = nextRoom;
+							nextRoom.Npcs.Add(defender);
+
+							// Broadcast flee message
+							string fleeMsg = $"{defender.DisplayName} moves away from {attacker.DisplayName}!";
+							foreach (var p in currentRoom.Players)
+								MessageHandler.SendSystem(p, fleeMsg);
+							foreach (var p in nextRoom.Players)
+								MessageHandler.SendSystem(p, fleeMsg);
+
+							return null; // No combat initiated
+						}
+					}
+				}
+
+				// If can't move, just prevent combat
+				return null;
+			}
+
+			var room = attacker.CurrentRoom;
             if (!_activeByRoom.TryGetValue(room.RoomID, out var state))
             {
                 state = new CombatState { RoomID = room.RoomID, Room = room, InitiatorTeamId = 0 };
                 _activeByRoom[room.RoomID] = state;
 
-                var pA = BuildParticipant(attacker);
-                var pD = BuildParticipant(defender);
+                var pA = BuildParticipant(attacker, world);
+                var pD = BuildParticipant(defender, world);
                 state.TeamA.Members.Add(pA);
                 state.TeamB.Members.Add(pD);
 
@@ -1087,7 +1346,7 @@ namespace MudCore.Actions
 
                 if (state.GetTeamOf(attacker) == null)
                 {
-                    var pAtt = BuildParticipant(attacker);
+                    var pAtt = BuildParticipant(attacker, world);
                     attackTeam.Members.Add(pAtt);
 
                     // NEW: mark newly-joined NPC attacker in-combat
@@ -1100,7 +1359,7 @@ namespace MudCore.Actions
 
                 if (state.GetTeamOf(defender) == null)
                 {
-                    var pDef = BuildParticipant(defender);
+                    var pDef = BuildParticipant(defender, world);
                     var defTeam = state.Opposing(attackTeam);
                     defTeam.Members.Add(pDef);
                 }
@@ -1191,43 +1450,128 @@ namespace MudCore.Actions
             return null;
         } // end PerformImmediateAttack_NpcVsNpc
 
-        private static CombatParticipant BuildParticipant(Player p)
-        {
-            Combat.InitializeSizeDefaults(p);
-            Combat.UpdateEffectiveStats(p);
-            return new CombatParticipant
-            {
-                Entity = p,
-                IsPlayer = true,
-                AsPlayer = p,
-                SizeEnum = p.SizeEnum,
-                EffMass = p.EffMass,
-                EffCombatSkill = p.EffCombatSkill,
-                EffDmgDice = p.EffDmgDice,
-                EffArmorClass = p.EffArmorClass
-            };
-        }
+		private static CombatParticipant BuildParticipant(Player p)
+		{
+			Combat.InitializeSizeDefaults(p);
+			Combat.UpdateEffectiveStats(p);
 
-        private static CombatParticipant BuildParticipant(Npc n)
-        {
-            Combat.InitializeSizeDefaults(n);
-            Combat.UpdateEffectiveStats(n);
-            return new CombatParticipant
-            {
-                Entity = n,
-                IsPlayer = false,
-                AsNpc = n,
-                SizeEnum = n.SizeEnum ?? 4,
-                EffMass = n.EffMass ?? n.Mass ?? 85.0,
-                // CHANGED: use 50.0 literal to match double
-                EffCombatSkill = n.EffCombatSkill ?? (n.CombatSkill ?? 50.0),
-                EffDmgDice = n.EffDmgDice,
-                EffArmorClass = n.EffArmorClass
-            };
-        }
+			var participant = new CombatParticipant
+			{
+				Entity = p,
+				IsPlayer = true,
+				AsPlayer = p,
+				SizeEnum = p.SizeEnum,
+				EffMass = p.EffMass,
+				EffCombatSkill = p.EffCombatSkill,
+				EffDmgDice = p.EffDmgDice,
+				EffArmorClass = p.EffArmorClass
+			};
 
-        // Ensure participant present for Player attacker / Npc defender (original typed helper)
-        private static void EnsureParticipantPresent(CombatState state, Player attacker, Npc defender)
+			// NEW: Load shield into ArmorByLocation
+			try
+			{
+				var shield = Combat.GetHeldShield(p);
+				if (shield != null)
+				{
+					var locations = BodyLocationMapper.MapWearLocToBodyLocations(shield.WearLoc, isHumanoid: true);
+					if (locations.Count > 0)
+					{
+						foreach (var location in locations)
+						{
+							if (!participant.ArmorByLocation.ContainsKey(location))
+								participant.ArmorByLocation[location] = new List<Item>();
+							participant.ArmorByLocation[location].Add(shield);
+						}
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[COMBAT] Failed to load shield for player {p.Name}: {ex.Message}");
+			}
+
+			return participant;
+		}
+
+		private static CombatParticipant BuildParticipant(Npc n, World.World world)
+		{
+			Combat.InitializeSizeDefaults(n);
+			Combat.UpdateEffectiveStats(n);
+
+			var participant = new CombatParticipant
+			{
+				Entity = n,
+				IsPlayer = false,
+				AsNpc = n,
+				SizeEnum = n.SizeEnum ?? 4,
+				EffMass = n.EffMass ?? n.Mass ?? 85.0,
+				EffCombatSkill = n.EffCombatSkill ?? (n.CombatSkill ?? 50.0),
+				EffDmgDice = n.EffDmgDice,
+				EffArmorClass = n.EffArmorClass,
+				IsHumanoid = n.Template?.IsHumanoid ?? false
+			};
+
+			// NEW: Step 4 - Load armor from equipment templates
+			try
+			{
+				if (n.Template?.EquipmentTemplateIds != null && n.Template.EquipmentTemplateIds.Count > 0)
+				{
+					var templateDict = world?.ItemFactory?.GetType()?
+						.GetField("_templateManager", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?
+						.GetValue(world.ItemFactory) as ItemTemplateManager;
+
+					if (templateDict?.Templates != null)
+					{
+						foreach (var equipmentTemplateId in n.Template.EquipmentTemplateIds)
+						{
+							if (string.IsNullOrWhiteSpace(equipmentTemplateId))
+								continue;
+
+							if (!templateDict.Templates.TryGetValue(equipmentTemplateId, out var itemTemplate))
+								continue;
+
+							// Only process armor
+							if (!string.Equals(itemTemplate.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase))
+								continue;
+
+							if (itemTemplate.BaseACBonus <= 0)
+								continue;
+
+							var locations = BodyLocationMapper.MapWearLocToBodyLocations(itemTemplate.WearLoc, isHumanoid: participant.IsHumanoid);
+							if (locations.Count == 0)
+								continue;
+
+							var runtimeArmor = new Item
+							{
+								ItemID = 0,
+								TemplateID = equipmentTemplateId,
+								Name = itemTemplate.Name,
+								BaseACBonus = itemTemplate.BaseACBonus,
+								WearLoc = itemTemplate.WearLoc,
+								Material = itemTemplate.Material,
+								Condition = 100
+							};
+
+							foreach (var location in locations)
+							{
+								if (!participant.ArmorByLocation.ContainsKey(location))
+									participant.ArmorByLocation[location] = new List<Item>();
+								participant.ArmorByLocation[location].Add(runtimeArmor);
+							}
+						}
+					}
+				}
+			}
+			catch (Exception exArmor)
+			{
+				// Best effort - armor loading failure should not crash combat
+			}
+
+			return participant;
+		}
+
+		// Ensure participant present for Player attacker / Npc defender (original typed helper)
+		private static void EnsureParticipantPresent(CombatState state, Player attacker, Npc defender, World.World world)
         {
             if (!state.ContainsEntity(attacker))
             {
@@ -1238,7 +1582,7 @@ namespace MudCore.Actions
             }
             if (!state.ContainsEntity(defender))
             {
-                var pD = BuildParticipant(defender);
+                var pD = BuildParticipant(defender, world);
                 var atkTeam = state.GetTeamOf(attacker) ?? state.TeamA;
                 var defTeam = state.Opposing(atkTeam);
                 defTeam.Members.Add(pD);
@@ -1246,11 +1590,11 @@ namespace MudCore.Actions
         }
 
         // New overload: Npc attacker / Player defender
-        private static void EnsureParticipantPresent(CombatState state, Npc attacker, Player defender)
+        private static void EnsureParticipantPresent(CombatState state, Npc attacker, Player defender, World.World world)
         {
             if (!state.ContainsEntity(attacker))
             {
-                var pA = BuildParticipant(attacker);
+                var pA = BuildParticipant(attacker, world);
                 var defTeam = state.GetTeamOf(defender) ?? state.TeamB;
                 var atkTeam = state.Opposing(defTeam);
                 atkTeam.Members.Add(pA);
@@ -1265,18 +1609,18 @@ namespace MudCore.Actions
         }
 
         // New overload: Npc attacker / Npc defender
-        private static void EnsureParticipantPresent(CombatState state, Npc attacker, Npc defender)
+        private static void EnsureParticipantPresent(CombatState state, Npc attacker, Npc defender, World.World world)
         {
             if (!state.ContainsEntity(attacker))
             {
-                var pA = BuildParticipant(attacker);
+                var pA = BuildParticipant(attacker, world);
                 var defTeam = state.GetTeamOf(defender) ?? state.TeamB;
                 var atkTeam = state.Opposing(defTeam);
                 atkTeam.Members.Add(pA);
             }
             if (!state.ContainsEntity(defender))
             {
-                var pD = BuildParticipant(defender);
+                var pD = BuildParticipant(defender, world);
                 var atkTeam = state.GetTeamOf(attacker) ?? state.TeamA;
                 var defTeam = state.Opposing(atkTeam);
                 defTeam.Members.Add(pD);
@@ -1286,8 +1630,28 @@ namespace MudCore.Actions
         // NEW: prune participants helper (moved back from prior iteration)
         private static void PruneParticipants(CombatState state, World.World world)
         {
-            // Remove entities that left the room or are dead
-            state.TeamA.Members.RemoveAll(p => !IsStillInRoom(p, state.Room) || !p.Alive);
+			// NEW: Reset shield focus if focused opponent died
+			foreach (var player in state.Room.Players)
+			{
+				if (player != null)
+				{
+					// Check if player's focused opponent is no longer alive/in combat
+					if (player.ShieldFocusNpcId.HasValue)
+					{
+						var focusedNpc = state.AllParticipants()
+							.FirstOrDefault(p => !p.IsPlayer && p.AsNpc?.NpcID == player.ShieldFocusNpcId.Value);
+
+						if (focusedNpc == null || !focusedNpc.Alive)
+						{
+							CombatBlockManager.ResetFocusIfTargeted(player,
+								focusedNpc?.AsNpc, state.Room);
+						}
+					}
+				}
+			}
+
+			// Remove entities that left the room or are dead
+			state.TeamA.Members.RemoveAll(p => !IsStillInRoom(p, state.Room) || !p.Alive);
             state.TeamB.Members.RemoveAll(p => !IsStillInRoom(p, state.Room) || !p.Alive);
 
             if (state.TeamA.Members.Count == 0 || state.TeamB.Members.Count == 0)
@@ -1461,7 +1825,7 @@ namespace MudCore.Actions
                         {
                             if (!state.ContainsEntity(responder))
                             {
-                                var p = BuildParticipant(responder);
+                                var p = BuildParticipant(responder, world);
                                 defendersTeam.Members.Add(p);
                                 if (DebugCombat) Console.WriteLine($"[COMBAT] Responder {responder.DisplayName} added to Team{defendersTeam.Id} in State={state.Id}");
                             }
@@ -1517,9 +1881,66 @@ namespace MudCore.Actions
             }
         }
 
+		/// <summary>
+		/// Execute autoflee: move player to random viable neighboring room and remove from combat.
+		/// Returns true if flee was successful, false if no escape routes available.
+		/// </summary>
+		private static bool ExecutePlayerAutoFlee(Player player, Room combatRoom, World.World world)
+		{
+			if (player == null || combatRoom == null || world == null)
+				return false;
 
+			var viableExits = combatRoom.Exits?
+				.Where(e => e != null && e.ToRoomID > 0)
+				.ToList() ?? new List<Room.RoomExit>();
 
-        private static void BroadcastSystem(Room room, string text)
+			if (viableExits.Count == 0)
+				return false; // no escape route
+
+			var exitChosen = viableExits[new Random().Next(viableExits.Count)];
+			var nextRoom = world.Rooms.FirstOrDefault(r => r.RoomID == exitChosen.ToRoomID);
+
+			if (nextRoom == null)
+				return false;
+
+			// Move player
+			try
+			{
+				combatRoom.Players.Remove(player);
+				player.CurrentRoom = nextRoom;
+				nextRoom.Players.Add(player);
+
+				// Broadcast messages
+				MessageHandler.SendSystem(player, $"You panic and flee {exitChosen.Direction}!");
+				foreach (var p in combatRoom.Players)
+					MessageHandler.SendSystem(p, $"{player.Name} panics and flees!");
+
+				foreach (var p in nextRoom.Players.Where(p => p != player))
+					MessageHandler.SendSystem(p, $"{player.Name} stumbles in, fleeing!");
+
+				// Update room states
+				foreach (var p in combatRoom.Players)
+					p.PendingMessageQueue.Add(MessageHandler.Room(combatRoom,
+						combatRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
+						combatRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+						world));
+
+				foreach (var p in nextRoom.Players.Where(p => p != player))
+					p.PendingMessageQueue.Add(MessageHandler.Room(nextRoom,
+						nextRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
+						nextRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+						world));
+
+				return true;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[AUTOFLEE] Flee execution failed: {ex.Message}");
+				return false;
+			}
+		}
+
+		private static void BroadcastSystem(Room room, string text)
         {
             foreach (var p in room.Players)
                 MessageHandler.SendSystem(p, text);

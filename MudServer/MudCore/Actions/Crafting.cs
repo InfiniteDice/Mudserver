@@ -52,7 +52,7 @@ namespace MudCore.Actions
             // baseline / typical industrial metals
             { "Iron",     1.00 }, // baseline //ac per armor segment: 10
             { "Steel",    0.85 }, // ac per armor segment: 15
-            { "Bronze",   1.10 }, // ac per armor segment: 8
+            { "Bronze",   1.05 }, // ac per armor segment: 8
             { "Copper",   1.20 }, // ac per armor segment: 6
             { "Tin",      1.50 }, // not used in armor; very soft
             { "Brass",    1.15 }, // ac per armor segment: 7
@@ -66,9 +66,67 @@ namespace MudCore.Actions
 
             // harder / exotic metals — wear slower
             { "Nickel",   0.95 }, // 12
-            { "Platinum", 0.75 }, // 18
+            { "Platinum", 1.1 }, // 18
             { "Meteoric", 0.5 }, // 25
-            { "Mithril",  0.01 } // 40  // nearly immune to wear (designer-tunable)
+            { "Mithril",  0.01 }, // 40  // nearly immune to wear (designer-tunable)
+
+            //Non-metals (for future expansion, e.g. "wooden sword" or "stone axe") would go here with their own wear multipliers.
+            { "Oak",      1.5 }, // example wood (wears faster than iron)
+            { "Ash",      1.4 },
+            { "Maple",    1.3 },
+            { "Walnut",   1.2 },
+            { "Birch",    1.6 },
+            { "Pine",     1.7 },
+            { "Cherry",   1.3 },
+            { "Teak",     1.15 },
+            { "Mahogany", 1.1 },
+            { "Ebony",    1.15 },
+
+            //Fabrics
+            { "Linen",    2.0 }, // example cloth (wears much faster than iron)
+            { "Wool",     1.7 },
+            { "Silk",     1.5 },
+            { "Cotton",   2.2 },
+            { "Canvas",   2.5 },
+            { "Velvet",   1.8 },
+            { "Padded Cloth",   1.35 },
+            { "Quilted Cloth",  1.25 },
+
+            // Stone
+            { "Marble",   1.05 }, // example stone (wears slower than iron but not as good as metal)
+            { "Granite",  0.75},
+            { "Limestone",1.15 },
+            { "Sandstone",1.4 },
+            { "Basalt",   0.7 },
+
+            //Leather and other organic materials
+            { "Rawhide",        1.9 },
+            { "Leather",        1.4 },
+            { "Hardened Leather",1.15 },
+            { "Studded Leather",1.10 },
+            { "Lamellar Leather",1.05 },
+
+            //Creature-derived materials
+            { "Thick Hide",     1.2 },
+            { "Beast Hide",     1.05 },
+            { "Dragonhide",     0.75 },
+            { "Dragonscale",     0.5 },
+            { "Scaled Hide",    0.95 },
+            { "Chitin",         0.85 }, // e.g. insect carapace, crab shell
+
+            // Bone and similar materials
+            { "Bone",           1.1 },
+            { "Carved Bone",    1.0 },
+            { "Horn",           0.95 },
+            { "Tortoise Shell", 0.9 },
+            
+            // Plant-based materials
+            { "Bark",           1.8 },
+            { "Reed",           2.0 },
+            { "Wicker",         1.6 }
+
+            
+            
         };
 
         // Optional: expose a read-only hardness view (higher = harder / more durable).
@@ -85,7 +143,7 @@ namespace MudCore.Actions
             if (_metalWearMultiplier.TryGetValue(metal.Trim(), out var m)) return m;
             // Try common normalization: strip spaces/case
             var key = metal.Trim();
-            if (_metalWearMultiplier.TryGetValue(key, out m)) return m;
+            //if (_metalWearMultiplier.TryGetValue(key, out m)) return m;
             return 1.0;
         }
 
@@ -1339,10 +1397,11 @@ namespace MudCore.Actions
                 return MessageHandler.System($"You do not have any {materialToken} bits to repair with.");
 
             // Determine player's smithing skill level (best-effort)
+            // NEW:
             int smithLevel = 0;
             try
             {
-                smithLevel = GetPlayerSmithingLevel(player);
+                smithLevel = player.GetSkillLevel("skill_smithing", conn);
             }
             catch { smithLevel = 0; }
 
@@ -1366,12 +1425,11 @@ namespace MudCore.Actions
             // Compute repair delta
             int delta = 5 + (5 * Math.Max(0, smithLevel));
 
-            int beforeCond = Math.Max(0, target.Condition);
+            float beforeCond = Math.Max(0, target.Condition);
             if (beforeCond >= allowedMaxPercent)
                 return MessageHandler.System($"{target.Name} is already at or above your repairable limit ({allowedMaxPercent}%).");
 
-            int newCond = Math.Min(allowedMaxPercent, beforeCond + delta);
-
+            float newCond = Math.Min(allowedMaxPercent, beforeCond + delta);
             // Persist changes: consume one bit + save target condition
             try
             {
@@ -1493,129 +1551,129 @@ namespace MudCore.Actions
         //  - FlagsJson containing "SmithingLevel" token
         // If none present returns 0.
 
-        private static int GetPlayerSmithingLevel(Player player)
-        {
-            if (player == null) return 0;
+        //private static int GetPlayerSmithingLevel(Player player)
+        //{
+        //    if (player == null) return 0;
 
-            // If player has no DB id we cannot create/read a persistent skill row — treat as no-skill.
-            if (player.DbPlayerID <= 0) return 0;
+        //    // If player has no DB id we cannot create/read a persistent skill row — treat as no-skill.
+        //    if (player.DbPlayerID <= 0) return 0;
 
-            const string skillId = "skill_smithing";
+        //    const string skillId = "skill_smithing";
 
-            try
-            {
-                // Use writer queue to perform read-then-insert atomically and avoid races.
-                var level = MudServer.DbWriteQueue.Instance.RunWriteAndWait<int>((wConn, wTx) =>
-                {
-                    // 1) Try read existing row
-                    using (var sel = wConn.CreateCommand())
-                    {
-                        sel.Transaction = wTx;
-                        sel.CommandText = "SELECT SkillHasLevels, SkillLevel FROM PlayerSkills WHERE PlayerID = @pid AND SkillID = @skill LIMIT 1;";
-                        sel.Parameters.AddWithValue("@pid", player.DbPlayerID);
-                        sel.Parameters.AddWithValue("@skill", skillId);
+        //    try
+        //    {
+        //        // Use writer queue to perform read-then-insert atomically and avoid races.
+        //        var level = MudServer.DbWriteQueue.Instance.RunWriteAndWait<int>((wConn, wTx) =>
+        //        {
+        //            // 1) Try read existing row
+        //            using (var sel = wConn.CreateCommand())
+        //            {
+        //                sel.Transaction = wTx;
+        //                sel.CommandText = "SELECT SkillHasLevels, SkillLevel FROM PlayerSkills WHERE PlayerID = @pid AND SkillID = @skill LIMIT 1;";
+        //                sel.Parameters.AddWithValue("@pid", player.DbPlayerID);
+        //                sel.Parameters.AddWithValue("@skill", skillId);
 
-                        using var rdr = sel.ExecuteReader();
-                        if (rdr.Read())
-                        {
-                            // If SkillLevel stored, return it (clamped)
-                            try
-                            {
-                                var obj = rdr.IsDBNull(1) ? (object?)null : rdr.GetValue(1);
-                                if (obj != null && int.TryParse(obj.ToString(), out var lvl))
-                                {
-                                    return Math.Clamp(lvl, 0, 5);
-                                }
-                            }
-                            catch { /* fall through to default return 0 */ }
+        //                using var rdr = sel.ExecuteReader();
+        //                if (rdr.Read())
+        //                {
+        //                    // If SkillLevel stored, return it (clamped)
+        //                    try
+        //                    {
+        //                        var obj = rdr.IsDBNull(1) ? (object?)null : rdr.GetValue(1);
+        //                        if (obj != null && int.TryParse(obj.ToString(), out var lvl))
+        //                        {
+        //                            return Math.Clamp(lvl, 0, 5);
+        //                        }
+        //                    }
+        //                    catch { /* fall through to default return 0 */ }
 
-                            return 0;
-                        }
-                    }
+        //                    return 0;
+        //                }
+        //            }
 
-                    // 2) Row missing -> determine SkillHasLevels by inspecting skill template JSON
-                    int hasLevelsInt = 0;
-                    try
-                    {
-                        bool hasLevels = false;
-                        var baseDir = AppContext.BaseDirectory;
-                        var candidatePaths = new[]
-                        {
-                            System.IO.Path.Combine(baseDir, "Data", "SkillTemplates", $"{skillId}.json"),
-                            System.IO.Path.Combine(baseDir, "..", "Data", "SkillTemplates", $"{skillId}.json"),
-                            System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, "..", "..", "Data", "SkillTemplates", $"{skillId}.json"))
-                        };
+        //            // 2) Row missing -> determine SkillHasLevels by inspecting skill template JSON
+        //            int hasLevelsInt = 0;
+        //            try
+        //            {
+        //                bool hasLevels = false;
+        //                var baseDir = AppContext.BaseDirectory;
+        //                var candidatePaths = new[]
+        //                {
+        //                    System.IO.Path.Combine(baseDir, "Data", "SkillTemplates", $"{skillId}.json"),
+        //                    System.IO.Path.Combine(baseDir, "..", "Data", "SkillTemplates", $"{skillId}.json"),
+        //                    System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, "..", "..", "Data", "SkillTemplates", $"{skillId}.json"))
+        //                };
 
-                        string? found = null;
-                        foreach (var p in candidatePaths)
-                        {
-                            try { if (!string.IsNullOrWhiteSpace(p) && System.IO.File.Exists(p)) { found = p; break; } } catch { }
-                        }
+        //                string? found = null;
+        //                foreach (var p in candidatePaths)
+        //                {
+        //                    try { if (!string.IsNullOrWhiteSpace(p) && System.IO.File.Exists(p)) { found = p; break; } } catch { }
+        //                }
 
-                        if (!string.IsNullOrWhiteSpace(found))
-                        {
-                            var json = System.IO.File.ReadAllText(found);
-                            using var doc = System.Text.Json.JsonDocument.Parse(json);
-                            var root = doc.RootElement;
-                            if (root.ValueKind == System.Text.Json.JsonValueKind.Object && root.TryGetProperty("skill_tiers", out var tiers) && tiers.ValueKind == System.Text.Json.JsonValueKind.Array)
-                            {
-                                hasLevels = tiers.GetArrayLength() > 0;
-                            }
-                        }
+        //                if (!string.IsNullOrWhiteSpace(found))
+        //                {
+        //                    var json = System.IO.File.ReadAllText(found);
+        //                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+        //                    var root = doc.RootElement;
+        //                    if (root.ValueKind == System.Text.Json.JsonValueKind.Object && root.TryGetProperty("skill_tiers", out var tiers) && tiers.ValueKind == System.Text.Json.JsonValueKind.Array)
+        //                    {
+        //                        hasLevels = tiers.GetArrayLength() > 0;
+        //                    }
+        //                }
 
-                        hasLevelsInt = hasLevels ? 1 : 0;
-                    }
-                    catch
-                    {
-                        hasLevelsInt = 0;
-                    }
+        //                hasLevelsInt = hasLevels ? 1 : 0;
+        //            }
+        //            catch
+        //            {
+        //                hasLevelsInt = 0;
+        //            }
 
-                    // 3) Insert default row (SkillLevel = 0) since not present
-                    using (var ins = wConn.CreateCommand())
-                    {
-                        ins.Transaction = wTx;
-                        ins.CommandText = "INSERT INTO PlayerSkills (PlayerID, SkillID, SkillHasLevels, SkillLevel) VALUES (@pid, @skill, @has, @lvl);";
-                        ins.Parameters.AddWithValue("@pid", player.DbPlayerID);
-                        ins.Parameters.AddWithValue("@skill", skillId);
-                        ins.Parameters.AddWithValue("@has", hasLevelsInt);
-                        ins.Parameters.AddWithValue("@lvl", 0);
-                        try
-                        {
-                            ins.ExecuteNonQuery();
-                        }
-                        catch (Microsoft.Data.Sqlite.SqliteException ex)
-                        {
-                            // If another writer raced and inserted concurrently, swallow unique-constraint and read again.
-                            Console.WriteLine($"[CRAFTING] PlayerSkills insert race or error: {ex.Message}");
-                            using var sel2 = wConn.CreateCommand();
-                            sel2.Transaction = wTx;
-                            sel2.CommandText = "SELECT SkillLevel FROM PlayerSkills WHERE PlayerID = @pid AND SkillID = @skill LIMIT 1;";
-                            sel2.Parameters.AddWithValue("@pid", player.DbPlayerID);
-                            sel2.Parameters.AddWithValue("@skill", skillId);
-                            var obj = sel2.ExecuteScalar();
-                            if (obj != null && obj != DBNull.Value && int.TryParse(obj.ToString(), out var lvl2))
-                                return Math.Clamp(lvl2, 0, 5);
-                            return 0;
-                        }
-                    }
+        //            // 3) Insert default row (SkillLevel = 0) since not present
+        //            using (var ins = wConn.CreateCommand())
+        //            {
+        //                ins.Transaction = wTx;
+        //                ins.CommandText = "INSERT INTO PlayerSkills (PlayerID, SkillID, SkillHasLevels, SkillLevel) VALUES (@pid, @skill, @has, @lvl);";
+        //                ins.Parameters.AddWithValue("@pid", player.DbPlayerID);
+        //                ins.Parameters.AddWithValue("@skill", skillId);
+        //                ins.Parameters.AddWithValue("@has", hasLevelsInt);
+        //                ins.Parameters.AddWithValue("@lvl", 0);
+        //                try
+        //                {
+        //                    ins.ExecuteNonQuery();
+        //                }
+        //                catch (Microsoft.Data.Sqlite.SqliteException ex)
+        //                {
+        //                    // If another writer raced and inserted concurrently, swallow unique-constraint and read again.
+        //                    Console.WriteLine($"[CRAFTING] PlayerSkills insert race or error: {ex.Message}");
+        //                    using var sel2 = wConn.CreateCommand();
+        //                    sel2.Transaction = wTx;
+        //                    sel2.CommandText = "SELECT SkillLevel FROM PlayerSkills WHERE PlayerID = @pid AND SkillID = @skill LIMIT 1;";
+        //                    sel2.Parameters.AddWithValue("@pid", player.DbPlayerID);
+        //                    sel2.Parameters.AddWithValue("@skill", skillId);
+        //                    var obj = sel2.ExecuteScalar();
+        //                    if (obj != null && obj != DBNull.Value && int.TryParse(obj.ToString(), out var lvl2))
+        //                        return Math.Clamp(lvl2, 0, 5);
+        //                    return 0;
+        //                }
+        //            }
 
-                    // newly created -> return 0
-                    return 0;
-                }, timeout: TimeSpan.FromSeconds(5));
+        //            // newly created -> return 0
+        //            return 0;
+        //        }, timeout: TimeSpan.FromSeconds(5));
 
-                return Math.Clamp(level, 0, 5);
-            }
-            catch (InvalidOperationException ex)
-            {
-                Console.WriteLine($"[CRAFTING] GetPlayerSmithingLevel direct DB fallback failed: {ex.Message}");
-                return 0;
+        //        return Math.Clamp(level, 0, 5);
+        //    }
+        //    catch (InvalidOperationException ex)
+        //    {
+        //        Console.WriteLine($"[CRAFTING] GetPlayerSmithingLevel direct DB fallback failed: {ex.Message}");
+        //        return 0;
 
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[CRAFTING] GetPlayerSmithingLevel failed: {ex.Message}");
-                return 0;
-            }
-        } // end GetPlayerSmithingLevel
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"[CRAFTING] GetPlayerSmithingLevel failed: {ex.Message}");
+        //        return 0;
+        //    }
+        //} // end GetPlayerSmithingLevel
     }
 }

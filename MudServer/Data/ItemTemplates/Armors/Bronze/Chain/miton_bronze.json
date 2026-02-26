@@ -1,0 +1,14 @@
+{
+  "Id": "miton_bronze",
+  "Name": "Bronze Miton",
+  "ItemCategory": "Armor",
+  "Weight": 2.2,
+  "Value": 20,
+  "ShortDesc": "A simple bronze mail miton",
+  "LongDesc": "A miton made of bronze rings, decent hand protection.",
+  "WearLoc": "Hands",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 7.0
+}

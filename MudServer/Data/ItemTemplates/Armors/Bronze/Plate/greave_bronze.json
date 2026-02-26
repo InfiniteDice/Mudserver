@@ -1,0 +1,14 @@
+{
+  "Id": "greave_bronze",
+  "Name": "Bronze Greave",
+  "ItemCategory": "Armor",
+  "Weight": 2.0,
+  "Value": 25,
+  "ShortDesc": "A simple bronze greave",
+  "LongDesc": "A greave to cuisse set made of bronze and lined with leather, decent leg protection.",
+  "WearLoc": "Leg",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 8.0
+}

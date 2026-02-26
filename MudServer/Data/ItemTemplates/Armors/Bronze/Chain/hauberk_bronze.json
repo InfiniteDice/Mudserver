@@ -1,0 +1,14 @@
+{
+  "Id": "hauberk_bronze",
+  "Name": "Bronze Hauberk",
+  "ItemCategory": "Armor",
+  "Weight": 2.4,
+  "Value": 22,
+  "ShortDesc": "A simple bronze hauberk",
+  "LongDesc": "A hauberk made of bronze rings, decent body protection.",
+  "WearLoc": "Body",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 7.0
+}

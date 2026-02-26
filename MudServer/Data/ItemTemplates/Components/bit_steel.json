@@ -1,0 +1,15 @@
+{
+  "Id": "bit_steel",
+  "Name": "Steel Bit",
+  "ItemCategory": "Component",
+  "Weight": 0.1,
+  "Value": 1,
+  "ShortDesc": "A bit of steel",
+  "LongDesc": "A bit of steel, this small bit of steel can be used for crafting, 10 bits can make one bar.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Steel",
+  "Stackable": "true"
+}

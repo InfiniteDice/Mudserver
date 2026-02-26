@@ -1,0 +1,8 @@
+﻿Material is listed in crafting.cs for basic AC bonus per part.
+From type to type Chainmail is heavier and less protective than Plate, but more protective than Leather. Leather is the lightest and least protective.
+
+Example:
+Bronze Plate Helmet 8 AC bonus, 2kg , 350 copper
+Bronze Chainmail Coif 7 AC bonus, 2.2kg, 200 copper
+
+We will add more examples here as we create them.

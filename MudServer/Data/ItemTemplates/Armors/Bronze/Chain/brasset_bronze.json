@@ -1,0 +1,14 @@
+{
+  "Id": "brasset_bronze",
+  "Name": "Bronze Brasset",
+  "ItemCategory": "Armor",
+  "Weight": 2.2,
+  "Value": 20,
+  "ShortDesc": "A simple bronze mail brasset",
+  "LongDesc": "A brasset made of bronze rings, decent arm protection.",
+  "WearLoc": "Arm",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 7.0
+}

@@ -1,0 +1,14 @@
+{
+  "Id": "helmet_iron",
+  "Name": "Iron Helmet",
+  "ItemCategory": "Armor",
+  "Weight": 2.2,
+  "Value": 40,
+  "ShortDesc": "A simple iron helmet",
+  "LongDesc": "A helmet made of iron and lined with leather and felt, decent head protection.",
+  "WearLoc": "Head",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Iron",
+  "BaseACBonus": 10.0
+}

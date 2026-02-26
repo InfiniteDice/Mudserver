@@ -1,0 +1,14 @@
+{
+  "Id": "tool_quill",
+  "Name": "Quill",
+  "ItemCategory": "Handheld",
+  "Weight": 0.02,
+  "Value": 30,
+  "ShortDesc": "A simple quill",
+  "LongDesc": "A quill made from a feather, you need to hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": [],
+  "Material": "Organic",
+  "Stackable": "false"
+}

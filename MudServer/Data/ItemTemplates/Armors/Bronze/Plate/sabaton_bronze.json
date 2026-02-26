@@ -1,0 +1,14 @@
+{
+  "Id": "sabaton_bronze",
+  "Name": "Bronze Sabaton",
+  "ItemCategory": "Armor",
+  "Weight": 2.0,
+  "Value": 25,
+  "ShortDesc": "A simple bronze sabaton",
+  "LongDesc": "A sabaton made of bronze and lined with leather and felt, decent foot protection.",
+  "WearLoc": "Foot",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 8.0
+}

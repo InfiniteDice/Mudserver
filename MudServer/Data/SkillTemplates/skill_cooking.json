@@ -1,5 +1,6 @@
 {
   "id": "skill_cooking",
+  "name": "Cooking",
   "skill_type": "Mundane",
   "skill_prerequisites": [],
   "skill_tiers": [

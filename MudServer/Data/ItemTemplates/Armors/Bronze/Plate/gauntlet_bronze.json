@@ -1,0 +1,14 @@
+{
+  "Id": "gauntlet_bronze",
+  "Name": "Bronze Gauntlet",
+  "ItemCategory": "Armor",
+  "Weight": 2.0,
+  "Value": 25,
+  "ShortDesc": "A simple bronze gauntlet",
+  "LongDesc": "A gauntlet made of bronze and lined with leather and felt, decent hand protection.",
+  "WearLoc": "Hand",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 8.0
+}

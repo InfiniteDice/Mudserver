@@ -196,6 +196,11 @@ namespace MudCore.Actions
                             // If flight expired while in sky, gravity takes over (fall processing)
                             try { Movement.CheckSkyFall(player, world, conn); } catch { }
                         }
+                        else if (string.Equals(effectName, "Memorizing", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Memorization complete - call handler
+                            try { MemorizationManager.CompleteMemorization(player, conn); } catch { }
+                        }
                         else
                         {
                             NotifyEffectExpired(player, effectName, world);

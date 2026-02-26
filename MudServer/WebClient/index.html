@@ -5,9 +5,16 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MUD — Client</title>
     <link rel="stylesheet" href="styles.css?v=2" />
+    <!-- NEW: Font for auth modal heading -->
+    <style>
+        @font-face {
+            font-family: 'UseRoman';
+            src: url('Fonts/UseRoman.ttf') format('truetype');
+        }
+    </style>
 </head>
-<body>
-    <div id="app">
+<body style="margin:0;padding:0;overflow:hidden;">
+    <div id="app" style="display:none;">
         <!-- Rain Overlay -->
 
         <header class="topbar">
@@ -65,10 +72,27 @@
             </div>
 
             <form id="cmdForm" class="cmd">
-                <input id="cmdInput" autocomplete="off" placeholder="Enter command (or press a quick button)..." />
+                <input id="cmdInput" autocomplete="off" placeholder="Enter command (or press a quick button)..." autofocus />
                 <button type="submit">Send</button>
             </form>
         </footer>
+    </div>
+
+    <!-- NEW: Authentication Modal (Phase 1) -->
+    <div id="authModal" class="auth-backdrop" aria-hidden="true">
+        <div class="auth-background"></div>
+        <div class="auth-container">
+            <div class="auth-content">
+                <h1 class="auth-heading">WELCOME TO MYTHICA!</h1>
+                <div class="auth-buttons">
+                    <button id="authBtnLogin" class="auth-btn auth-btn-primary">Login</button>
+                    <button id="authBtnSignup" class="auth-btn auth-btn-primary">Signup</button>
+                </div>
+                <div class="auth-footer">
+                    <a id="authBtnForgot" href="mailto:smaugsire@gmail.com" class="auth-forgot">Forgot Password</a>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Inventory Modal -->
@@ -155,6 +179,14 @@
         // Initialize WebSocket
         initWebSocket();
 
+        // NEW: Start background transition after 500ms
+        setTimeout(() => {
+            const authBg = document.querySelector('.auth-background');
+            if (authBg) {
+                authBg.classList.add('show');
+            }
+        }, 500);
+
         const playerNameEl = document.getElementById('playerName');
         const hpEl = document.getElementById('hp');
         const staminaEl = document.getElementById('stamina');
@@ -171,6 +203,26 @@
 
         // top bar title element
         const siteTitleEl = document.querySelector('.title');
+
+        // NEW: Auth modal elements
+        const authModal = document.getElementById('authModal');
+        const authBtnLogin = document.getElementById('authBtnLogin');
+        const authBtnSignup = document.getElementById('authBtnSignup');
+        const authBtnForgot = document.getElementById('authBtnForgot');
+
+        function showAuthModal() {
+            document.getElementById('authModal').style.display = 'flex';
+        }
+
+        function hideAuthModal() {
+            document.getElementById('authModal').style.display = 'none';
+            document.getElementById('app').style.display = '';
+            // NEW: Focus the command input when game loads
+            setTimeout(() => {
+                const cmdInput = document.getElementById('cmdInput');
+                if (cmdInput) cmdInput.focus();
+            }, 100);
+        }
 
         // Inventory modal elements
         const invBtn = document.getElementById('invBtn');
@@ -193,6 +245,8 @@
             logEl.appendChild(el);
             logEl.scrollTop = logEl.scrollHeight;
         }
+
+
 
         function openInventory() {
             invModal.setAttribute('aria-hidden', 'false');
@@ -233,15 +287,15 @@
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                                              <td>${displayName}</td>
-                                              <td>${descriptor}</td>
-                                              <td>${material}</td>
-                                              <td>${escapeHtml(String(it.weight ?? ''))}</td>
-                                              <td>${escapeHtml(String(it.condition ?? ''))}</td>
-                                              <td>${escapeHtml(it.itemCategory ?? '')}</td>
-                                              <td>${escapeHtml(it.shortDesc ?? '')}</td>
-                                              <td>${escapeHtml(status)}</td>
-                                            `;
+                                                          <td>${displayName}</td>
+                                                          <td>${descriptor}</td>
+                                                          <td>${material}</td>
+                                                          <td>${escapeHtml(String(it.weight ?? ''))}</td>
+                                                          <td>${escapeHtml(String(it.condition ?? ''))}</td>
+                                                          <td>${escapeHtml(it.itemCategory ?? '')}</td>
+                                                          <td>${escapeHtml(it.shortDesc ?? '')}</td>
+                                                          <td>${escapeHtml(status)}</td>
+                                                        `;
                 invTableBody.appendChild(tr);
             });
         }
@@ -377,6 +431,9 @@
                     if (msg.isLook) {
                         addLog(title ? `You look at ${title}` : `You look around`, 'info');
                     }
+
+                    // NEW: Hide auth modal when entering game
+                    hideAuthModal();
                     return;
                 }
 
@@ -453,6 +510,8 @@
                         console.log('[SESSION] Token stored:', msg.sessionToken.substring(0, 8) + '...');
                     }
 
+                    // NEW: Hide auth modal on successful authentication
+                    hideAuthModal();
                     return;
                 }
 
@@ -461,7 +520,17 @@
                     return;
                 }
 
-                if (msg.type === 'system') { renderSystemMessage(msg.text || '[system]'); return; }
+                if (msg.type === 'system') {
+                    // NEW: Check if this is the auth menu prompt
+                    const text = msg.text || '';
+                    if (text.includes('Choose an option') && text.includes('1) Login') && text.includes('2) Signup')) {
+                        console.log('[AUTH] Detected auth menu, showing modal');
+                        showAuthModal();
+                    } else {
+                        renderSystemMessage(text);
+                    }
+                    return;
+                }
                 if (msg.type === 'chat') { addLog(msg.text || '', 'chat'); return; }
 
                 addLog(JSON.stringify(msg), 'debug');
@@ -537,6 +606,17 @@
             if (e.key === 'ArrowDown') { e.preventDefault(); historyNext(); }
         });
 
+        // NEW: Auth modal button listeners
+        authBtnLogin.addEventListener('click', () => {
+            sendCommand('1');
+            hideAuthModal();
+        });
+
+        authBtnSignup.addEventListener('click', () => {
+            sendCommand('2');
+            hideAuthModal();
+        });
+
         invBtn.addEventListener('click', openInventory);
         invClose.addEventListener('click', closeInventory);
         invClose2.addEventListener('click', closeInventory);
@@ -548,6 +628,7 @@
         });
 
         invModal.style.display = 'none';
+        authModal.style.display = 'none';
     </script>
     <script>
         // Client-side critical-hit formatter and renderer.

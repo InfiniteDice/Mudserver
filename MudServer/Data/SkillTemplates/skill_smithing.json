@@ -1,5 +1,6 @@
 {
   "id": "skill_smithing",
+  "name": "Smithing",
   "skill_type": "Trade",
   "skill_prerequisites": [],
   "skill_tiers": [

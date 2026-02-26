@@ -1,0 +1,14 @@
+{
+  "Id": "ink",
+  "Name": "Ink",
+  "ItemCategory": "Component",
+  "Weight": 0.25,
+  "Value": 8,
+  "ShortDesc": "It's ink",
+  "LongDesc": "This is a cup of ink, use this as an ingredient in certain rituals or for scribing.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" , "Stackable" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

@@ -1,10 +1,11 @@
-﻿using MudCore.Entities;
+﻿using MudCore.Actions;
+using MudCore.Entities;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Linq;
 
 namespace MudCore.World
 {
@@ -32,7 +33,7 @@ namespace MudCore.World
         public string? Material { get; set; } = null;
 
         // Example new properties
-        public int Condition { get; set; } = 100; // default condition
+        public float Condition { get; set; } = 100f; // default condition
         public double BaseACBonus { get; set; } = 0.0; // default AC bonus
 
         // NEW: per-template damage dice multiplier (maps to Item.DmgDiceMult)
@@ -228,6 +229,21 @@ namespace MudCore.World
 
             return item;
         } // end ItemFactory.CreateItem
+
+        public void InitializeBook(Item book, Microsoft.Data.Sqlite.SqliteConnection conn)
+        {
+            if (book == null)
+                return;
+
+            try
+            {
+                BooksManager.InitializeBookWithBlankPages(book, this, conn);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ItemFactory] Failed to initialize book: {ex.Message}");
+            }
+        }
 
         // Helper: attempt to resolve friendly display name for a template id.
         // Returns true when a template was found and displayName set; otherwise returns false and displayName is the templateId fallback.

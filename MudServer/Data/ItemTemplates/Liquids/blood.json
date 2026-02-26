@@ -1,0 +1,14 @@
+{
+  "Id": "blood",
+  "Name": "Blood",
+  "ItemCategory": "Component",
+  "Weight": 0.25,
+  "Value": 5,
+  "ShortDesc": "It's blood",
+  "LongDesc": "This is a cup of blood, use this as an ingredient in certain rituals or for scribing.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "IsLiquid" , "Stackable" ],
+  "Material": "Organic",
+  "Stackable": "true"
+}

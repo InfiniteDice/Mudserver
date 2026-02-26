@@ -351,7 +351,7 @@ namespace MudPersistence
                     cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
                     cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
                     cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
-                    cmd.Parameters.AddWithValue("@cond", item.Condition);
+                    cmd.Parameters.AddWithValue("@cond", Math.Round(item.Condition, 2)); // Store as decimal
                     cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
                     if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
                     if (hasDescriptor == true) cmd.Parameters.AddWithValue("@descriptor", item.Descriptor ?? "");
@@ -416,7 +416,7 @@ namespace MudPersistence
                     cmd.Parameters.AddWithValue("@short", item.ShortDesc ?? "");
                     cmd.Parameters.AddWithValue("@long", item.LongDesc ?? "");
                     cmd.Parameters.AddWithValue("@creator", item.Creator ?? "");
-                    cmd.Parameters.AddWithValue("@cond", item.Condition);
+                    cmd.Parameters.AddWithValue("@cond", Math.Round(item.Condition, 2)); // Store as decimal
                     cmd.Parameters.AddWithValue("@flags", item.FlagsJson ?? "[]");
                     if (hasMaterial) cmd.Parameters.AddWithValue("@material", item.Material ?? "");
                     if (hasDescriptor == true) cmd.Parameters.AddWithValue("@descriptor", item.Descriptor ?? "");
@@ -593,7 +593,7 @@ namespace MudPersistence
                     ShortDesc = !reader.IsDBNull(11) ? reader.GetString(11) : "",
                     LongDesc = !reader.IsDBNull(12) ? reader.GetString(12) : "",
                     Creator = !reader.IsDBNull(13) ? reader.GetString(13) : "",
-                    Condition = !reader.IsDBNull(14) ? reader.GetInt32(14) : 100,
+                    Condition = !reader.IsDBNull(14) ? reader.GetFloat(14) : 100,
                     FlagsJson = !reader.IsDBNull(15) ? reader.GetString(15) : "[]"
                 };
 

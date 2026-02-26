@@ -1,35 +1,36 @@
 {
-  "id": "skill_arcane_knowledge",
+  "id": "skill_elemental_knowledge",
+  "name": "Elemental Knowledge",
   "skill_type": "Mystical",
   "skill_prerequisites": [],
   "skill_tiers": [
     {
       "level": 1,
-      "title": "Novice Occultist",
+      "title": "Novice Elementalist",
       "power": 10,
       "spell_retention": 1
     },
     {
       "level": 2,
-      "title": "Occultist",
+      "title": "Apprentice Elementalist",
       "power": 20,
       "spell_retention": 2
     },
     {
       "level": 3,
-      "title": "Sorcerer",
+      "title": "Elementalist",
       "power": 40,
       "spell_retention": 3
     },
     {
       "level": 4,
-      "title": "High Sorcerer",
+      "title": "Master Elementalist",
       "power": 80,
       "spell_retention": 4
     },
     {
       "level": 5,
-      "title": "Supreme Sorcerer",
+      "title": "Grandmaster Elementalist",
       "power": 160,
       "spell_retention": 6
     }

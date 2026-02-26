@@ -1,0 +1,14 @@
+{
+  "Id": "inkwell_glass",
+  "Name": "Glass Inkwell",
+  "ItemCategory": "Container",
+  "Weight": 0.1,
+  "Value": 40,
+  "ShortDesc": "A simple glass inkwell",
+  "LongDesc": "A small glass inkwell, this can be used to hold ink for writing.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity1","Accept:Component", "HoldsLiquid" ],
+  "Material": "Glass",
+  "BaseACBonus": 0.0
+}

@@ -27,7 +27,7 @@ namespace MudServer
             "Leftleg", "Rightleg",
             "Leftarm", "Rightarm",
             "Lefthand", "Righthand",
-            "Leftfoot", "Rightfoot"
+            "Leftfoot", "Rightfoot", "Deco_Back", "Deco_Waist", "Deco_Finger", "Deco_Wrist" //deco slots are not armourable but allows for commands like "wear ring1 on finger" or "wear necklace on neck"
         };
 
         public CommandHandler(World world, SqliteConnection dbConnection)
@@ -1703,6 +1703,8 @@ namespace MudServer
                 case "move": return Move(player, command);
 
                 case "attack":
+                 case "kill":
+                case "fight":
                     {
                         var attackParts = command.Split(' ', 2);
                         if (attackParts.Length < 2) return MessageHandler.System("Usage: attack <target>");
@@ -1716,7 +1718,6 @@ namespace MudServer
 
                         if (matches.Count > 1)
                         {
-                            // prompt player to pick a numeric index from the displayed list
                             var list = string.Join("\n", matches.Select((m, idx) => $"{idx + 1}) {m.DisplayName}"));
                             player.PendingAction = new PendingAction
                             {
@@ -1727,7 +1728,23 @@ namespace MudServer
                             return MessageHandler.System($"Multiple targets match '{targetExpr}'. Choose one to attack:\n{list}\nType the number of the target to attack.");
                         }
 
-                        return CombatManager.StartOrJoin(player, matches[0], _world, _dbConnection);
+                        var target = matches[0];
+
+                        // NEW: Check NoAttack flag
+                        if (MudCore.Actions.Combat.HasNoAttackFlag(target))
+                            return MessageHandler.System("This action would be unwise!");
+
+                        return CombatManager.StartOrJoin(player, target, _world, _dbConnection);
+                    }
+
+                case "block":
+                    {
+                        var blockParts = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (blockParts.Length < 2)
+                            return MessageHandler.System("Usage: block <opponent|all>");
+
+                        var arg = blockParts[1].Trim();
+                        return MudCore.Actions.CombatBlockManager.HandleBlockCommand(player, arg, _world, _dbConnection);
                     }
 
                 //Below are the lead/release/hitch/unhitch commands
@@ -1908,6 +1925,166 @@ namespace MudServer
                         }
                     }
 
+                case "read":
+                    {
+                        string cleanCommand = ExtractCommandText(rawCommand);
+                        var partsRead = cleanCommand.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        if (partsRead.Length < 2)
+                            return MessageHandler.System("Usage: read <book> or read <book> <page#>");
+
+                        // Everything after "read" is the book name, unless the last token is a number
+                        int? pageNum = null;
+                        string bookName;
+
+                        // Check if last part is a page number
+                        if (partsRead.Length >= 3 && int.TryParse(partsRead[partsRead.Length - 1], out int pNum))
+                        {
+                            pageNum = pNum;
+                            bookName = string.Join(" ", partsRead.Skip(1).Take(partsRead.Length - 2)).Trim();
+                        }
+                        else
+                        {
+                            bookName = string.Join(" ", partsRead.Skip(1)).Trim();
+                        }
+
+                        var book = InventoryManager.FindContainer(player, bookName);
+
+                        if (book == null)
+                            return MessageHandler.System($"No book matching '{bookName}' found.");
+
+                        if (!string.Equals(book.ItemCategory, "Container", StringComparison.OrdinalIgnoreCase))
+                            return MessageHandler.System("That is not a book.");
+
+                        // If page number specified, view that page
+                        if (pageNum.HasValue)
+                        {
+                            return BooksManager.ViewPageInBook(player, book, pageNum.Value, _world, _dbConnection);
+                        }
+
+                        // Otherwise, display book contents
+                        return BooksManager.DisplayBook(player, book, _dbConnection);
+                    }
+
+                case "scribe":
+                    {
+                        string cleanCommand = ExtractCommandText(rawCommand);
+                        var partsScribe = cleanCommand.Split(new[] { " to " }, StringSplitOptions.None);
+                        if (partsScribe.Length < 2)
+                            return MessageHandler.System("Usage: scribe [spellId] to [page]");
+
+                        string spellIdRaw = partsScribe[0].Substring("scribe".Length).Trim();
+                        string pageExpr = partsScribe[1].Trim();
+
+                        if (string.IsNullOrWhiteSpace(spellIdRaw))
+                            return MessageHandler.System("Usage: scribe [spellId] to [page]");
+
+                        // Convert user input to proper spell ID format (e.g., "lightning" -> "Lightning")
+                        string spellIdLower = spellIdRaw.ToLowerInvariant();
+                        string spellIdProper = char.ToUpperInvariant(spellIdLower[0]) + spellIdLower.Substring(1);
+
+                        // Find the target page in inventory (Page is an item, not a container)
+                        var targetPage = InventoryManager.FindNonEquippedMatches(player, pageExpr)
+                            .FirstOrDefault(i => i != null && string.Equals(i.ItemCategory, "Page", StringComparison.OrdinalIgnoreCase));
+
+                        if (targetPage == null)
+                            return MessageHandler.System($"You do not have a blank page matching '{pageExpr}'.");
+
+                        var room = player.CurrentRoom;
+                        if (room == null)
+                            return MessageHandler.System("You are not in a valid room.");
+
+                        return SpellScribingManager.ScribeSpellToPage(player, spellIdProper, targetPage, room, _world, _dbConnection);
+                    }
+
+                case "memorize":
+                    {
+                        string cleanCommand = ExtractCommandText(rawCommand);
+                        var partsMem = cleanCommand.Split(new[] { " from " }, StringSplitOptions.None);
+                        if (partsMem.Length < 2)
+                            return MessageHandler.System("Usage: memorize [spellId] from [page/book]");
+
+                        string spellIdRaw = partsMem[0].Substring("memorize".Length).Trim();
+
+                        if (string.IsNullOrWhiteSpace(spellIdRaw))
+                            return MessageHandler.System("Usage: memorize [spellId] from [page/book]");
+
+                        // Convert user input to proper spell ID format (e.g., "lightning" -> "Lightning")
+                        // This will be used to search for spell_lightning.json
+                        string spellIdLower = spellIdRaw.ToLowerInvariant();
+                        string spellIdProper = char.ToUpperInvariant(spellIdLower[0]) + spellIdLower.Substring(1);
+
+                        var room = player.CurrentRoom;
+                        if (room == null)
+                            return MessageHandler.System("You are not in a valid room.");
+
+                        return MemorizationManager.StartMemorizing(player, spellIdProper, room, _world, _dbConnection);
+                    }
+
+                case "memlist":
+                    return MemorizationManager.GetMemoredSpells(player, _dbConnection);
+
+                case "forget":
+                    {
+                        string spellId = ExtractCommandText(rawCommand).Substring("forget".Length).Trim();
+                        if (string.IsNullOrWhiteSpace(spellId))
+                            return MessageHandler.System("Usage: forget [spellId]");
+                        return MemorizationManager.ForgetSpell(player, spellId, _dbConnection);
+                    }
+
+                case "add":
+                    {
+                        // add [page] to [book]
+                        string cleanCommand = ExtractCommandText(rawCommand);
+                        var partsAdd = cleanCommand.Split(new[] { " to " }, StringSplitOptions.None);
+                        if (partsAdd.Length < 2)
+                            return MessageHandler.System("Usage: add [page] to [book]");
+
+                        string pageExpr = partsAdd[0].Substring("add".Length).Trim();
+                        string bookExpr = partsAdd[1].Trim();
+
+                        var pageMatches = InventoryManager.FindNonEquippedMatches(player, pageExpr);
+                        if (pageMatches.Count == 0)
+                            return MessageHandler.System($"No page matching '{pageExpr}' found.");
+
+                        if (pageMatches.Count > 1)
+                            return MessageHandler.System("Multiple pages match. Be more specific.");
+
+                        var book = InventoryManager.FindContainer(player, bookExpr);
+                        if (book == null)
+                            return MessageHandler.System($"No book matching '{bookExpr}' found.");
+
+                        var page = pageMatches[0];
+
+                        return BooksManager.AddPageToBook(player, page, book, null, _dbConnection);
+                    }
+
+                case "remove":
+                    {
+                        // remove [page] from [book]
+                        string cleanCommand = ExtractCommandText(rawCommand);
+                        var partsRemove = cleanCommand.Split(new[] { " from " }, StringSplitOptions.None);
+                        if (partsRemove.Length < 2)
+                            return MessageHandler.System("Usage: remove [page] from [book]");
+
+                        string pageExpr = partsRemove[0].Substring("remove".Length).Trim();
+                        string bookExpr = partsRemove[1].Trim();
+
+                        var book = InventoryManager.FindContainer(player, bookExpr);
+                        if (book == null)
+                            return MessageHandler.System($"No book matching '{bookExpr}' found.");
+
+                        var bookPages = BooksManager.LoadPagesInBook(book, _dbConnection);
+                        var pageMatches = bookPages.Where(p => p.Name.StartsWith(pageExpr, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                        if (pageMatches.Count == 0)
+                            return MessageHandler.System($"No page matching '{pageExpr}' found in that book.");
+
+                        if (pageMatches.Count > 1)
+                            return MessageHandler.System("Multiple pages match. Be more specific.");
+
+                        return BooksManager.RemovePageFromBook(player, pageMatches[0], book, _dbConnection);
+                    }
+
                 case string s when s.StartsWith("createarea", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     return _adminService.HandleCreateArea(player, command);
@@ -1986,7 +2163,7 @@ namespace MudServer
                             {
                                 Name = i.Name ?? "",
                                 Weight = totalWeight,
-                                Condition = i.Condition,
+                                Condition = (float)Math.Round(i.Condition, 2),  // Round to 2 decimal places
                                 ItemCategory = i.ItemCategory ?? "",
                                 ShortDesc = i.ShortDesc ?? "",
                                 WearLoc = i.WearLoc ?? "",
@@ -2001,6 +2178,83 @@ namespace MudServer
                         }).ToList() ?? new List<MudNetworking.InventoryItem>();
 
                         return MudNetworking.MessageHandler.Inventory(invItems);
+                    }
+
+                case string s when s.StartsWith("autoflee", StringComparison.OrdinalIgnoreCase):
+                    {
+                        var parts2 = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts2.Length < 2)
+                            return MessageHandler.System("Usage: autoflee <health_threshold> (0 to disable, 1-100 for threshold)");
+
+                        var arg = parts2[1].Trim();
+                        if (!int.TryParse(arg, out int threshold) || threshold < 0 || threshold > 100)
+                            return MessageHandler.System("Invalid threshold. Enter a number between 0-100 (0 = disabled).");
+
+                        player.AutoFlee = threshold;
+
+                        try
+                        {
+                            MudServer.DbWriteQueue.Instance.RunWriteAndWait<object?>((wConn, wTx) =>
+                            {
+                                using var cmd = wConn.CreateCommand();
+                                cmd.Transaction = wTx;
+                                cmd.CommandText = "UPDATE Player SET AutoFlee = @threshold WHERE PlayerID = @pid";
+                                cmd.Parameters.AddWithValue("@threshold", threshold);
+                                cmd.Parameters.AddWithValue("@pid", player.DbPlayerID);
+                                cmd.ExecuteNonQuery();
+                                return (object?)null;
+                            }, timeout: TimeSpan.FromSeconds(5));
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[AUTOFLEE] Failed to persist: {ex.Message}");
+                            return MessageHandler.System("Failed to save autoflee setting due to server error.");
+                        }
+
+                        if (threshold == 0)
+                            return MessageHandler.System("Autoflee disabled.");
+
+                        return MessageHandler.System($"Autoflee enabled: you will automatically flee when health drops to {threshold} or below.");
+                    }
+
+                case string s when s.StartsWith("consider", StringComparison.OrdinalIgnoreCase):
+                    {
+                        var parts3 = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts3.Length < 2)
+                            return MessageHandler.System("Usage: consider <target>");
+
+                        var targetExpr = parts3[1].Trim();
+                        var room = player.CurrentRoom;
+                        if (room == null)
+                            return MessageHandler.System("You are not in a valid room.");
+
+                        var matches = NpcTargeting.FindMatches(room, targetExpr);
+                        if (matches.Count == 0)
+                        {
+                            // Q3B: Also try to match players for assessment
+                            var playerMatches = room.Players.Where(p => p != player &&
+                                (!string.IsNullOrWhiteSpace(p.Name) &&
+                                 p.Name.StartsWith(targetExpr, StringComparison.OrdinalIgnoreCase))).ToList();
+
+                            if (playerMatches.Count == 0)
+                                return MessageHandler.System($"You don't see '{targetExpr}' here to assess.");
+
+                            if (playerMatches.Count > 1)
+                            {
+                                var list = string.Join(", ", playerMatches.Select(m => m.Name));
+                                return MessageHandler.System($"Multiple matches: {list}");
+                            }
+
+                            return MudCore.Actions.Combat.EvaluateWinProbability(player, playerMatches[0], _world);
+                        }
+
+                        if (matches.Count > 1)
+                        {
+                            var list = string.Join(", ", matches.Select(m => m.DisplayName));
+                            return MessageHandler.System($"Multiple matches: {list}");
+                        }
+
+                        return MudCore.Actions.Combat.EvaluateWinProbability(player, matches[0], _world);
                     }
 
                 case string s when s.Equals("stats", StringComparison.OrdinalIgnoreCase):
@@ -4239,7 +4493,7 @@ namespace MudServer
                         _world, _dbConnection));
                 }
 
-                return null;
+                return MessageHandler.System($"You {(choice == "2" ? "ascend into the sky" : "climb upward")}.");
             }
 
 

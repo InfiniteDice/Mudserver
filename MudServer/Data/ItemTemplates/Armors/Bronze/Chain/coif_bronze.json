@@ -1,0 +1,14 @@
+{
+  "Id": "coif_bronze",
+  "Name": "Bronze Coif",
+  "ItemCategory": "Armor",
+  "Weight": 2.2,
+  "Value": 200,
+  "ShortDesc": "A simple bronze coif",
+  "LongDesc": "A coif made of bronze rings, decent head protection.",
+  "WearLoc": "Head",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 7.0
+}

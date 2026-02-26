@@ -1,0 +1,15 @@
+{
+  "Id": "bar_steel",
+  "Name": "Steel Bar",
+  "ItemCategory": "Component",
+  "Weight": 1.0,
+  "Value": 10,
+  "ShortDesc": "A bar of steel",
+  "LongDesc": "A bar of steel, this bar of steel can be used for crafting, or can be divided into 10 bits of steel.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Steel",
+  "Stackable": "true"
+}

@@ -1,0 +1,14 @@
+{
+  "Id": "gorget_bronze",
+  "Name": "Bronze Gorget",
+  "ItemCategory": "Armor",
+  "Weight": 2.0,
+  "Value": 25,
+  "ShortDesc": "A simple bronze gorget",
+  "LongDesc": "A gorget made of bronze and lined with leather and felt, decent neck protection.",
+  "WearLoc": "Neck",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 8.0
+}

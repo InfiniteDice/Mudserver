@@ -1,0 +1,41 @@
+{
+  "id": "skill_divine_knowledge",
+  "name": "Divine Knowledge",
+  "skill_type": "Mystical",
+  "skill_prerequisites": [],
+  "skill_tiers": [
+    {
+      "level": 1,
+      "title": "Acolyte",
+      "power": 20,
+      "spell_retention": 2
+    },
+    {
+      "level": 2,
+      "title": "Cleric",
+      "power": 40,
+      "spell_retention": 4
+    },
+    {
+      "level": 3,
+      "title": "Priest",
+      "power": 60,
+      "spell_retention": 6
+    },
+    {
+      "level": 4,
+      "title": "High Priest",
+      "power": 80,
+      "spell_retention": 8
+    },
+    {
+      "level": 5,
+      "title": "Pontiff",
+      "power": 160,
+      "spell_retention": 12
+    }
+  ],
+  "temp": "temp",
+
+  "notes": "Devotion to a god, spell retention is simply spells granted per day after prayer (up to level known). Players learn once, no book required, no components, power costs vary by location or proximity to other gods/temples/altars"
+}

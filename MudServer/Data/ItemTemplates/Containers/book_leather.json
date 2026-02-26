@@ -1,0 +1,14 @@
+{
+  "Id": "book_leather",
+  "Name": "Leather Book",
+  "ItemCategory": "Container",
+  "Weight": 0.5,
+  "Value": 100,
+  "ShortDesc": "A book bound in leather",
+  "LongDesc": "A book bound in leather, scribe on its pages, or add your own pages.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "BlankPages:5", "Accept:Page" , "BookType:Spellbook"],
+  "Material": "Organic",
+  "Stackable": "false"
+}

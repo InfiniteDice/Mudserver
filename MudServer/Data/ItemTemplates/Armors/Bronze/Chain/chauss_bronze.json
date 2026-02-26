@@ -1,0 +1,14 @@
+{
+  "Id": "chauss_bronze",
+  "Name": "Bronze Chauss",
+  "ItemCategory": "Armor",
+  "Weight": 2.2,
+  "Value": 20,
+  "ShortDesc": "A simple bronze mail chauss",
+  "LongDesc": "A chauss made of bronze rings, decent leg protection.",
+  "WearLoc": "Leg",
+  "HandLoc": 0,
+  "Flags": [],
+  "Material": "Bronze",
+  "BaseACBonus": 7.0
+}

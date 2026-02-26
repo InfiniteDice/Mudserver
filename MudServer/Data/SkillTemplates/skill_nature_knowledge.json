@@ -1,0 +1,40 @@
+{
+  "id": "skill_nature_knowledge",
+  "name": "Nature Knowledge",
+  "skill_type": "Mystical",
+  "skill_prerequisites": [],
+  "skill_tiers": [
+    {
+      "level": 1,
+      "title": "Initiate",
+      "power": 10,
+      "spell_retention": 2
+    },
+    {
+      "level": "Grovekeeper",
+      "power": 20,
+      "spell_retention": 4
+    },
+    {
+      "level": 3,
+      "title": "Druid",
+      "power": 40,
+      "spell_retention": 6
+    },
+    {
+      "level": 4,
+      "title": "Hierophant",
+      "power": 80,
+      "spell_retention": 12
+    },
+    {
+      "level": 5,
+      "title": "Elder Druid",
+      "power": 160,
+      "spell_retention": 12
+    }
+  ],
+  "temp": "temp",
+
+  "notes": "Natural magic of druids, spell learning is different that arcane or elemental, spell casting further limited by environment (room or climate flags) or higher power costs"
+}

@@ -1,0 +1,30 @@
+{
+  "id": "skill_scribing",
+  "name": "Scribing",
+  "skill_type": "Mundane",
+  "skill_prerequisites": [],
+  "skill_tiers": [
+    {
+      "level": 1,
+      "title": "Novice Scribe"
+    },
+    {
+      "level": 2,
+      "title": "Apprentice Scribe"
+    },
+    {
+      "level": 3,
+      "title": "Journeyman Scribe"
+    },
+    {
+      "level": 4,
+      "title": "Master Scribe"
+    },
+    {
+      "level": 5,
+      "title": "Grandmaster Scribe"
+    }
+  ],
+
+  "notes": "Scribing skill is a basic/general skill type. Scribing level 1 will allow scribing of level 1 spells 100% of the time, -20% chance per level above 1."
+}

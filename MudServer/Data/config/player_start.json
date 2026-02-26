@@ -1,0 +1,38 @@
+{
+  "player_start": [
+    {
+      "Race": "Human",
+      "EquipmentTemplateIds": ["bag_small", "cup"],
+      "Coin_Copper": 30,
+      "Start_room": 1,
+      "Notes": "Humans start with a small bag, a cup, and 30 copper coins. They begin their journey in the forest, ready to explore and face the challenges ahead."
+    },
+    {
+      "Race": "Elf",
+      "EquipmentTemplateIds": [ "", "" ],
+      "Coin_Copper": 0,
+      "Start_room": 1,
+      "Notes": "Placeholder Example: Elves start with no equipment and no coins. They begin their journey in the forest, ready to explore and face the challenges ahead."
+    }
+  ],
+  "player_affliliation": [
+    {
+      "Race": "Human",
+      "AffliationTags": [ "" ]
+    },
+    {
+      "Race": "Elf",
+      "AffliationTags": [ "Fey" ]
+    }
+  ],
+  "Player_Startskill": [
+    {
+      "Race": "Human",
+      "AffliationTags": [ "" ]
+    },
+    {
+      "Race": "Elf",
+      "AffliationTags": [ "Discern" ]
+    }
+  ]
+}

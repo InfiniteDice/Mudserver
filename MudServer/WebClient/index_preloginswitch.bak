@@ -1,0 +1,789 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MUD — Client</title>
+    <link rel="stylesheet" href="styles.css?v=2" />
+</head>
+<body>
+    <div id="app">
+        <!-- Rain Overlay -->
+
+        <header class="topbar">
+            <canvas id="rain-canvas"></canvas>
+            <div class="title">MUD</div> <div class="status">
+
+                <span class="status-item">Player: <strong id="playerName">—</strong></span> <span class="status-item">HP: <strong id="hp">0</strong></span> <span class="status-item">Stamina: <strong id="stamina">0/0</strong></span> <span class="status-item">XP: <strong id="xp">0</strong></span> <button id="invBtn" class="inv-button">Inventory</button><div id="seasonGauge" style="display:inline-flex;align-items:center;margin-left:8px;">
+                    <img id="seasonImg_W" src="SeasonGauge_W.png" alt="Winter" style="display:none;height:32px;" />
+                    <img id="seasonImg_Sp" src="SeasonGauge_Sp.png" alt="Spring" style="display:none;height:32px;" />
+                    <img id="seasonImg_Su" src="SeasonGauge_Su.png" alt="Summer" style="display:none;height:32px;" />
+                    <img id="seasonImg_F" src="SeasonGauge_F.png" alt="Fall" style="display:none;height:32px;" />
+                </div>
+            </div>
+        </header>
+        <main class="main">
+            <section class="room card">
+                <h2 id="roomTitle">Loading…</h2>
+                <p id="roomDesc" class="muted">Waiting for room data.</p>
+
+                <div class="meta-row">
+                    <div class="badges">
+                        <strong>Exits:</strong>
+                        <span id="exits" class="badge-row"></span>
+                    </div>
+                    <div class="badges">
+                        <strong>NPCs:</strong>
+                        <span id="npcs" class="badge-row"></span>
+                    </div>
+                    <div class="badges">
+                        <strong>Players:</strong>
+                        <span id="players" class="badge-row"></span>
+                    </div>
+
+                    <div class="badges">
+                        <strong>Items:</strong>
+                        <span id="items" class="badge-row"></span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="log card">
+                <div id="log" class="logpane" aria-live="polite"></div>
+            </section>
+        </main>
+
+        <footer class="inputbar">
+            <div class="quick">
+                <button data-cmd="look">Look</button>
+                <button data-cmd="n">N</button>
+                <button data-cmd="s">S</button>
+                <button data-cmd="e">E</button>
+                <button data-cmd="w">W</button>
+                <button data-cmd="up">U</button>
+                <button data-cmd="down">D</button>
+            </div>
+
+            <form id="cmdForm" class="cmd">
+                <input id="cmdInput" autocomplete="off" placeholder="Enter command (or press a quick button)..." />
+                <button type="submit">Send</button>
+            </form>
+        </footer>
+    </div>
+
+    <!-- Inventory Modal -->
+    <div id="invModal" class="modal-backdrop" aria-hidden="true">
+        <div class="modal">
+            <header class="modal-header">
+                <h3>Inventory</h3>
+                <button id="invClose" class="close">×</button>
+            </header>
+
+            <div class="modal-body">
+                <table id="invTable" class="inv-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Descriptor</th>
+                            <th>Material</th>
+                            <th>Weight</th>
+                            <th>Condition</th>
+                            <th>Category</th>
+                            <th>Short Description</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- populated dynamically -->
+                    </tbody>
+                </table>
+                <div id="invEmpty" class="muted" style="display:none">You are carrying nothing.</div>
+            </div>
+
+            <footer class="modal-footer">
+                <button id="invRefresh">Refresh</button>
+                <button id="invClose2">Close</button>
+            </footer>
+        </div>
+    </div>
+
+    <script>
+        //const host = location.hostname || 'localhost';
+        //const port = 9250;
+        //const ws = new WebSocket(`ws://${host}:${port}`);
+        //const ws = new WebSocket("wss://mythmud.com"); //this is old way
+
+        // NEW: Session token reconnection support
+        let ws;
+        function initWebSocket() {
+            ws = new WebSocket("wss://mythmud.com");
+
+            // NEW: On successful connection, check if we have a stored session token
+            ws.addEventListener('open', () => {
+                addLog('Connected to server', 'system');
+
+                // Check for stored session token
+                const storedToken = sessionStorage.getItem('sessionToken');
+                const storedName = sessionStorage.getItem('playerName');
+
+                if (storedToken && storedName) {
+                    console.log('[SESSION] Attempting auto-reconnect with stored token');
+                    ws.send(JSON.stringify({
+                        type: 'reconnect',
+                        sessionToken: storedToken,
+                        playerName: storedName
+                    }));
+                }
+            });
+
+            ws.addEventListener('close', () => {
+                addLog('Disconnected from server', 'system');
+                // Don't clear session token - allow reconnect on refresh
+            });
+
+            ws.addEventListener('error', e => {
+                addLog('WebSocket error', 'error');
+            });
+
+            // Rest of message handler...
+            ws.addEventListener('message', evt => {
+                console.log('[WS rx]', evt.data);
+                // ... existing message handler code continues here
+            });
+        }
+
+        // Initialize WebSocket
+        initWebSocket();
+
+        const playerNameEl = document.getElementById('playerName');
+        const hpEl = document.getElementById('hp');
+        const staminaEl = document.getElementById('stamina');
+        const xpEl = document.getElementById('xp');
+        const roomTitleEl = document.getElementById('roomTitle');
+        const roomDescEl = document.getElementById('roomDesc');
+        const exitsEl = document.getElementById('exits');
+        const npcsEl = document.getElementById('npcs');
+        const itemsEl = document.getElementById('items');
+        const playersEl = document.getElementById('players');
+        const logEl = document.getElementById('log');
+        const cmdForm = document.getElementById('cmdForm');
+        const cmdInput = document.getElementById('cmdInput');
+
+        // top bar title element
+        const siteTitleEl = document.querySelector('.title');
+
+        // Inventory modal elements
+        const invBtn = document.getElementById('invBtn');
+        const invModal = document.getElementById('invModal');
+        const invClose = document.getElementById('invClose');
+        const invClose2 = document.getElementById('invClose2');
+        const invRefresh = document.getElementById('invRefresh');
+        const invTableBody = document.querySelector('#invTable tbody');
+        const invEmpty = document.getElementById('invEmpty');
+
+        function addLog(text, cls = '') {
+            const el = document.createElement('div');
+            el.className = 'log-line ' + cls;
+            if (cls === 'system') {
+                const safe = text.replace(/<script/gi, '&lt;script');
+                el.innerHTML = safe;
+            } else {
+                el.textContent = text;
+            }
+            logEl.appendChild(el);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function openInventory() {
+            invModal.setAttribute('aria-hidden', 'false');
+            invModal.style.display = 'flex';
+            requestInventory();
+        }
+
+        function closeInventory() {
+            invModal.setAttribute('aria-hidden', 'true');
+            invModal.style.display = 'none';
+        }
+
+        function renderInventory(items) {
+            invTableBody.innerHTML = '';
+            if (!items || items.length === 0) {
+                invEmpty.style.display = 'block';
+                document.querySelector('#invTable').style.display = 'none';
+                return;
+            }
+            invEmpty.style.display = 'none';
+            document.querySelector('#invTable').style.display = '';
+            items.forEach(it => {
+                let status = '';
+                const wearLoc = it.wearLoc || '';
+                const isWorn = !!it.isWorn;
+                const isHeld = !!it.isHeld;
+                const qty = (it.quantity && Number(it.quantity) > 1) ? Number(it.quantity) : 1;
+
+                if (isWorn && wearLoc) {
+                    status = `Worn on ${wearLoc}`;
+                } else if (isHeld) {
+                    status = `Held`;
+                }
+
+                const displayName = qty > 1 ? `${qty} x ${escapeHtml(it.name)}` : escapeHtml(it.name);
+                const descriptor = escapeHtml(it.descriptor || '');
+                const material = escapeHtml(it.material || '');
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                                              <td>${displayName}</td>
+                                              <td>${descriptor}</td>
+                                              <td>${material}</td>
+                                              <td>${escapeHtml(String(it.weight ?? ''))}</td>
+                                              <td>${escapeHtml(String(it.condition ?? ''))}</td>
+                                              <td>${escapeHtml(it.itemCategory ?? '')}</td>
+                                              <td>${escapeHtml(it.shortDesc ?? '')}</td>
+                                              <td>${escapeHtml(status)}</td>
+                                            `;
+                invTableBody.appendChild(tr);
+            });
+        }
+
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[c]);
+        }
+
+        function requestInventory() {
+            const payload = JSON.stringify({ type: 'command', text: 'inventory' });
+            ws.send(payload);
+            addLog('> inventory', 'you');
+        }
+
+        // Map short direction tokens (or common aliases) to full display names
+        function mapDirectionFull(token) {
+            if (!token) return '';
+            const t = token.toString().trim().toUpperCase();
+            const map = {
+                'N': 'North', 'NORTH': 'North',
+                'S': 'South', 'SOUTH': 'South',
+                'E': 'East', 'EAST': 'East',
+                'W': 'West', 'WEST': 'West',
+                'NE': 'Northeast', 'NORTHEAST': 'Northeast',
+                'NW': 'Northwest', 'NORTHWEST': 'Northwest',
+                'SE': 'Southeast', 'SOUTHEAST': 'Southeast',
+                'SW': 'Southwest', 'SOUTHWEST': 'Southwest',
+                'U': 'Up', 'UP': 'Up',
+                'D': 'Down', 'DOWN': 'Down'
+            };
+            return map[t] || token.toString();
+        }
+
+        ws.addEventListener('open', () => addLog('Connected to server', 'system'));
+        ws.addEventListener('close', () => addLog('Disconnected', 'system'));
+        ws.addEventListener('error', e => addLog('WebSocket error', 'error'));
+
+        ws.addEventListener('message', evt => {
+            console.log('[WS rx]', evt.data);
+            try {
+                const msg = JSON.parse(evt.data);
+
+                if (msg.type === 'room') {
+                    let title = msg.title || '';
+                    let desc = msg.description || '';
+
+                    if (!title && desc) {
+                        const parts = desc.split('\n');
+                        title = parts[0].replace(/\*\*/g, '').trim();
+                        desc = parts.slice(1).join('\n').trim();
+                    }
+
+                    roomTitleEl.textContent = title || 'Unknown room';
+                    roomDescEl.textContent = desc || '';
+
+                    // update top title to "WorldName -- AreaName" and include stylized game header when provided
+                    const worldName = msg.worldName || '';
+                    const areaName = msg.areaName || '';
+                    const gameHeader = msg.gameHeader || '';
+
+                    if (worldName || areaName) {
+                        const base = worldName && areaName ? `${worldName} -- ${areaName}` : (worldName || areaName || 'MUD');
+
+                        if (gameHeader) {
+                            // include descriptive period + ordinal date + month + year
+                            siteTitleEl.textContent = `${base} — ${gameHeader}`;
+                        } else {
+                            siteTitleEl.textContent = base;
+                        }
+
+                        document.title = siteTitleEl.textContent;
+                    }
+
+                    exitsEl.innerHTML = (msg.exits || [])
+                        .map(e => {
+                            const shortDir = (e.shortDir ?? e.ShortDir ?? '').toString();
+                            const dirToken = (e.direction ?? e.Direction ?? '').toString();
+                            const t = (e.title ?? e.Title ?? '').toString();
+
+                            // Prefer canonical shortDir for mapping, fallback to server direction token.
+                            const canonical = shortDir || dirToken;
+                            const dirFullName = mapDirectionFull(canonical) || (dirToken || '');
+
+                            // Build compact label: show (N)est => "(N)est" for "(N)ortheast" etc.
+                            let displayDir;
+                            if (shortDir && dirFullName) {
+                                const first = dirFullName.charAt(0);
+                                if (first.toUpperCase() === shortDir.toUpperCase()) {
+                                    displayDir = `(${escapeHtml(shortDir)})${escapeHtml(dirFullName.slice(1))}`;
+                                } else {
+                                    displayDir = `(${escapeHtml(shortDir)})${escapeHtml(dirFullName)}`;
+                                }
+                            } else {
+                                displayDir = escapeHtml(dirFullName || '');
+                            }
+
+                            let html = `<span class="badge exit">${displayDir}${t ? ' — ' + escapeHtml(t) : ''}`;
+
+                            // Door badge (only when server indicates door present)
+                            const hasDoor = e.hasDoor ?? e.HasDoor ?? false;
+                            const doorState = (e.doorState ?? e.DoorState ?? '').toString();
+
+                            if (hasDoor) {
+                                const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
+                                const stateLower = doorState.toLowerCase();
+                                const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
+                            }
+
+                            html += `</span>`;
+                            return html;
+                        })
+                        .join(' ');
+
+                    if (npcsEl) {
+                        npcsEl.innerHTML = (msg.npcs || []).map(n => `<span class="badge">${n}</span>`).join(' ');
+                    }
+
+                    if (playersEl) {
+                        playersEl.innerHTML = (msg.players || []).map(p => `<span class="badge">${p}</span>`).join(' ');
+                    }
+
+                    if (itemsEl) {
+                        // msg.items now contains quantity-prefixed strings for room items when applicable
+                        itemsEl.innerHTML = (msg.items || []).map(i => `<span class="badge item">${escapeHtml(i)}</span>`).join(' ');
+                    }
+
+                    // Only log "You look at ..." when the server explicitly marked this room message as an explicit look
+                    // (server sets msg.isLook = true for explicit look commands).
+                    if (msg.isLook) {
+                        addLog(title ? `You look at ${title}` : `You look around`, 'info');
+                    }
+                    return;
+                }
+
+                if (msg.type === 'exits') {
+                    exitsEl.innerHTML = (msg.exits || [])
+                        .map(e => {
+                            const shortDir = (e.shortDir ?? e.ShortDir ?? '').toString();
+                            const dirToken = (e.direction ?? e.Direction ?? '').toString();
+                            const t = (e.title ?? e.Title ?? '').toString();
+
+                            const canonical = shortDir || dirToken;
+                            const dirFullName = mapDirectionFull(canonical) || (dirToken || '');
+
+                            let displayDir;
+                            if (shortDir && dirFullName) {
+                                const first = dirFullName.charAt(0);
+                                if (first.toUpperCase() === shortDir.toUpperCase()) {
+                                    displayDir = `(${escapeHtml(shortDir)})${escapeHtml(dirFullName.slice(1))}`;
+                                } else {
+                                    displayDir = `(${escapeHtml(shortDir)})${escapeHtml(dirFullName)}`;
+                                }
+                            } else {
+                                displayDir = escapeHtml(dirFullName || '');
+                            }
+
+                            let html = `<span class="badge exit">${displayDir}${t ? ' — ' + escapeHtml(t) : ''}`;
+
+                            const hasDoor = e.hasDoor ?? e.HasDoor ?? false;
+                            const doorState = (e.doorState ?? e.DoorState ?? '').toString();
+
+                            if (hasDoor) {
+                                const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
+                                const stateLower = doorState.toLowerCase();
+                                const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
+                            }
+
+                            html += `</span>`;
+                            return html;
+                        }).join(' ');
+                    return;
+                }
+
+                if (msg.type === 'player_update') {
+                    playerNameEl.textContent = msg.name || '—';
+                    hpEl.textContent = `${msg.currentHealth ?? 0}/${msg.maxHealth ?? 0}`;
+                    if (staminaEl) staminaEl.textContent = `${msg.currentStamina ?? 0}/${msg.maxStamina ?? 0}`;
+                    if (xpEl) xpEl.textContent = String(msg.experience ?? 0);
+
+                    // Update header with world/area + stylized game header when available
+                    const w = msg.worldName || '';
+                    const a = msg.areaName || '';
+                    const gh = msg.gameHeader || '';
+
+                    if (w || a) {
+                        // build base world/area string
+                        const base = w && a ? `${w} -- ${a}` : (w || a || 'MUD');
+
+                        if (gh) {
+                            // include descriptive period + ordinal date + month + year
+                            siteTitleEl.textContent = `${base} — ${gh}`;
+                        } else {
+                            // fallback to base
+                            siteTitleEl.textContent = base;
+                        }
+                        document.title = siteTitleEl.textContent;
+                    }
+
+                    // NEW: Store session token if server sent it
+                    if (msg.sessionToken) {
+                        sessionStorage.setItem('sessionToken', msg.sessionToken);
+                        sessionStorage.setItem('playerName', msg.name || '');
+                        console.log('[SESSION] Token stored:', msg.sessionToken.substring(0, 8) + '...');
+                    }
+
+                    return;
+                }
+
+                if (msg.type === 'inventory') {
+                    renderInventory(msg.inventory || []);
+                    return;
+                }
+
+                if (msg.type === 'system') { renderSystemMessage(msg.text || '[system]'); return; }
+                if (msg.type === 'chat') { addLog(msg.text || '', 'chat'); return; }
+
+                addLog(JSON.stringify(msg), 'debug');
+            } catch {
+                addLog(evt.data, 'raw');
+            }
+        });
+
+        document.querySelectorAll('.quick button').forEach(b => {
+            b.addEventListener('click', () => {
+                const c = b.getAttribute('data-cmd');
+                if (c) {
+                    sendCommand(c);
+                }
+            });
+        });
+
+        function sendCommand(text, isSensitive = false) {
+            const payload = JSON.stringify({ type: 'command', text });
+            ws.send(payload);
+            // NEW: Don't echo sensitive inputs (passwords) to the log
+            if (!isSensitive) {
+                addLog('> ' + text, 'you');
+            }
+        }
+
+        const history = [];
+        let cursor = -1;
+
+        function recordCommand(cmd) {
+            if (!cmd || !cmd.trim()) return;
+            if (history.length > 0 && history[0] === cmd) return;
+            history.unshift(cmd);
+            if (history.length > 3) history.pop();
+            cursor = -1;
+        }
+
+        function historyPrev() {
+            if (history.length === 0) return;
+            if (cursor < history.length - 1) cursor++;
+            cmdInput.value = history[cursor] || '';
+            cmdInput.setSelectionRange(cmdInput.value.length, cmdInput.value.length);
+        }
+
+        function historyNext() {
+            if (history.length === 0) return;
+            if (cursor <= 0) {
+                cursor = -1;
+                cmdInput.value = '';
+            } else {
+                cursor--;
+                cmdInput.value = history[cursor] || '';
+            }
+            cmdInput.setSelectionRange(cmdInput.value.length, cmdInput.value.length);
+        }
+
+        cmdForm.addEventListener('submit', e => {
+            e.preventDefault();
+            const text = cmdInput.value.trim();
+            if (!text) return;
+            recordCommand(text);
+
+            // NEW: Check if the last system message was a password prompt
+            const lastLogLine = logEl.lastElementChild?.textContent || '';
+            const isPasswordPrompt = lastLogLine.includes('password') || lastLogLine.includes('Password');
+
+            sendCommand(text, isPasswordPrompt);
+            cmdInput.value = '';
+        });
+
+        cmdInput.addEventListener('keydown', e => {
+            if (e.key === 'ArrowUp') { e.preventDefault(); historyPrev(); }
+            if (e.key === 'ArrowDown') { e.preventDefault(); historyNext(); }
+        });
+
+        invBtn.addEventListener('click', openInventory);
+        invClose.addEventListener('click', closeInventory);
+        invClose2.addEventListener('click', closeInventory);
+        invRefresh.addEventListener('click', requestInventory);
+
+        window.addEventListener('keydown', e => {
+            if (e.key === '/') { e.preventDefault(); cmdInput.focus(); }
+            if (e.key === 'Escape' && invModal.style.display === 'flex') closeInventory();
+        });
+
+        invModal.style.display = 'none';
+    </script>
+    <script>
+        // Client-side critical-hit formatter and renderer.
+        (function () {
+            function escapeHtml(str) {
+                if (str == null) return "";
+                return String(str)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#39;");
+            }
+
+            function formatCriticalHtml(text) {
+                if (!text) return "";
+                var raw = escapeHtml(text);
+                var selfPhrase = "You score a critical hit!";
+                if (raw.indexOf(escapeHtml(selfPhrase)) !== -1) {
+                    return raw.split(escapeHtml(selfPhrase)).map(escapeHtml).join("").replace(escapeHtml(selfPhrase), `<span class="msg-crit-self">${escapeHtml(selfPhrase)}</span>`) || raw.replace(escapeHtml(selfPhrase), `<span class="msg-crit-self">${escapeHtml(selfPhrase)}</span>`);
+                }
+                var hitRegex = /(.+?) scores a critical hit on you!/i;
+                var m = text.match(hitRegex);
+                if (m) {
+                    var attacker = escapeHtml(m[1]);
+                    var wrapped = `<span class="msg-crit-hit">${attacker} scores a critical hit on you!</span>`;
+                    var escPattern = escapeHtml(m[0]);
+                    return raw.replace(escPattern, wrapped);
+                }
+                return raw;
+            }
+
+            window.renderSystemMessage = function (text) {
+                try {
+                    var logPane = document.querySelector('.logpane');
+                    if (!logPane) return;
+
+                    var div = document.createElement('div');
+                    div.className = 'log-line system';
+                    div.innerHTML = formatCriticalHtml(text);
+
+                    logPane.appendChild(div);
+                    logPane.scrollTop = logPane.scrollHeight;
+                } catch (e) {
+                    console.error('renderSystemMessage error', e);
+                }
+            };
+        })();
+    </script>
+    <!-- Add this script near the end of the file (before </body>) -->
+    <script>
+        (function () {
+            // Map month index (0=Jan .. 11=Dec) -> season code
+            function monthToSeason(month) {
+                if (month === 11 || month === 0 || month === 1) return 'W';    // Dec/Jan/Feb -> Winter
+                if (month >= 2 && month <= 4) return 'Sp';                     // Mar/Apr/May -> Spring
+                if (month >= 5 && month <= 7) return 'Su';                     // Jun/Jul/Aug -> Summer
+                return 'F';                                                    // Sep/Oct/Nov -> Fall
+            }
+
+            const imgs = {
+                W: document.getElementById('seasonImg_W'),
+                Sp: document.getElementById('seasonImg_Sp'),
+                Su: document.getElementById('seasonImg_Su'),
+                F: document.getElementById('seasonImg_F')
+            };
+
+            function showSeason(code) {
+                Object.keys(imgs).forEach(k => { if (imgs[k]) imgs[k].style.display = (k === code) ? '' : 'none'; });
+            }
+
+            // Try parse ISO timestamp -> month index
+            function tryIsoToMonth(iso) {
+                try {
+                    const d = new Date(iso);
+                    if (!isNaN(d.getTime())) return d.getMonth();
+                } catch (e) { /* ignore */ }
+                return null;
+            }
+
+            // Try extract month name from freeform header (e.g. "Dawn, 5th of March")
+            function tryHeaderToMonth(header) {
+                if (!header) return null;
+                const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+                const s = header.toLowerCase();
+                for (let i = 0; i < months.length; i++) {
+                    if (s.indexOf(months[i]) !== -1) return i;
+                }
+                return null;
+            }
+
+            // Public helper if you want to override manually
+            window.setSeasonByMonth = function (monthIndex) {
+                if (typeof monthIndex !== 'number' || monthIndex < 0 || monthIndex > 11) return;
+                showSeason(monthToSeason(monthIndex));
+            };
+
+            // Heuristic: listen to incoming WS messages (non-invasive, additional listener)
+            try {
+                if (typeof ws !== 'undefined' && ws && ws.addEventListener) {
+                    ws.addEventListener('message', evt => {
+                        try {
+                            const raw = evt.data;
+                            const msg = JSON.parse(raw);
+
+                            // 1) Prefer explicit ISO timestamp if server sends it
+                            if (msg.gameTimeIso) {
+                                const m = tryIsoToMonth(msg.gameTimeIso);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+                            if (msg.gameTime) { // some servers may send an object or ISO string in different property
+                                const m = tryIsoToMonth(msg.gameTime);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+
+                            // 2) Try player_update / room metadata that may include a header with month name
+                            if (msg.gameHeader) {
+                                const mh = tryHeaderToMonth(msg.gameHeader);
+                                if (mh !== null) { window.setSeasonByMonth(mh); return; }
+                            }
+                            // fallback keys to inspect (safe guards)
+                            if (msg.worldDate) {
+                                const m = tryIsoToMonth(msg.worldDate);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+                            if (msg.date || msg.time) {
+                                const m = tryIsoToMonth(msg.date || msg.time);
+                                if (m !== null) { window.setSeasonByMonth(m); return; }
+                            }
+                        } catch (e) {
+                            // ignore parse errors
+                        }
+                    });
+                }
+            } catch (e) { /* best-effort */ }
+
+
+        })();
+    </script>
+    <script>
+        const canvas = document.getElementById("rain-canvas");
+        const ctx = canvas.getContext("2d");
+        const topbar = canvas.parentElement;
+
+        const numDrops = 200;
+        const drops = [];
+
+        let width = 0;
+        let height = 0;
+        let lastTime = performance.now();
+
+        // Exposed boolean to control rain
+        let isRaining = false; // default: not raining
+
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+
+            width = topbar.clientWidth;
+            height = topbar.clientHeight;
+
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            canvas.style.width = width + "px";
+            canvas.style.height = height + "px";
+
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        // Initialize raindrops
+        function initDrops() {
+            drops.length = 0;
+            for (let i = 0; i < numDrops; i++) {
+                drops.push({
+                    x: Math.random() * width,
+                    y: Math.random() * height,
+                    length: 10 + Math.random() * 15,
+                    speed: 200 + Math.random() * 200
+                });
+            }
+        }
+
+        function animate(now) {
+            const dt = (now - lastTime) / 1000;
+            lastTime = now;
+
+            // Only draw if raining
+            if (isRaining) {
+                ctx.clearRect(0, 0, width, height);
+
+                ctx.strokeStyle = "rgba(173,216,230,0.6)";
+                ctx.lineWidth = 2;
+                ctx.lineCap = "round";
+
+                for (let drop of drops) {
+                    ctx.beginPath();
+                    ctx.moveTo(drop.x, drop.y);
+                    ctx.lineTo(drop.x, drop.y + drop.length);
+                    ctx.stroke();
+
+                    drop.y += drop.speed * dt;
+
+                    if (drop.y > height) {
+                        drop.y = -drop.length;
+                        drop.x = Math.random() * width;
+                        drop.length = 10 + Math.random() * 15;
+                        drop.speed = 200 + Math.random() * 200;
+                    }
+                }
+            } else {
+                // If not raining, just clear canvas
+                ctx.clearRect(0, 0, width, height);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // Initial setup
+        resizeCanvas();
+        initDrops();
+        requestAnimationFrame(animate);
+
+        // Keep in sync if topbar changes size
+        window.addEventListener("resize", () => {
+            resizeCanvas();
+            initDrops();
+        });
+
+        // Optional: expose toggle function
+        function toggleRain(value) {
+            isRaining = value;
+        }
+
+        // Example usage: start rain after 2 seconds
+        // setTimeout(() => toggleRain(true), 2000);
+    </script>
+
+
+</body>
+</html>

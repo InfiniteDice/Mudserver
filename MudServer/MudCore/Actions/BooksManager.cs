@@ -354,33 +354,51 @@ namespace MudCore.Actions
             // Skill
             string skillDisplay = "None";
             if (!string.IsNullOrWhiteSpace(spellTemplate.RequiredSkill))
-            {
                 skillDisplay = FormatSkillName(spellTemplate.RequiredSkill);
-            }
             lines.Add($"Skill: {skillDisplay}");
 
             // Skill Level Required
-            string skillLevelDisplay = spellTemplate.MinSkillLevel > 0 ? spellTemplate.MinSkillLevel.ToString() : "None";
+            string skillLevelDisplay = spellTemplate.MinSkillLevel > 0
+                ? spellTemplate.MinSkillLevel.ToString()
+                : "None";
             lines.Add($"Skill Level Required: {skillLevelDisplay}");
+
+            // Alignment
+            string alignDisplay = string.IsNullOrWhiteSpace(spellTemplate.AlignmentRestriction) ||
+                string.Equals(spellTemplate.AlignmentRestriction, "None", StringComparison.OrdinalIgnoreCase)
+                ? "None"
+                : spellTemplate.AlignmentRestriction;
+            lines.Add($"Alignment: {alignDisplay}");
+
+            // Delivery
+            string deliveryDisplay = string.IsNullOrWhiteSpace(spellTemplate.DeliveryMethod)
+                ? "None"
+                : spellTemplate.DeliveryMethod;
+            lines.Add($"Delivery: {deliveryDisplay}");
 
             // Requirements (Tools + Room Flags)
             string requirementsDisplay = FormatRequirements(spellTemplate);
             lines.Add($"Requirements: {requirementsDisplay}");
 
             // Casting Cost
-            string costDisplay = spellTemplate.PowerCost > 0 ? spellTemplate.PowerCost.ToString() : "None";
+            string costDisplay = spellTemplate.PowerCost > 0
+                ? spellTemplate.PowerCost.ToString()
+                : "None";
             lines.Add($"Casting Cost: {costDisplay}");
 
-            // Damage or Effect
+            // Damage — only show if a Damage effect exists
             string damageDisplay = FormatDamageEffect(spellTemplate);
-            lines.Add($"Damage: {damageDisplay}");
+            if (!string.Equals(damageDisplay, "None", StringComparison.OrdinalIgnoreCase))
+                lines.Add($"Damage: {damageDisplay}");
 
             // Duration
             string durationDisplay = FormatDuration(spellTemplate);
             lines.Add($"Duration: {durationDisplay}");
 
             // Casting Time
-            string castTimeDisplay = spellTemplate.CastTimeSeconds > 0 ? $"{spellTemplate.CastTimeSeconds} seconds" : "None";
+            string castTimeDisplay = spellTemplate.CastTimeSeconds > 0
+                ? $"{spellTemplate.CastTimeSeconds} seconds"
+                : "None";
             lines.Add($"Casting Time: {castTimeDisplay}");
 
             // Components
@@ -485,45 +503,61 @@ namespace MudCore.Actions
         }
 
         /// <summary>
-        /// Format damage effect or return "None" if no damage effect.
+        /// Format damage effect using ValuePerLevel and DamageType from JSON (source of truth).
+        /// spellEffects[].type == "Damage" → reads valuePerLevel, baseValue, damageType.
+        /// Falls back to legacy DmgPerLevel if ValuePerLevel is null.
+        /// Example output for spell_lightning.json: "5 base + 5 per level (Electric)"
         /// </summary>
         private static string FormatDamageEffect(SpellTemplate spell)
         {
             if (spell.SpellEffects == null || spell.SpellEffects.Count == 0)
                 return "None";
 
+            // Find effect where type == "Damage" — this is the only effect type with damageType
             var damageEffect = spell.SpellEffects.FirstOrDefault(e =>
                 string.Equals(e.Type, "Damage", StringComparison.OrdinalIgnoreCase));
 
             if (damageEffect == null)
                 return "None";
 
-            if (damageEffect.DmgPerLevel <= 0)
+            // ValuePerLevel is the JSON source of truth (e.g. "valuePerLevel": 5 in spell_lightning.json)
+            // DmgPerLevel is the legacy fallback — will be 0 for all current JSON files
+            int perLevel = damageEffect.ValuePerLevel ?? damageEffect.DmgPerLevel;
+            if (perLevel <= 0)
                 return "None";
 
+            // DamageType maps directly from JSON "damageType" field (e.g. "Electric" in spell_lightning.json)
             string damageTypeDisplay = string.IsNullOrWhiteSpace(damageEffect.DamageType)
                 ? "Unknown"
                 : damageEffect.DamageType;
 
-            return $"{damageEffect.DmgPerLevel} per level ({damageTypeDisplay})";
+            // Include baseValue if present and non-zero (e.g. "baseValue": 5 in spell_lightning.json)
+            if (damageEffect.BaseValue.HasValue && damageEffect.BaseValue.Value > 0)
+                return $"{damageEffect.BaseValue.Value} base + {perLevel} per level ({damageTypeDisplay})";
+
+            return $"{perLevel} per level ({damageTypeDisplay})";
         }
 
         /// <summary>
-        /// Format duration from spell effects.
+        /// Format duration from spell effects using DurationSeconds (JSON source of truth).
+        /// Replaces legacy EffectDuration — all current JSON files use "durationSeconds".
+        /// Scans all effects and returns the first non-null durationSeconds found.
+        /// Examples: fog = 120s, rift = 120s, lightning stun = 2s, heal = null → Instantaneous.
         /// </summary>
         private static string FormatDuration(SpellTemplate spell)
         {
             if (spell.SpellEffects == null || spell.SpellEffects.Count == 0)
                 return "None";
 
-            var effect = spell.SpellEffects.FirstOrDefault();
-            if (effect == null)
-                return "None";
+            // Scan all effects — return first non-null durationSeconds value
+            foreach (var effect in spell.SpellEffects)
+            {
+                if (effect.DurationSeconds.HasValue)
+                    return $"{effect.DurationSeconds.Value} seconds";
+            }
 
-            if (effect.EffectDuration == 0)
-                return "Instantaneous";
-
-            return $"{effect.EffectDuration} seconds";
+            // All durationSeconds were null — spell effect is instantaneous
+            return "Instantaneous";
         }
 
         /// <summary>

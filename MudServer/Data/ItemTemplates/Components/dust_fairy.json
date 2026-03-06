@@ -1,0 +1,15 @@
+{
+  "Id": "dust_fairy",
+  "Name": "Fairy Dust",
+  "ItemCategory": "Component",
+  "Weight": 0.01,
+  "Value": 2,
+  "ShortDesc": "A small amount of dust made from fairies",
+  "LongDesc": "A small portion of dust, made from fairies, this can be used in spell casting.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "true"
+}

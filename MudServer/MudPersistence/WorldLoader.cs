@@ -1,13 +1,14 @@
 ﻿using Microsoft.Data.Sqlite;
+using MudCore;
 using MudCore.Entities;
 using MudCore.World;
+using MudPersistence; 
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
-using System.IO;
 using System.Data;
-using MudCore;
-using MudPersistence; 
+using System.IO;
+using System.Text.Json;
+using MudServer;
 
 namespace MudPersistence
 {
@@ -483,6 +484,8 @@ namespace MudPersistence
                             var items = ItemPersistence.LoadItemsByOwner(conn, "NPC", npc.NpcID);
                             if (items != null && items.Count > 0)
                                 npc.Inventory = items;
+
+                            
                         }
                         catch (Exception ex)
                         {

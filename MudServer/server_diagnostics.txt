@@ -16787,3 +16787,3439 @@ Queued message type summary: (none)
 GC Collections: Gen0=0, Gen1=0, Gen2=0
 ===== End Diagnostics =====
 
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-02-28T00:20:01.5083274Z
+Process StartTime (UTC): 2026-02-28T00:19:49.1542084Z
+Uptime: 00:00:12.3562452
+Process Id: 23748
+Threads: 28
+CPU Time: 00:00:01.1093750
+Managed Memory (bytes): 14058648
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-02-28T00:25:01.5257454Z
+Process StartTime (UTC): 2026-02-28T00:19:49.1542084Z
+Uptime: 00:05:12.3717268
+Process Id: 23748
+Threads: 30
+CPU Time: 00:00:02.0937500
+Managed Memory (bytes): 3114864
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=3, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T01:19:33.6536348Z
+Process StartTime (UTC): 2026-03-02T01:19:21.5222813Z
+Uptime: 00:00:12.1333999
+Process Id: 18300
+Threads: 29
+CPU Time: 00:00:01.5937500
+Managed Memory (bytes): 20766896
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T01:30:34.1397272Z
+Process StartTime (UTC): 2026-03-02T01:30:22.1397669Z
+Uptime: 00:00:12.0014903
+Process Id: 7956
+Threads: 28
+CPU Time: 00:00:01
+Managed Memory (bytes): 13992528
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T02:39:29.1600628Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:00:11.8449997
+Process Id: 27136
+Threads: 29
+CPU Time: 00:00:01.1718750
+Managed Memory (bytes): 15280616
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T02:44:29.1828110Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:05:11.8663431
+Process Id: 27136
+Threads: 29
+CPU Time: 00:00:02
+Managed Memory (bytes): 4620976
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T02:49:29.1946093Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:10:11.8781642
+Process Id: 27136
+Threads: 30
+CPU Time: 00:00:02.4531250
+Managed Memory (bytes): 4492056
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T02:54:29.2116874Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:15:11.8951488
+Process Id: 27136
+Threads: 28
+CPU Time: 00:00:02.8437500
+Managed Memory (bytes): 7722112
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T02:59:29.2187703Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:20:11.9020909
+Process Id: 27136
+Threads: 26
+CPU Time: 00:00:03.2031250
+Managed Memory (bytes): 11933720
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=5, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:04:29.2295791Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:25:11.9128990
+Process Id: 27136
+Threads: 27
+CPU Time: 00:00:03.6875000
+Managed Memory (bytes): 17535592
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=6, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:09:29.2497283Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:30:11.9330378
+Process Id: 27136
+Threads: 25
+CPU Time: 00:00:04.1875000
+Managed Memory (bytes): 5316880
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=8, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:14:29.2648521Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:35:11.9481760
+Process Id: 27136
+Threads: 27
+CPU Time: 00:00:04.7500000
+Managed Memory (bytes): 12611672
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 44
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=9, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:19:29.2776550Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:40:11.9609736
+Process Id: 27136
+Threads: 27
+CPU Time: 00:00:05.3750000
+Managed Memory (bytes): 8396072
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 44
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=11, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:24:29.2854448Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:45:11.9688141
+Process Id: 27136
+Threads: 26
+CPU Time: 00:00:05.7500000
+Managed Memory (bytes): 15679760
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=12, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:29:29.3041193Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:50:11.9874313
+Process Id: 27136
+Threads: 25
+CPU Time: 00:00:06.1562500
+Managed Memory (bytes): 18237944
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=13, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:34:29.3146379Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 00:55:11.9979499
+Process Id: 27136
+Threads: 26
+CPU Time: 00:00:06.5468750
+Managed Memory (bytes): 20305336
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=14, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:39:29.3312743Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:00:12.0146076
+Process Id: 27136
+Threads: 25
+CPU Time: 00:00:07.1406250
+Managed Memory (bytes): 2081776
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=16, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:44:29.3455562Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:05:12.0288741
+Process Id: 27136
+Threads: 26
+CPU Time: 00:00:07.6093750
+Managed Memory (bytes): 4794248
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=17, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:49:29.3540123Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:10:12.0373195
+Process Id: 27136
+Threads: 27
+CPU Time: 00:00:08.0468750
+Managed Memory (bytes): 6374416
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=18, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:54:29.3674484Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:15:12.0508470
+Process Id: 27136
+Threads: 27
+CPU Time: 00:00:08.4531250
+Managed Memory (bytes): 19422984
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=19, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T03:59:29.3737367Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:20:12.0570492
+Process Id: 27136
+Threads: 21
+CPU Time: 00:00:08.9843750
+Managed Memory (bytes): 13747504
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=21, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T04:04:29.3925519Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:25:12.0758584
+Process Id: 27136
+Threads: 19
+CPU Time: 00:00:09.3906250
+Managed Memory (bytes): 15518480
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=22, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T04:09:29.4105921Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:30:12.0939063
+Process Id: 27136
+Threads: 18
+CPU Time: 00:00:09.7812500
+Managed Memory (bytes): 18013064
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=23, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T04:14:29.4221902Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:35:12.1055970
+Process Id: 27136
+Threads: 21
+CPU Time: 00:00:10.1562500
+Managed Memory (bytes): 5244448
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=25, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T04:19:29.4358345Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:40:12.1191338
+Process Id: 27136
+Threads: 19
+CPU Time: 00:00:10.6406250
+Managed Memory (bytes): 15902128
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=26, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T04:24:29.4451032Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:45:12.1284177
+Process Id: 27136
+Threads: 19
+CPU Time: 00:00:11
+Managed Memory (bytes): 9755816
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=28, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T04:29:29.4619408Z
+Process StartTime (UTC): 2026-03-02T02:39:17.3167359Z
+Uptime: 01:50:12.1452575
+Process Id: 27136
+Threads: 19
+CPU Time: 00:00:11.4843750
+Managed Memory (bytes): 20273048
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=29, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T15:10:35.7880455Z
+Process StartTime (UTC): 2026-03-02T15:10:23.1519492Z
+Uptime: 00:00:12.6376954
+Process Id: 25508
+Threads: 30
+CPU Time: 00:00:01.2500000
+Managed Memory (bytes): 9415720
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=1, Gen1=1, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T15:25:39.5850034Z
+Process StartTime (UTC): 2026-03-02T15:25:27.7767264Z
+Uptime: 00:00:11.8098277
+Process Id: 2512
+Threads: 29
+CPU Time: 00:00:01.0156250
+Managed Memory (bytes): 14828472
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T15:42:47.8986679Z
+Process StartTime (UTC): 2026-03-02T15:42:36.1141238Z
+Uptime: 00:00:11.7861015
+Process Id: 15896
+Threads: 30
+CPU Time: 00:00:01.2343750
+Managed Memory (bytes): 14671528
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T15:58:43.3899280Z
+Process StartTime (UTC): 2026-03-02T15:58:31.5932213Z
+Uptime: 00:00:11.7987421
+Process Id: 24300
+Threads: 28
+CPU Time: 00:00:01.0937500
+Managed Memory (bytes): 15344088
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:05:31.2419694Z
+Process StartTime (UTC): 2026-03-02T16:05:19.1046951Z
+Uptime: 00:00:12.1389314
+Process Id: 27440
+Threads: 28
+CPU Time: 00:00:01.2500000
+Managed Memory (bytes): 15262192
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:15:29.5831197Z
+Process StartTime (UTC): 2026-03-02T16:15:17.7596521Z
+Uptime: 00:00:11.8253877
+Process Id: 7748
+Threads: 29
+CPU Time: 00:00:01.0625000
+Managed Memory (bytes): 14597256
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:29:11.9127445Z
+Process StartTime (UTC): 2026-03-02T16:28:59.7988534Z
+Uptime: 00:00:12.1155568
+Process Id: 6340
+Threads: 30
+CPU Time: 00:00:01.3281250
+Managed Memory (bytes): 15789352
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:34:11.9262384Z
+Process StartTime (UTC): 2026-03-02T16:28:59.7988534Z
+Uptime: 00:05:12.1276698
+Process Id: 6340
+Threads: 29
+CPU Time: 00:00:02.1406250
+Managed Memory (bytes): 5097072
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 3
+Per-player pending:
+  Amun                 pending=   3 socket=Open
+Queued message type summary:
+  system          = 1
+  room            = 1
+  player_update   = 1
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:39:11.9344328Z
+Process StartTime (UTC): 2026-03-02T16:28:59.7988534Z
+Uptime: 00:10:12.1356348
+Process Id: 6340
+Threads: 30
+CPU Time: 00:00:02.6093750
+Managed Memory (bytes): 9136904
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:44:11.9516735Z
+Process StartTime (UTC): 2026-03-02T16:28:59.7988534Z
+Uptime: 00:15:12.1528850
+Process Id: 6340
+Threads: 30
+CPU Time: 00:00:03.0781250
+Managed Memory (bytes): 11450952
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:49:11.9744184Z
+Process StartTime (UTC): 2026-03-02T16:28:59.7988534Z
+Uptime: 00:20:12.1758848
+Process Id: 6340
+Threads: 30
+CPU Time: 00:00:03.7968750
+Managed Memory (bytes): 8306640
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=6, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T16:54:11.9845850Z
+Process StartTime (UTC): 2026-03-02T16:28:59.7988534Z
+Uptime: 00:25:12.1858610
+Process Id: 6340
+Threads: 27
+CPU Time: 00:00:04.2656250
+Managed Memory (bytes): 19696200
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=7, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:02:51.3986372Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:00:12.7045524
+Process Id: 8916
+Threads: 28
+CPU Time: 00:00:01.3281250
+Managed Memory (bytes): 15167472
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 36
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:07:51.4114195Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:05:12.7153666
+Process Id: 8916
+Threads: 30
+CPU Time: 00:00:01.8750000
+Managed Memory (bytes): 3330272
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:12:51.4313150Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:10:12.7352500
+Process Id: 8916
+Threads: 29
+CPU Time: 00:00:02.2656250
+Managed Memory (bytes): 5450072
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:17:51.4370989Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:15:12.7410732
+Process Id: 8916
+Threads: 29
+CPU Time: 00:00:02.5937500
+Managed Memory (bytes): 5092720
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:22:51.4516205Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:20:12.7554225
+Process Id: 8916
+Threads: 28
+CPU Time: 00:00:03.2656250
+Managed Memory (bytes): 12449832
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=5, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:27:51.4682553Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:25:12.7720491
+Process Id: 8916
+Threads: 27
+CPU Time: 00:00:03.8125000
+Managed Memory (bytes): 13895752
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=6, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:32:51.4753341Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:30:12.7791197
+Process Id: 8916
+Threads: 26
+CPU Time: 00:00:04.0625000
+Managed Memory (bytes): 13819960
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=7, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:37:51.4805037Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:35:12.7842952
+Process Id: 8916
+Threads: 26
+CPU Time: 00:00:04.3593750
+Managed Memory (bytes): 13892712
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=8, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:42:51.5008530Z
+Process StartTime (UTC): 2026-03-02T17:02:38.6962698Z
+Uptime: 00:40:12.8046535
+Process Id: 8916
+Threads: 26
+CPU Time: 00:00:04.6250000
+Managed Memory (bytes): 14351608
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=9, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:48:16.5198300Z
+Process StartTime (UTC): 2026-03-02T17:48:04.5638275Z
+Uptime: 00:00:11.9577185
+Process Id: 6640
+Threads: 28
+CPU Time: 00:00:01.1250000
+Managed Memory (bytes): 15168112
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T17:53:16.5319254Z
+Process StartTime (UTC): 2026-03-02T17:48:04.5638275Z
+Uptime: 00:05:11.9681843
+Process Id: 6640
+Threads: 27
+CPU Time: 00:00:02.0156250
+Managed Memory (bytes): 1940760
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T18:54:44.6555408Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:00:12.0838414
+Process Id: 26608
+Threads: 28
+CPU Time: 00:00:00.9218750
+Managed Memory (bytes): 14049392
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T18:59:44.6650613Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:05:12.0915939
+Process Id: 26608
+Threads: 29
+CPU Time: 00:00:01.9843750
+Managed Memory (bytes): 6588224
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T19:04:44.6763161Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:10:12.1030213
+Process Id: 26608
+Threads: 30
+CPU Time: 00:00:02.2343750
+Managed Memory (bytes): 9172192
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T19:09:44.6862427Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:15:12.1127210
+Process Id: 26608
+Threads: 30
+CPU Time: 00:00:02.7031250
+Managed Memory (bytes): 12501072
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T19:14:44.6940374Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:20:12.1205342
+Process Id: 26608
+Threads: 25
+CPU Time: 00:00:03.0625000
+Managed Memory (bytes): 15410968
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=5, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T19:19:44.7020144Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:25:12.1285137
+Process Id: 26608
+Threads: 26
+CPU Time: 00:00:03.4375000
+Managed Memory (bytes): 18234552
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=6, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T19:24:44.7198817Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:30:12.1464972
+Process Id: 26608
+Threads: 26
+CPU Time: 00:00:04.0156250
+Managed Memory (bytes): 4272080
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=8, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T19:29:44.7267435Z
+Process StartTime (UTC): 2026-03-02T18:54:32.5735644Z
+Uptime: 00:35:12.1532506
+Process Id: 26608
+Threads: 27
+CPU Time: 00:00:04.7500000
+Managed Memory (bytes): 13803544
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=9, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T20:19:09.6370125Z
+Process StartTime (UTC): 2026-03-02T20:18:57.1378927Z
+Uptime: 00:00:12.5007224
+Process Id: 23012
+Threads: 32
+CPU Time: 00:00:01.2968750
+Managed Memory (bytes): 10570136
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=1, Gen1=1, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T20:24:09.6611602Z
+Process StartTime (UTC): 2026-03-02T20:18:57.1378927Z
+Uptime: 00:05:12.5233813
+Process Id: 23012
+Threads: 27
+CPU Time: 00:00:02.3125000
+Managed Memory (bytes): 11501944
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T20:29:09.6803177Z
+Process StartTime (UTC): 2026-03-02T20:18:57.1378927Z
+Uptime: 00:10:12.5424784
+Process Id: 23012
+Threads: 28
+CPU Time: 00:00:03.1093750
+Managed Memory (bytes): 3950072
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 42
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=7, Gen1=4, Gen2=2
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T20:43:59.1927731Z
+Process StartTime (UTC): 2026-03-02T20:43:47.0098434Z
+Uptime: 00:00:12.1846704
+Process Id: 13200
+Threads: 29
+CPU Time: 00:00:01.0781250
+Managed Memory (bytes): 14690352
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-02T20:48:59.2104034Z
+Process StartTime (UTC): 2026-03-02T20:43:47.0098434Z
+Uptime: 00:05:12.2006906
+Process Id: 13200
+Threads: 29
+CPU Time: 00:00:02.2343750
+Managed Memory (bytes): 10166888
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T16:34:24.8780075Z
+Process StartTime (UTC): 2026-03-05T16:34:11.8214367Z
+Uptime: 00:00:13.0589883
+Process Id: 26596
+Threads: 29
+CPU Time: 00:00:01.1718750
+Managed Memory (bytes): 20570632
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T16:39:24.9016209Z
+Process StartTime (UTC): 2026-03-05T16:34:11.8214367Z
+Uptime: 00:05:13.0803007
+Process Id: 26596
+Threads: 28
+CPU Time: 00:00:02.1718750
+Managed Memory (bytes): 5095432
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=3, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T16:43:50.3576839Z
+Process StartTime (UTC): 2026-03-05T16:43:37.8367105Z
+Uptime: 00:00:12.5231652
+Process Id: 27032
+Threads: 28
+CPU Time: 00:00:01
+Managed Memory (bytes): 14809536
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T16:48:50.3747775Z
+Process StartTime (UTC): 2026-03-05T16:43:37.8367105Z
+Uptime: 00:05:12.5381438
+Process Id: 27032
+Threads: 29
+CPU Time: 00:00:02.1875000
+Managed Memory (bytes): 6272840
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T16:57:02.0729482Z
+Process StartTime (UTC): 2026-03-05T16:56:48.6992754Z
+Uptime: 00:00:13.3760271
+Process Id: 26928
+Threads: 29
+CPU Time: 00:00:01.2968750
+Managed Memory (bytes): 15446480
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:02:02.0975680Z
+Process StartTime (UTC): 2026-03-05T16:56:48.6992754Z
+Uptime: 00:05:13.3983691
+Process Id: 26928
+Threads: 28
+CPU Time: 00:00:02.2968750
+Managed Memory (bytes): 7597552
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:10:05.8789796Z
+Process StartTime (UTC): 2026-03-05T17:09:53.1697787Z
+Uptime: 00:00:12.7111683
+Process Id: 4544
+Threads: 28
+CPU Time: 00:00:01.0781250
+Managed Memory (bytes): 14839056
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:22:19.1899269Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:00:12.7679862
+Process Id: 22720
+Threads: 28
+CPU Time: 00:00:01.2343750
+Managed Memory (bytes): 15170184
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:27:19.2012736Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:05:12.7773733
+Process Id: 22720
+Threads: 30
+CPU Time: 00:00:02.1875000
+Managed Memory (bytes): 6546624
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:32:19.2240240Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:10:12.8001154
+Process Id: 22720
+Threads: 29
+CPU Time: 00:00:02.5156250
+Managed Memory (bytes): 7562656
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:37:19.2347971Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:15:12.8110512
+Process Id: 22720
+Threads: 29
+CPU Time: 00:00:02.9687500
+Managed Memory (bytes): 16870224
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:42:19.2501687Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:20:12.8263691
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:03.5156250
+Managed Memory (bytes): 4006048
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=6, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:47:19.2634181Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:25:12.8396053
+Process Id: 22720
+Threads: 25
+CPU Time: 00:00:03.7968750
+Managed Memory (bytes): 6710280
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=7, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:52:19.2750391Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:30:12.8513153
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:04.2031250
+Managed Memory (bytes): 11064592
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=8, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T17:57:19.2940879Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:35:12.8701460
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:04.5937500
+Managed Memory (bytes): 14116584
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=9, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:02:19.3053544Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:40:12.8816593
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:04.9843750
+Managed Memory (bytes): 17230816
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=10, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:07:19.3199597Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:45:12.8960441
+Process Id: 22720
+Threads: 25
+CPU Time: 00:00:05.5781250
+Managed Memory (bytes): 20119672
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=11, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:12:19.3330308Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:50:12.9090882
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:05.9218750
+Managed Memory (bytes): 3513352
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=13, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:17:19.3439388Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 00:55:12.9202240
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:06.1250000
+Managed Memory (bytes): 5688032
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=14, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:22:19.3645505Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:00:12.9406259
+Process Id: 22720
+Threads: 24
+CPU Time: 00:00:06.3593750
+Managed Memory (bytes): 7746616
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=15, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:27:19.3825344Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:05:12.9586038
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:06.8750000
+Managed Memory (bytes): 13686328
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=16, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:32:19.4033272Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:10:12.9794815
+Process Id: 22720
+Threads: 26
+CPU Time: 00:00:07.3281250
+Managed Memory (bytes): 15060528
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=17, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:37:19.4134598Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:15:12.9895934
+Process Id: 22720
+Threads: 20
+CPU Time: 00:00:07.7187500
+Managed Memory (bytes): 17230104
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=18, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:42:19.4342131Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:20:13.0102873
+Process Id: 22720
+Threads: 21
+CPU Time: 00:00:08.1250000
+Managed Memory (bytes): 1011600
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 41
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=20, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:47:19.4446724Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:25:13.0207323
+Process Id: 22720
+Threads: 20
+CPU Time: 00:00:08.5156250
+Managed Memory (bytes): 14032408
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 40
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=21, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:52:19.4568122Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:30:13.0328670
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:09
+Managed Memory (bytes): 4896064
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=23, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T18:57:19.4734874Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:35:13.0496021
+Process Id: 22720
+Threads: 19
+CPU Time: 00:00:09.4375000
+Managed Memory (bytes): 11584720
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=24, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:02:19.4825620Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:40:13.0586272
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:09.8593750
+Managed Memory (bytes): 1950200
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=26, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:07:19.4917586Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:45:13.0678219
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:10.2500000
+Managed Memory (bytes): 15621672
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=27, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:12:19.5093455Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:50:13.0854043
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:10.6875000
+Managed Memory (bytes): 4008592
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=29, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:17:19.5166938Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 01:55:13.0927521
+Process Id: 22720
+Threads: 19
+CPU Time: 00:00:11.0781250
+Managed Memory (bytes): 13623000
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=30, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:22:19.5247356Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:00:13.1008027
+Process Id: 22720
+Threads: 22
+CPU Time: 00:00:11.5468750
+Managed Memory (bytes): 19645624
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 35
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=31, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:27:19.5307953Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:05:13.1069511
+Process Id: 22720
+Threads: 25
+CPU Time: 00:00:11.8593750
+Managed Memory (bytes): 20013488
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 36
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=32, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:32:19.5376601Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:10:13.1137158
+Process Id: 22720
+Threads: 23
+CPU Time: 00:00:12.3281250
+Managed Memory (bytes): 19938336
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 36
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=33, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:37:19.5438394Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:15:13.1198954
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:12.5937500
+Managed Memory (bytes): 6581960
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 36
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=35, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:42:19.5502634Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:20:13.1264853
+Process Id: 22720
+Threads: 19
+CPU Time: 00:00:12.8750000
+Managed Memory (bytes): 18626712
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=36, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:47:19.5714331Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:25:13.1474842
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:13.2500000
+Managed Memory (bytes): 17514800
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=37, Gen1=4, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:52:19.5842707Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:30:13.1604314
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:13.5000000
+Managed Memory (bytes): 16688896
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=38, Gen1=5, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T19:57:19.5948405Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:35:13.1708942
+Process Id: 22720
+Threads: 17
+CPU Time: 00:00:13.8437500
+Managed Memory (bytes): 18059704
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=39, Gen1=5, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:02:19.6013453Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:40:13.1773865
+Process Id: 22720
+Threads: 17
+CPU Time: 00:00:14.1718750
+Managed Memory (bytes): 17746472
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=40, Gen1=5, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:07:19.6179544Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:45:13.1940005
+Process Id: 22720
+Threads: 18
+CPU Time: 00:00:14.4843750
+Managed Memory (bytes): 18052256
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=41, Gen1=5, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:12:19.6249749Z
+Process StartTime (UTC): 2026-03-05T17:22:06.4239899Z
+Uptime: 02:50:13.2010164
+Process Id: 22720
+Threads: 19
+CPU Time: 00:00:14.9218750
+Managed Memory (bytes): 18794144
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=42, Gen1=5, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:24:57.4324506Z
+Process StartTime (UTC): 2026-03-05T20:24:44.5737688Z
+Uptime: 00:00:12.8602576
+Process Id: 32152
+Threads: 29
+CPU Time: 00:00:01.1718750
+Managed Memory (bytes): 14588008
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:29:57.4542163Z
+Process StartTime (UTC): 2026-03-05T20:24:44.5737688Z
+Uptime: 00:05:12.8805414
+Process Id: 32152
+Threads: 27
+CPU Time: 00:00:02.5000000
+Managed Memory (bytes): 2350064
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:34:57.4727401Z
+Process StartTime (UTC): 2026-03-05T20:24:44.5737688Z
+Uptime: 00:10:12.8991112
+Process Id: 32152
+Threads: 27
+CPU Time: 00:00:03.0781250
+Managed Memory (bytes): 17828624
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:42:29.6259938Z
+Process StartTime (UTC): 2026-03-05T20:42:16.1921041Z
+Uptime: 00:00:13.4356455
+Process Id: 29964
+Threads: 29
+CPU Time: 00:00:01.0625000
+Managed Memory (bytes): 15746176
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:53:49.0710021Z
+Process StartTime (UTC): 2026-03-05T20:53:36.1201998Z
+Uptime: 00:00:12.9527014
+Process Id: 27016
+Threads: 29
+CPU Time: 00:00:01.1718750
+Managed Memory (bytes): 15005712
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T20:58:34.7816259Z
+Process StartTime (UTC): 2026-03-05T20:58:21.8317388Z
+Uptime: 00:00:12.9519481
+Process Id: 26972
+Threads: 28
+CPU Time: 00:00:01.1875000
+Managed Memory (bytes): 14608672
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T21:03:34.8050720Z
+Process StartTime (UTC): 2026-03-05T20:58:21.8317388Z
+Uptime: 00:05:12.9734223
+Process Id: 26972
+Threads: 30
+CPU Time: 00:00:02.2968750
+Managed Memory (bytes): 4951560
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T21:11:09.1839161Z
+Process StartTime (UTC): 2026-03-05T21:10:55.6362103Z
+Uptime: 00:00:13.5490594
+Process Id: 532
+Threads: 29
+CPU Time: 00:00:01.1562500
+Managed Memory (bytes): 14797040
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T21:16:09.1947568Z
+Process StartTime (UTC): 2026-03-05T21:10:55.6362103Z
+Uptime: 00:05:13.5586539
+Process Id: 532
+Threads: 25
+CPU Time: 00:00:02.2968750
+Managed Memory (bytes): 4163864
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T21:21:09.2042496Z
+Process StartTime (UTC): 2026-03-05T21:10:55.6362103Z
+Uptime: 00:10:13.5681002
+Process Id: 532
+Threads: 26
+CPU Time: 00:00:02.8906250
+Managed Memory (bytes): 6273400
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:13:52.4586451Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:00:12.9413787
+Process Id: 12376
+Threads: 28
+CPU Time: 00:00:00.9375000
+Managed Memory (bytes): 14622128
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:18:52.4848465Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:05:12.9659995
+Process Id: 12376
+Threads: 29
+CPU Time: 00:00:02
+Managed Memory (bytes): 5565624
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:23:52.4913319Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:10:12.9724947
+Process Id: 12376
+Threads: 29
+CPU Time: 00:00:02.2343750
+Managed Memory (bytes): 7203072
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 35
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:28:52.5059760Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:15:12.9871902
+Process Id: 12376
+Threads: 27
+CPU Time: 00:00:02.7031250
+Managed Memory (bytes): 10613080
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 35
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:33:52.5274279Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:20:13.0085213
+Process Id: 12376
+Threads: 26
+CPU Time: 00:00:02.9218750
+Managed Memory (bytes): 12441360
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 36
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=5, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:38:52.5424752Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:25:13.0238589
+Process Id: 12376
+Threads: 25
+CPU Time: 00:00:03.4218750
+Managed Memory (bytes): 13966416
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=6, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:43:52.5531346Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:30:13.0342295
+Process Id: 12376
+Threads: 24
+CPU Time: 00:00:03.6718750
+Managed Memory (bytes): 15524368
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=7, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:48:52.5715258Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:35:13.0527517
+Process Id: 12376
+Threads: 26
+CPU Time: 00:00:03.9062500
+Managed Memory (bytes): 17034952
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=8, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:53:52.5877309Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:40:13.0691621
+Process Id: 12376
+Threads: 26
+CPU Time: 00:00:04.2656250
+Managed Memory (bytes): 17979408
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=9, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T22:58:52.6061369Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:45:13.0874530
+Process Id: 12376
+Threads: 26
+CPU Time: 00:00:04.6718750
+Managed Memory (bytes): 19162440
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 38
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=10, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T23:03:52.6172100Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:50:13.0982976
+Process Id: 12376
+Threads: 25
+CPU Time: 00:00:05.0468750
+Managed Memory (bytes): 20753504
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=11, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T23:08:52.6360887Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 00:55:13.1171866
+Process Id: 12376
+Threads: 25
+CPU Time: 00:00:05.2812500
+Managed Memory (bytes): 4130328
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=13, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T23:13:52.6436009Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 01:00:13.1246979
+Process Id: 12376
+Threads: 25
+CPU Time: 00:00:05.6093750
+Managed Memory (bytes): 5169720
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=14, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T23:18:52.6541766Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 01:05:13.1352589
+Process Id: 12376
+Threads: 26
+CPU Time: 00:00:06
+Managed Memory (bytes): 7384816
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 1
+Per-player pending:
+  Amun                 pending=   1 socket=Open
+Queued message type summary:
+  player_update   = 1
+GC Collections: Gen0=15, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-05T23:23:52.6755504Z
+Process StartTime (UTC): 2026-03-05T22:13:39.5189587Z
+Uptime: 01:10:13.1567441
+Process Id: 12376
+Threads: 25
+CPU Time: 00:00:06.4843750
+Managed Memory (bytes): 11271808
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=16, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T00:43:51.0471868Z
+Process StartTime (UTC): 2026-03-06T00:43:37.3507286Z
+Uptime: 00:00:13.6981434
+Process Id: 29232
+Threads: 29
+CPU Time: 00:00:01.6093750
+Managed Memory (bytes): 21177224
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T00:54:48.6498743Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:00:13.2781403
+Process Id: 30052
+Threads: 29
+CPU Time: 00:00:01.2343750
+Managed Memory (bytes): 15309824
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 39
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T00:59:48.6652853Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:05:13.2921434
+Process Id: 30052
+Threads: 28
+CPU Time: 00:00:02.6562500
+Managed Memory (bytes): 16212568
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 37
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:04:48.6783294Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:10:13.3051800
+Process Id: 30052
+Threads: 27
+CPU Time: 00:00:03.3281250
+Managed Memory (bytes): 14324288
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 30
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:09:48.6917651Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:15:13.3186028
+Process Id: 30052
+Threads: 24
+CPU Time: 00:00:03.7031250
+Managed Memory (bytes): 14835376
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 30
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=5, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:14:48.7125535Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:20:13.3393773
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:04.1718750
+Managed Memory (bytes): 15847496
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 30
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=6, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:19:48.7266142Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:25:13.3535212
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:04.4531250
+Managed Memory (bytes): 16738456
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 30
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=7, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:24:48.7393212Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:30:13.3663353
+Process Id: 30052
+Threads: 25
+CPU Time: 00:00:04.9218750
+Managed Memory (bytes): 17695920
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 30
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=8, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:29:48.7466573Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:35:13.3735635
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:05.4375000
+Managed Memory (bytes): 18943952
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=9, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:34:48.7578569Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:40:13.3849101
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:05.9375000
+Managed Memory (bytes): 20601816
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=10, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:39:48.7769174Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:45:13.4037467
+Process Id: 30052
+Threads: 25
+CPU Time: 00:00:06.2968750
+Managed Memory (bytes): 3391960
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=12, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:44:48.7960915Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:50:13.4229142
+Process Id: 30052
+Threads: 25
+CPU Time: 00:00:06.6875000
+Managed Memory (bytes): 7437480
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=13, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:49:48.8077253Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 00:55:13.4345655
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:07.2812500
+Managed Memory (bytes): 8302448
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=14, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:54:48.8182012Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 01:00:13.4452474
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:07.8437500
+Managed Memory (bytes): 15478000
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=15, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T01:59:48.8350250Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 01:05:13.4618665
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:08.0937500
+Managed Memory (bytes): 17875320
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=16, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T02:04:48.8468891Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 01:10:13.4737771
+Process Id: 30052
+Threads: 26
+CPU Time: 00:00:08.3906250
+Managed Memory (bytes): 18826304
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=17, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T02:09:48.8578726Z
+Process StartTime (UTC): 2026-03-06T00:54:35.3732223Z
+Uptime: 01:15:13.4847785
+Process Id: 30052
+Threads: 25
+CPU Time: 00:00:08.8437500
+Managed Memory (bytes): 3670264
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=19, Gen1=3, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T02:20:10.7848998Z
+Process StartTime (UTC): 2026-03-06T02:19:57.8038331Z
+Uptime: 00:00:12.9829617
+Process Id: 32376
+Threads: 28
+CPU Time: 00:00:01.2656250
+Managed Memory (bytes): 15155648
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T18:46:29.7035798Z
+Process StartTime (UTC): 2026-03-06T18:46:16.0976149Z
+Uptime: 00:00:13.6079700
+Process Id: 31940
+Threads: 31
+CPU Time: 00:00:01.2187500
+Managed Memory (bytes): 20075240
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T18:48:26.2879875Z
+Process StartTime (UTC): 2026-03-06T18:48:13.3267834Z
+Uptime: 00:00:12.9631583
+Process Id: 31108
+Threads: 30
+CPU Time: 00:00:01.3281250
+Managed Memory (bytes): 15278336
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T18:53:26.3006855Z
+Process StartTime (UTC): 2026-03-06T18:48:13.3267834Z
+Uptime: 00:05:12.9739983
+Process Id: 31108
+Threads: 27
+CPU Time: 00:00:02.5781250
+Managed Memory (bytes): 7091816
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 2
+Per-player pending:
+  Amun                 pending=   2 socket=Open
+Queued message type summary:
+  room            = 1
+  player_update   = 1
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T18:58:26.3218195Z
+Process StartTime (UTC): 2026-03-06T18:48:13.3267834Z
+Uptime: 00:10:12.9951713
+Process Id: 31108
+Threads: 27
+CPU Time: 00:00:03.0937500
+Managed Memory (bytes): 9683216
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 35
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=3, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T19:03:26.3371966Z
+Process StartTime (UTC): 2026-03-06T18:48:13.3267834Z
+Uptime: 00:15:13.0104594
+Process Id: 31108
+Threads: 26
+CPU Time: 00:00:03.6093750
+Managed Memory (bytes): 16174160
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=4, Gen1=2, Gen2=1
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T19:29:51.4411070Z
+Process StartTime (UTC): 2026-03-06T19:29:38.5434501Z
+Uptime: 00:00:12.8992697
+Process Id: 23660
+Threads: 29
+CPU Time: 00:00:01.1875000
+Managed Memory (bytes): 14799728
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:05:59.5179354Z
+Process StartTime (UTC): 2026-03-06T20:05:46.4270087Z
+Uptime: 00:00:13.0928524
+Process Id: 30348
+Threads: 29
+CPU Time: 00:00:01
+Managed Memory (bytes): 14230808
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:13:22.2641561Z
+Process StartTime (UTC): 2026-03-06T20:13:09.0561162Z
+Uptime: 00:00:13.2096627
+Process Id: 29092
+Threads: 30
+CPU Time: 00:00:01.2656250
+Managed Memory (bytes): 15527192
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:19:44.9454360Z
+Process StartTime (UTC): 2026-03-06T20:19:31.6024529Z
+Uptime: 00:00:13.3444387
+Process Id: 22352
+Threads: 31
+CPU Time: 00:00:01.2656250
+Managed Memory (bytes): 15545144
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:21:55.6335630Z
+Process StartTime (UTC): 2026-03-06T20:21:42.1777004Z
+Uptime: 00:00:13.4574202
+Process Id: 22396
+Threads: 30
+CPU Time: 00:00:01.2031250
+Managed Memory (bytes): 14777224
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:23:41.3352293Z
+Process StartTime (UTC): 2026-03-06T20:23:27.9723535Z
+Uptime: 00:00:13.3645004
+Process Id: 20744
+Threads: 29
+CPU Time: 00:00:01.3281250
+Managed Memory (bytes): 15292848
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:29:40.9313374Z
+Process StartTime (UTC): 2026-03-06T20:29:27.3705002Z
+Uptime: 00:00:13.5625062
+Process Id: 23148
+Threads: 30
+CPU Time: 00:00:01
+Managed Memory (bytes): 14769248
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:36:34.0640213Z
+Process StartTime (UTC): 2026-03-06T20:36:20.7582959Z
+Uptime: 00:00:13.3078546
+Process Id: 30920
+Threads: 29
+CPU Time: 00:00:00.9375000
+Managed Memory (bytes): 14088264
+Connected WebSocket objects (_connections): 0
+Authenticated Player sockets (_playerSockets): 0
+World total players: 0
+World total NPCs: 34
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:41:38.0441926Z
+Process StartTime (UTC): 2026-03-06T20:41:24.4482376Z
+Uptime: 00:00:13.5975634
+Process Id: 27460
+Threads: 29
+CPU Time: 00:00:01.1406250
+Managed Memory (bytes): 14708536
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 33
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:50:37.1383486Z
+Process StartTime (UTC): 2026-03-06T20:50:23.4605365Z
+Uptime: 00:00:13.6794485
+Process Id: 1292
+Threads: 29
+CPU Time: 00:00:01.1406250
+Managed Memory (bytes): 15193296
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:55:37.1598036Z
+Process StartTime (UTC): 2026-03-06T20:50:23.4605365Z
+Uptime: 00:05:13.6993332
+Process Id: 1292
+Threads: 28
+CPU Time: 00:00:02.2656250
+Managed Memory (bytes): 2721728
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 1
+World total NPCs: 32
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Amun                 pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=2, Gen1=1, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T20:56:43.4377849Z
+Process StartTime (UTC): 2026-03-06T20:56:29.5216087Z
+Uptime: 00:00:13.9178889
+Process Id: 19820
+Threads: 29
+CPU Time: 00:00:00.9687500
+Managed Memory (bytes): 14546632
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 31
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+
+===== Server Diagnostics =====
+Timestamp (UTC): 2026-03-06T21:00:11.2665304Z
+Process StartTime (UTC): 2026-03-06T20:59:57.6473000Z
+Uptime: 00:00:13.6215648
+Process Id: 31288
+Threads: 30
+CPU Time: 00:00:01
+Managed Memory (bytes): 14726792
+Connected WebSocket objects (_connections): 1
+Authenticated Player sockets (_playerSockets): 1
+World total players: 0
+World total NPCs: 31
+FlushLock CurrentCount: 1
+
+TotalPendingMessages: 0
+Per-player pending:
+  Guest1               pending=   0 socket=Open
+Queued message type summary: (none)
+GC Collections: Gen0=0, Gen1=0, Gen2=0
+===== End Diagnostics =====
+

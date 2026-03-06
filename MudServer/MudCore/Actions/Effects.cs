@@ -1,4 +1,5 @@
-﻿using MudCore.Entities;
+﻿using Microsoft.Data.Sqlite;
+using MudCore.Entities;
 using MudNetworking;
 using System;
 using System.Collections.Generic;
@@ -22,8 +23,11 @@ namespace MudCore.Actions
     {
         private static readonly Random _rng = new();
 
-        // Regex to match persistent timed effects: IsEffectName:Minutes
-        private static readonly Regex TimedEffectRegex = new Regex(@"^Is([A-Za-z_]+):(\d+)$", RegexOptions.Compiled);
+        // Regex to match persistent timed effects.
+        // Standard format:  "IsFlying:2"          -> group1=Flying,  group2=2(minutes)
+        // Extended format:  "IsGrown:1:4:120"      -> group1=Grown,   group2=1(minutes), group3=4(originalSize), group4=120(durationSeconds)
+        // Optional groups 3 and 4 are only present for extended flags like Grown.
+        private static readonly Regex TimedEffectRegex = new Regex(@"^Is([A-Za-z_]+):(\d+)(?::(\d+))?(?::(\d+))?$", RegexOptions.Compiled);
 
         /// <summary>
         /// Global check for player flight.
@@ -168,7 +172,15 @@ namespace MudCore.Actions
 
                     if (!player.TimedEffectSeconds.TryGetValue(effectName, out int seconds))
                     {
-                        seconds = 60; // Fallback for newly loaded players
+                        // Server restart recovery:
+                        // Extended "IsGrown:1:4:120" -> group4="120" = actual remaining duration seconds
+                        // Standard "IsFlying:2"      -> no group4, seed from minutes * 60
+                        if (match.Groups[4].Success && int.TryParse(match.Groups[4].Value, out int storedSeconds))
+                            seconds = storedSeconds;
+                        else
+                            seconds = minutes * 60;
+
+                        player.TimedEffectSeconds[effectName] = seconds;
                     }
 
                     // Decrement by the game tick duration (approx 24 seconds game-time / 3 seconds real-time tick)
@@ -201,9 +213,31 @@ namespace MudCore.Actions
                             // Memorization complete - call handler
                             try { MemorizationManager.CompleteMemorization(player, conn); } catch { }
                         }
-                        else
+                        else if (string.Equals(effectName, "Casting", StringComparison.OrdinalIgnoreCase))
                         {
-                            NotifyEffectExpired(player, effectName, world);
+                            // Cast timer expired — complete the spell
+                            try { SpellCastingManager.CompleteCast(player, conn, world); } catch { }
+                        }
+                        else if (string.Equals(effectName, "Grown", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Grow spell expired — restore original size
+                            // Flag "IsGrown:1:4:120": group2=1(minutes), group3=4(originalSize), group4=120(duration)
+                            try
+                            {
+                                if (match.Groups[3].Success && int.TryParse(match.Groups[3].Value, out int originalSize))
+                                {
+                                    player.SizeEnum = originalSize;
+                                    Combat.ApplySizeChange(player);
+                                    Combat.UpdateEffectiveStats(player);
+                                    NotifyEffectExpired(player, effectName, world);
+                                    MudPersistence.PlayerPersistence.SavePlayer(conn, player);
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"[EFFECTS] Grown expiry: could not parse originalSize from flag '{flag}'");
+                                }
+                            }
+                            catch (Exception exGrown) { Console.WriteLine($"[EFFECTS] Grown expiry failed: {exGrown.Message}"); }
                         }
 
                         // Persist removal
@@ -211,16 +245,21 @@ namespace MudCore.Actions
                         continue;
                     }
 
-                    // Minute rollover logic: update persistent flag
+                    // Minute rollover: preserve all flag segments so data survives across rollovers
                     if (seconds <= 0)
                     {
                         minutes--;
                         seconds = 60;
                         flags.Remove(flag);
-                        flags.Add($"Is{effectName}:{minutes}");
-                        player.Flags = flags;
 
-                        // Persist the minute decrement to DB
+                        // Rebuild flag preserving all extra segments (originalSize, duration) on rollover
+                        if (match.Groups[4].Success)
+                            flags.Add($"Is{effectName}:{minutes}:{match.Groups[3].Value}:{match.Groups[4].Value}");
+                        else if (match.Groups[3].Success)
+                            flags.Add($"Is{effectName}:{minutes}:{match.Groups[3].Value}");
+                        else
+                            flags.Add($"Is{effectName}:{minutes}");
+
                         try { MudPersistence.PlayerPersistence.SavePlayer(conn, player); } catch { }
                     }
 
@@ -229,10 +268,189 @@ namespace MudCore.Actions
             }
         }
 
+        /// <summary>
+        /// Process timed effects for all NPCs in the world.
+        /// Called from GameLoop every tick (3s).
+        ///
+        /// NPC timed effect flag format: "EffectName:restorationKey:restorationValue:durationSeconds"
+        /// Example: "Grown:originalSize:4:120"
+        ///   parts[0] = "Grown"        — effect name
+        ///   parts[1] = "originalSize" — restoration key (matches RestoreEffect switch case)
+        ///   parts[2] = "4"            — restoration value (original SizeEnum)
+        ///   parts[3] = "120"          — total duration in seconds (used to seed countdown on server restart)
+        ///
+        /// On server restart: parts[3] re-seeds TimedEffectSeconds so countdown continues correctly.
+        /// </summary>
+        public static void ProcessNpcTimedEffects(World.World world, SqliteConnection conn)
+        {
+            if (world?.Npcs == null) return;
+            var npcs = world.Npcs.Where(n => n != null).ToList();
+
+            foreach (var npc in npcs)
+            {
+                try
+                {
+                    var flags = npc.Flags ?? new List<string>();
+                    var flagsToRemove = new List<string>();
+                    bool needsPersist = false;
+
+                    foreach (var flag in flags)
+                    {
+                        if (string.IsNullOrWhiteSpace(flag)) continue;
+
+                        // Must have at least 4 parts: EffectName:restorationKey:restorationValue:durationSeconds
+                        var parts = flag.Split(':');
+                        if (parts.Length < 4) continue;
+
+                        string effectName = parts[0]; // e.g. "Grown"
+                        string restoreKey = parts[1]; // e.g. "originalSize"
+                        string restoreValue = parts[2]; // e.g. "4"
+                        string durationPart = parts[3]; // e.g. "120"
+
+                        // Only process known timed effect names
+                        if (!string.Equals(effectName, "Grown", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        // Ensure TimedEffectSeconds is initialized
+                        if (npc.TimedEffectSeconds == null)
+                            npc.TimedEffectSeconds = new Dictionary<string, int>();
+
+                        // Server restart recovery: if not in memory, seed from parts[3]
+                        if (!npc.TimedEffectSeconds.TryGetValue(effectName, out int seconds))
+                        {
+                            seconds = int.TryParse(durationPart, out int stored) ? stored : 120;
+                            npc.TimedEffectSeconds[effectName] = seconds;
+                        }
+
+                        // Tick down by one real-time tick (3 seconds)
+                        seconds -= 3;
+                        npc.TimedEffectSeconds[effectName] = seconds;
+
+                        // Expired — restore and remove flag
+                        if (seconds <= 0)
+                        {
+                            flagsToRemove.Add(flag);
+                            npc.TimedEffectSeconds.Remove(effectName);
+
+                            // RestoreEffect uses restoreKey ("originalSize") and restoreValue ("4")
+                            bool restored = RestoreEffect(npc, effectName, restoreKey, restoreValue);
+                            if (restored)
+                            {
+                                // Recalculate stats after size restoration
+                                Combat.ApplySizeChange(npc);
+                                Combat.UpdateEffectiveStats(npc);
+                                NotifyEffectExpiry(npc, effectName);
+                                needsPersist = true;
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[EFFECTS] ProcessNpcTimedEffects: RestoreEffect returned false for '{effectName}' key='{restoreKey}' value='{restoreValue}' npc={npc.DisplayName}");
+                            }
+                        }
+                    }
+
+                    // Remove expired flags
+                    if (flagsToRemove.Count > 0)
+                    {
+                        foreach (var f in flagsToRemove)
+                            flags.Remove(f);
+                        npc.Flags = flags;
+                        needsPersist = true;
+                    }
+
+                    // Only persist if something changed
+                    if (needsPersist)
+                    {
+                        try { MudPersistence.NpcPersistence.UpdateNpc(conn, npc); }
+                        catch (Exception exPersist)
+                        {
+                            Console.WriteLine($"[EFFECTS] NPC persist failed for {npc?.DisplayName}: {exPersist.Message}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[EFFECTS] ProcessNpcTimedEffects failed for NPC '{npc?.DisplayName}': {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Generic restoration handler. Dispatches to specific restoration logic based on key.
+        /// Returns true if restoration succeeded, false if not applicable.
+        /// 
+        /// Add new restoration types here as needed for new spells.
+        /// Examples: "originalSize", "originalHealth", "originalSpeed", etc.
+        /// </summary>
+        private static bool RestoreEffect(Npc npc, string effectName, string restorationKey, string restorationValue)
+        {
+            switch (restorationKey.ToLowerInvariant())
+            {
+                case "originalsize":
+                    if (int.TryParse(restorationValue, out int originalSize))
+                    {
+                        npc.SizeEnum = originalSize;
+                        Combat.InitializeSizeDefaults(npc);
+                        Combat.UpdateEffectiveStats(npc);
+                        return true;
+                    }
+                    break;
+
+                    // Future restoration types:
+                    // case "originalhealth":
+                    //     if (int.TryParse(restorationValue, out int originalHealth))
+                    //     {
+                    //         npc.Health = originalHealth;
+                    //         return true;
+                    //     }
+                    //     break;
+                    //
+                    // case "originalspeed":
+                    //     // Restore movement speed, etc.
+                    //     break;
+            }
+
+            return false;
+        }
+
+        private static void NotifyEffectExpiry(Npc npc, string effectName)
+        {
+            try
+            {
+                if (npc.CurrentRoom != null)
+                {
+                    string message = effectName.ToLowerInvariant() switch
+                    {
+                        "grown" => $"{npc.DisplayName} shrinks back to normal size.",
+                        _ => $"{npc.DisplayName} is no longer affected by {effectName}."
+                    };
+
+                    foreach (var p in npc.CurrentRoom.Players)
+                        MessageHandler.SendSystem(p, message);
+                }
+            }
+            catch { /* best-effort */ }
+        }
+
         private static void NotifyEffectExpiring(Player player, string effect, World.World world)
         {
             try
             {
+                // Casting has its own completion message via CompleteCast — suppress generic expiry message
+                if (string.Equals(effect, "Casting", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                // Memorizing has its own completion message via CompleteMemorization — suppress generic expiry message
+                if (string.Equals(effect, "Memorizing", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                // Grown has its own specific warning message
+                if (string.Equals(effect, "Grown", StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageHandler.SendSystem(player, "You feel yourself beginning to shrink back to your normal size...");
+                    return;
+                }
+
                 MessageHandler.SendSystem(player, $"You feel the effects of {effect.ToLowerInvariant()} wearing off!");
             }
             catch { }
@@ -242,15 +460,39 @@ namespace MudCore.Actions
         {
             try
             {
-                MessageHandler.SendSystem(player, $"The effects of {effect.ToLowerInvariant()} have worn off!");
+                string playerMsg;
+                string observerMsg;
 
-                // Observer message
+                switch (effect.ToLowerInvariant())
+                {
+                    case "grown":
+                        playerMsg = "You shrink back to your normal size.";
+                        observerMsg = $"{player.Name} shrinks back to their normal size.";
+                        break;
+
+                    case "flying":
+                        playerMsg = "You gently descend to the ground.";
+                        observerMsg = $"{player.Name} gently descends to the ground.";
+                        break;
+
+                    // Add new spell expiry messages here as spells are implemented
+                    // case "shrunk":
+                    //     playerMsg   = "You grow back to your normal size.";
+                    //     observerMsg = $"{player.Name} grows back to their normal size.";
+                    //     break;
+
+                    default:
+                        playerMsg = $"The effects of {effect.ToLowerInvariant()} have worn off.";
+                        observerMsg = $"{player.Name} is no longer affected by {effect.ToLowerInvariant()}.";
+                        break;
+                }
+
+                MessageHandler.SendSystem(player, playerMsg);
+
                 if (player.CurrentRoom != null)
                 {
                     foreach (var observer in player.CurrentRoom.Players.Where(p => p != player))
-                    {
-                        MessageHandler.SendSystem(observer, $"{player.Name} is no longer affected by {effect.ToLowerInvariant()}!");
-                    }
+                        MessageHandler.SendSystem(observer, observerMsg);
                 }
             }
             catch { }

@@ -1,0 +1,45 @@
+{
+  "id": "Fog",
+  "castingComponents": [],
+  "container": [],
+  "requiredSkill": "skill_nature_knowledge",
+  "minSkillLevel": 1,
+  "alignmentRestriction": "None",
+  "toolsRequired": [],
+  "powerCost": 15,
+  "roomFlags": [],
+  "areaClimate": [ null ],
+  "notRoomFlags": [ "NoMagic","Indoor" ],
+  "deliveryMethod": null,
+  "canChain": false,
+  "chainChance": null,
+  "chainLimit": null,
+  "roomRange": null,
+  "spellEffects": [
+    {
+      "type": "TimedEffect",
+      "effectTarget": "Room",
+      "distantTarget": null,
+      "distanceRooms": null,
+      "baseValue": null,
+      "valuePerLevel": null,
+      "statModifier": "Wisdom",
+      "statModifies": "durationSeconds",
+      "durationSeconds": 120,
+      "damageType": null,
+      "hasChoicePrompt": false,
+      "choicePromptText": "",
+      "choiceOptions": [],
+      "choiceFieldName": null,
+      "note": "Add"
+    }
+  ],
+  "castTimeSeconds": 30,
+  "ritualOnly": false,
+  "ritualParticipants": null,
+  "allowSubstitutions": false,
+  "substitutions": {
+    "gem": [ "crystal" ]
+  },
+  "notes": "The fog spell, creates a dense fog in the room, reducing visibility and affecting combat."
+}

@@ -1,0 +1,15 @@
+{
+  "Id": "worm",
+  "Name": "Worm",
+  "ItemCategory": "Component",
+  "Weight": 0.01,
+  "Value": 1,
+  "ShortDesc": "A small worm",
+  "LongDesc": "A small worm, this can be used in spell casting.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Organic",
+  "Stackable": "true"
+}

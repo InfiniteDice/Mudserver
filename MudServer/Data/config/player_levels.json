@@ -305,23 +305,20 @@
     {
       "name": "Mundane",
       "max_level": 5,
-      "cost_at_level": [ 1, 2, 5, 10, 15 ],
-      "bonus_at_level": [ 1.2, 1.5, 2.0, 2.5, 3.0 ]
+      "cost_at_level": [ 1, 2, 5, 10, 15 ]
     },
     {
       "name": "Trade",
       "max_level": 5,
-      "cost_at_level": [ 1, 5, 10, 15, 20 ],
-      "bonus_at_level": [ 1.2, 1.5, 2.0, 2.5, 3.0 ]
+      "cost_at_level": [ 1, 5, 10, 15, 20 ]
     },
     {
       "name": "Mystical",
       "max_level": 5,
-      "cost_at_level": [ 5, 10, 15, 20, 30 ],
-      "bonus_at_level": [ 1.2, 1.5, 2.0, 2.5, 3.0 ]
+      "cost_at_level": [ 5, 10, 15, 20, 30 ]
     }
   ],
-  "skilltrade_item_tiers": [
+  "skill_trade_item_tiers": [
     {
       "name": "Poor",
       "creation_level": 1,
@@ -351,38 +348,6 @@
       "creation_level": 5,
       "value_mod": [ 500 ],
       "bonus_applied": [ 5.0 ]
-    }
-  ],
-  "skillmystical_power_tiers": [
-    {
-      "name": "Pupil",
-      "spells_level": 1,
-      "mana_cost": [ 2 ],
-      "power_multi": [ 1 ]
-    },
-    {
-      "name": "Caster",
-      "spells_level": 2,
-      "mana_cost": [ 1 ],
-      "power_multi": [ 1.5 ]
-    },
-    {
-      "name": "Magus",
-      "spells_level": 3,
-      "mana_cost": [ 0.75 ],
-      "power_multi": [ 3 ]
-    },
-    {
-      "name": "Master",
-      "spells_level": 4,
-      "mana_cost": [ 0.5 ],
-      "power_multi": [ 5 ]
-    },
-    {
-      "name": "GrandMaster",
-      "spells_level": 5,
-      "mana_cost": [ 0.25 ],
-      "power_multi": [ 10 ]
     }
   ]
 }

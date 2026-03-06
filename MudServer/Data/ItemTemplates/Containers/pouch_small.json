@@ -1,0 +1,14 @@
+{
+  "Id": "pouch_small",
+  "Name": "Small Pouch",
+  "ItemCategory": "Container",
+  "Weight": 0.1,
+  "Value": 3,
+  "ShortDesc": "A simple leather pouch",
+  "LongDesc": "A small pouch made of leather, this can hold components.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [ "Capacity1", "Accept:Component", "Accept:Currency" ],
+  "Material": "Leather",
+  "BaseACBonus": 0.0
+}

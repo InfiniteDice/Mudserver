@@ -1,0 +1,51 @@
+{
+  "id": "Grow",
+  "castingComponents": [
+    {
+      "template": "worm",
+      "qty": 1
+    }
+  ],
+  "container": ["Pouch"],
+  "requiredSkill": "skill_arcane_knowledge",
+  "minSkillLevel": 1,
+  "alignmentRestriction": "None",
+  "toolsRequired": [],
+  "powerCost": 10,
+  "roomFlags": [],
+  "areaClimate": [ null ],
+  "notRoomFlags": [ "NoMagic" ],
+  "deliveryMethod": null,
+  "canChain": false,
+  "chainChance": null,
+  "chainLimit": null,
+  "roomRange": null,
+  "spellEffects": [
+    {
+      "type": "TimedEffect",
+      "effectTarget": "Npc",
+      "distantTarget": null,
+      "distanceRooms": null,
+      "baseValue": 1,
+      "valuePerLevel": null,
+      "statModifier": "Intelligence",
+      "statModifies": "durationSeconds",
+      "EffectFlag": "Grown",
+      "durationSeconds": 120,
+      "damageType": null,
+      "hasChoicePrompt": true,
+      "choicePromptText": "Grow your target by how much?\n1) +1 size (full duration)\n2) +2 sizes (half duration)",
+      "choiceOptions": [ 1, 2 ],
+      "choiceFieldName": "SizeChoice",
+      "note": "baseValue is how many enum sizes will be gained. Can choose +1 size or +2 size for half duration"
+    }
+  ],
+  "castTimeSeconds": 6,
+  "ritualOnly": false,
+  "ritualParticipants": null,
+  "allowSubstitutions": true,
+  "substitutions": {
+    "worm": [ "egg_chicken" ]
+  },
+  "notes": "The grow spell, increases the size of a player or npc."
+}

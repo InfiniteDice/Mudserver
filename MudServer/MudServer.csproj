@@ -20,8 +20,4 @@
     </Content>
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Data\ItemTemplates\SpellTemplates\Arcane\" />
-  </ItemGroup>
-
 </Project>

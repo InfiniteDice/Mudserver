@@ -1,0 +1,42 @@
+{
+  "id": "Heal",
+  "castingComponents": [],
+  "container": [],
+  "requiredSkill": "skill_divine_knowledge",
+  "minSkillLevel": 1,
+  "alignmentRestriction": "Good",
+  "toolsRequired": [],
+  "powerCost": 10,
+  "roomFlags": [],
+  "notRoomFlags": [ "NoMagic" ],
+  "deliveryMethod": "Touch",
+  "canChain": false,
+  "chainChance": null,
+  "chainLimit": null,
+  "roomRange": null,
+  "spellEffects": [
+    {
+      "type": "Health",
+      "effectTarget": "Single",
+      "distantTarget": null,
+      "distanceRooms": null,
+      "baseValue": 5,
+      "valuePerLevel": 5,
+      "statModifier": "Wisdom",
+      "statModifies": "baseValue",
+      "durationSeconds": null,
+      "damageType": null,
+      "hasChoicePrompt": false,
+      "choicePromptText": "",
+      "choiceOptions": [],
+      "choiceFieldName": null,
+      "note": "Add"
+    }
+  ],
+  "castTimeSeconds": 6,
+  "ritualOnly": false,
+  "ritualParticipants": null,
+  "allowSubstitutions": false,
+  "substitutions":[],
+  "notes": "The heal spell, restores health to a single target."
+}

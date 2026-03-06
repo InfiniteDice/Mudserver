@@ -53,6 +53,13 @@ namespace MudServer
             var pendingMsg = CheckPendingAction(player, rawCommand);
             if (pendingMsg != null) return pendingMsg;
 
+            // NEW: Check if player has a spell choice pending
+            if (player.PendingAction != null &&
+                string.Equals(player.PendingAction.Step, "AwaitingChoice", StringComparison.OrdinalIgnoreCase))
+            {
+                return HandleChoiceResponse(player, rawCommand);
+            }
+
             // NEW: Refresh session token on each command (extends timeout)
             if (player.IsAuthenticated && !string.IsNullOrWhiteSpace(player.SessionToken))
             {
@@ -1996,6 +2003,106 @@ namespace MudServer
                         return SpellScribingManager.ScribeSpellToPage(player, spellIdProper, targetPage, room, _world, _dbConnection);
                     }
 
+                case "listskills":
+                    {
+                        if (player.DbPlayerID <= 0)
+                            return MessageHandler.System("Your account is not yet saved.");
+
+                        try
+                        {
+                            var skillLines = new System.Text.StringBuilder();
+                            skillLines.AppendLine("=== Your Skills ===");
+
+                            using var cmd = _dbConnection.CreateCommand();
+                            cmd.CommandText = @"
+                                SELECT SkillID, SkillLevel, SkillHasLevels
+                                FROM PlayerSkills
+                                WHERE PlayerID = @pid
+                                ORDER BY SkillID ASC;";
+                            cmd.Parameters.AddWithValue("@pid", player.DbPlayerID);
+
+                            bool any = false;
+                            using var rdr = cmd.ExecuteReader();
+                            while (rdr.Read())
+                            {
+                                any = true;
+                                string skillId = rdr.IsDBNull(0) ? "?" : rdr.GetString(0);
+                                int level = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1);
+                                int hasLevels = rdr.IsDBNull(2) ? 0 : rdr.GetInt32(2);
+
+                                if (hasLevels == 1)
+                                    skillLines.AppendLine($"  {skillId} — Level {level}");
+                                else
+                                    skillLines.AppendLine($"  {skillId} — Known");
+                            }
+
+                            if (!any)
+                                skillLines.AppendLine("  You have no skills yet.");
+
+                            return MessageHandler.System(skillLines.ToString());
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][LISTSKILLS] Failed for {player.Name}: {ex.Message}");
+                            return MessageHandler.System("Failed to retrieve skills.");
+                        }
+                    }
+
+                case "cast":
+                    {
+                        string cleanCommand = ExtractCommandText(rawCommand);
+
+                        // Strip the "cast" keyword to get the remainder
+                        var castRemainder = cleanCommand.Length > 4 ? cleanCommand.Substring(4).Trim() : "";
+                        if (string.IsNullOrWhiteSpace(castRemainder))
+                            return MessageHandler.System("Usage: cast [spellId] or cast [spellId] at/on [target]");
+
+                        // Parse optional target — split on " at " or " on "
+                        string spellIdRaw;
+                        string? targetExpr = null;
+
+                        int idxAt = castRemainder.IndexOf(" at ", StringComparison.OrdinalIgnoreCase);
+                        int idxOn = castRemainder.IndexOf(" on ", StringComparison.OrdinalIgnoreCase);
+
+                        int splitIdx = -1;
+                        int splitLen = 4; // " at " or " on " both length 4
+                        if (idxAt >= 0 && (idxOn < 0 || idxAt <= idxOn)) { splitIdx = idxAt; }
+                        else if (idxOn >= 0) { splitIdx = idxOn; }
+
+                        if (splitIdx >= 0)
+                        {
+                            spellIdRaw = castRemainder.Substring(0, splitIdx).Trim();
+                            targetExpr = castRemainder.Substring(splitIdx + splitLen).Trim();
+                            if (string.IsNullOrWhiteSpace(targetExpr)) targetExpr = null;
+                        }
+                        else
+                        {
+                            spellIdRaw = castRemainder.Trim();
+                        }
+
+                        if (string.IsNullOrWhiteSpace(spellIdRaw))
+                            return MessageHandler.System("Usage: cast [spellId] or cast [spellId] at/on [target]");
+
+                        // Normalize spell ID: e.g. "lightning" -> "Lightning"
+                        string spellIdLower = spellIdRaw.ToLowerInvariant();
+                        string spellIdProper = char.ToUpperInvariant(spellIdLower[0]) + spellIdLower.Substring(1);
+
+                        var castRoom = player.CurrentRoom;
+                        if (castRoom == null)
+                            return MessageHandler.System("You are not in a valid room.");
+
+                        try
+                        {
+                            return SpellCastingManager.StartCasting(
+                                player, spellIdProper, targetExpr, castRoom, _world, _dbConnection);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][CAST] StartCasting failed: {ex}");
+                            return MessageHandler.System("Failed to cast spell due to a server error.");
+                        }
+                    }
+
                 case "memorize":
                     {
                         string cleanCommand = ExtractCommandText(rawCommand);
@@ -2312,6 +2419,10 @@ namespace MudServer
         $"Unspent Skill Points: {player.SkillPoints}",
         $"Health: {player.Health}/{player.MaxHealth}",
         $"Stamina: {player.Stamina}/{player.MaxStamina}",
+        // Power line: only shown if player has a mystic knowledge skill (MaxPower > 0)
+                        player.MaxPower > 0
+                            ? $"Power: {player.Power}/{player.MaxPower}"
+                            : $"Power: none (requires a knowledge skill)",
         $"Size (SizeEnum): {player.SizeEnum}",
         GetEncumbranceStatLine(player),
         $"Effective Mass: {player.EffMass:F2}",
@@ -2354,6 +2465,13 @@ namespace MudServer
                             Console.WriteLine($"[CMD] Mill command failed: {ex.Message}");
                             return MessageHandler.System("Milling failed due to a server error.");
                         }
+                    }
+
+                case string s when s.StartsWith("npcstats", StringComparison.OrdinalIgnoreCase):
+                    {
+                        if (!player.IsAdmin) return MessageHandler.System("Unknown command.");
+                        var arg = command.Length > 8 ? command.Substring(8).Trim() : string.Empty;
+                        return _adminService.GetNpcStats(arg, player);
                     }
 
                 case string s when s.StartsWith("repair", StringComparison.OrdinalIgnoreCase):
@@ -3007,6 +3125,80 @@ namespace MudServer
                 return GetItem(player, itemExpr, forwardQty);
             }
         } // end HandleGetCommand
+
+        // NEW: Handle choice responses for spells with hasChoicePrompt
+        // Pattern: Player responds to "grow 1" or "grow 2" when spell is awaiting choice.
+        // This is a reusable handler for ANY spell that uses the choice system.
+        // Add new choice-based spells by:
+        // 1) Adding hasChoicePrompt=true to spell template SpellEffect
+        // 2) Adding choiceOptions=[1,2] and choiceFieldName="SizeChoice" etc
+        // 3) The choice will be stored in PendingAction.Data and passed to your DeliverXxx() method
+        private Message? HandleChoiceResponse(Player player, string rawCommand)
+        {
+            if (player?.PendingAction == null)
+                return MessageHandler.System("No spell is waiting for your choice.");
+
+            if (!string.Equals(player.PendingAction.Step, "AwaitingChoice", StringComparison.OrdinalIgnoreCase))
+                return MessageHandler.System("No choice is pending.");
+
+            var data = player.PendingAction.Data as Dictionary<string, object>;
+            if (data == null)
+                return MessageHandler.System("Choice data lost.");
+
+            // Extract choice field name (e.g., "SizeChoice") and valid options
+            string? choiceFieldName = data.TryGetValue("ChoiceFieldName", out var cfn) ? cfn?.ToString() : null;
+            var choiceOptions = data.TryGetValue("ChoiceOptions", out var opts) ? opts as List<int> : null;
+
+            if (string.IsNullOrWhiteSpace(choiceFieldName) || choiceOptions == null || choiceOptions.Count == 0)
+                return MessageHandler.System("Choice configuration missing.");
+
+            // Parse player's input as integer
+            // rawCommand might be JSON {"type":"command","text":"2"} or plain "2"
+            string commandText = rawCommand.Trim();
+
+            // If it looks like JSON, extract the "text" field
+            if (commandText.StartsWith("{") && commandText.EndsWith("}"))
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(commandText);
+                    if (doc.RootElement.TryGetProperty("text", out var textProp))
+                    {
+                        commandText = textProp.GetString() ?? commandText;
+                    }
+                }
+                catch { /* not valid JSON, use as-is */ }
+            }
+
+            if (!int.TryParse(commandText.Trim(), out int playerChoice))
+                return MessageHandler.System($"Invalid choice. Expected number, got '{rawCommand}'.");
+
+            // Validate choice is in allowed options
+            if (!choiceOptions.Contains(playerChoice))
+                return MessageHandler.System($"Invalid choice '{playerChoice}'. Valid options: {string.Join(", ", choiceOptions)}");
+
+            // Store choice in pending action data
+            data[choiceFieldName] = playerChoice;
+
+            // Transition from "AwaitingChoice" to "Casting"
+            player.PendingAction.Step = "Casting";
+
+            // CRITICAL FIX: Ensure TargetIsSelf is set to true for choice-based spells
+            // (choice spells are typically self-cast like Grow)
+            data["TargetIsSelf"] = true;
+
+            // Fire the spell immediately since we already waited for the choice
+            try
+            {
+                return MudCore.Actions.SpellCastingManager.CompleteCast(player, _dbConnection, _world);
+            }
+            catch (Exception exComplete)
+            {
+                Console.WriteLine($"[CHOICE] CompleteCast failed: {exComplete.Message}");
+                player.PendingAction = null;
+                return MessageHandler.System("Spell cast failed due to an error.");
+            }
+        }
 
         private Message? HandlePutCommand(Player player, string command)
         {

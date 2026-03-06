@@ -432,7 +432,16 @@ namespace MudCore.Actions
 						}
 					}
 
-					var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
+                    // NEW: Skip combat attack turn while player is casting a spell
+                    if (attacker.IsPlayer && attacker.AsPlayer?.PendingAction?.Command == "CastSpell")
+                    {
+                        // Player is busy casting — skip their attack this tick silently
+                        usedAttackers.Add(attacker.Entity);
+                        performed++;
+                        continue;
+                    }
+
+                    var defender = SelectDefender(attacker, defenders.Members.Where(d => d.Alive), defenderSlotsUsed);
                     if (defender == null) break;
 
                     // If the defender is a player, cancel any pending dig/mining action (they get interrupted by incoming attacks).
@@ -485,21 +494,27 @@ namespace MudCore.Actions
                             }
                             catch { /* best-effort */ }
 
-							// NEW: If defender is player actively memorizing, interrupt it
-							try
-							{
-								if (defender.IsPlayer && defender.AsPlayer != null)
-								{
-									var pa = defender.AsPlayer.PendingAction;
-									if (pa != null && string.Equals(pa.Command, "MemorizeSpell", StringComparison.OrdinalIgnoreCase))
-									{
-										MemorizationManager.InterruptMemorization(defender.AsPlayer, "You are under attack!", conn);
-										try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
-									}
-								}
-							}
-							catch { /* best-effort */ }
-						}
+                            // NEW: If defender is player actively memorizing, interrupt it
+                            try
+                            {
+                                var pa = defender.AsPlayer.PendingAction;
+                                if (pa != null)
+                                {
+                                    if (string.Equals(pa.Command, "MemorizeSpell", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        MemorizationManager.InterruptMemorization(defender.AsPlayer, "You are under attack!", conn);
+                                        try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
+                                    }
+                                    // NEW: Interrupt active spell cast when defender is attacked
+                                    else if (string.Equals(pa.Command, "CastSpell", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        SpellCastingManager.InterruptCast(defender.AsPlayer, "You are under attack!", conn);
+                                        try { MessageHandler.EnqueuePlayerUpdate(defender.AsPlayer); } catch { }
+                                    }
+                                }
+                            }
+                            catch { /* best-effort */ }
+                        }
                     }
                     catch { /* best-effort */ }
 

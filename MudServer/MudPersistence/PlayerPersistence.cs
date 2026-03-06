@@ -85,10 +85,10 @@ namespace MudPersistence
             if (Has("Debuffs")) wanted.Add("Debuffs");
             if (Has("Experience")) wanted.Add("Experience");
 
-            // NEW: SkillPoints and ArcanePower fields (if present)
+            // NEW: SkillPoints and Power fields (if present)
             if (Has("SkillPoints")) wanted.Add("SkillPoints");
-            if (Has("ArcanePower")) wanted.Add("ArcanePower");
-            if (Has("MaxArcanePower")) wanted.Add("MaxArcanePower");
+            if (Has("Power")) wanted.Add("Power");
+            if (Has("MaxPower")) wanted.Add("MaxPower");
 
             // NEW: Flags column support
             if (Has("Flags")) wanted.Add("Flags");
@@ -138,15 +138,15 @@ namespace MudPersistence
                                     player.Experience = rdr.GetInt32(ordinal);
                                     break;
 
-                                // NEW: skill/arcane fields
+                                // NEW: skill/mystic fields
                                 case "SkillPoints":
                                     player.SkillPoints = rdr.GetInt32(ordinal);
                                     break;
-                                case "ArcanePower":
-                                    player.ArcanePower = rdr.GetInt32(ordinal);
+                                case "Power":
+                                    player.Power = rdr.GetInt32(ordinal);
                                     break;
-                                case "MaxArcanePower":
-                                    player.MaxArcanePower = rdr.GetInt32(ordinal);
+                                case "MaxPower":
+                                    player.MaxPower = rdr.GetInt32(ordinal);
                                     break;
 
                                 case "Flags":
@@ -184,7 +184,13 @@ namespace MudPersistence
                     }
                     catch { /* best-effort */ }
 
-                    
+                    //// Recompute MaxPower from mystic knowledge skills and clamp Power (best-effort).
+                    //try
+                    //{
+                    //    RefreshMaxPowerFromSkills(player, conn);
+                    //}
+                    //catch { /* best-effort */ }
+
                 }
             }
             catch { }
@@ -249,10 +255,10 @@ namespace MudPersistence
             if (Has("Debuffs")) colAssignments.Add("Debuffs = @Debuffs");
             if (Has("Experience")) colAssignments.Add("Experience = @Experience");
 
-            // NEW: SkillPoints and Arcane fields
+            // NEW: SkillPoints and mystic fields
             if (Has("SkillPoints")) colAssignments.Add("SkillPoints = @SkillPoints");
-            if (Has("ArcanePower")) colAssignments.Add("ArcanePower = @ArcanePower");
-            if (Has("MaxArcanePower")) colAssignments.Add("MaxArcanePower = @MaxArcanePower");
+            if (Has("Power")) colAssignments.Add("Power = @Power");
+            if (Has("MaxPower")) colAssignments.Add("MaxPower = @MaxPower");
 
             if (Has("Flags")) colAssignments.Add("Flags = @Flags");
 
@@ -309,21 +315,21 @@ namespace MudPersistence
 
             cmd.Parameters.AddWithValue("@Experience", expToSave);
 
-            // NEW: SkillPoints / Arcane params
+            // NEW: SkillPoints / mystic params
             try
             {
                 if (Has("SkillPoints"))
                     cmd.Parameters.AddWithValue("@SkillPoints", player.SkillPoints);
-                if (Has("ArcanePower"))
-                    cmd.Parameters.AddWithValue("@ArcanePower", player.ArcanePower);
-                if (Has("MaxArcanePower"))
-                    cmd.Parameters.AddWithValue("@MaxArcanePower", player.MaxArcanePower);
+                if (Has("Power"))
+                    cmd.Parameters.AddWithValue("@Power", player.Power);
+                if (Has("MaxPower"))
+                    cmd.Parameters.AddWithValue("@MaxPower", player.MaxPower);
             }
             catch
             {
                 if (Has("SkillPoints")) cmd.Parameters.AddWithValue("@SkillPoints", 0);
-                if (Has("ArcanePower")) cmd.Parameters.AddWithValue("@ArcanePower", 0);
-                if (Has("MaxArcanePower")) cmd.Parameters.AddWithValue("@MaxArcanePower", 0);
+                if (Has("Power")) cmd.Parameters.AddWithValue("@Power", 0);
+                if (Has("MaxPower")) cmd.Parameters.AddWithValue("@MaxPower", 0);
             }
 
             // NEW: Flags parameter (serialize deterministically)
@@ -393,6 +399,61 @@ namespace MudPersistence
             catch
             {
                 player.Alignment = MudCore.Entities.Alignment.Neutral;
+            }
+        }
+
+        /// <summary>
+        /// Computes and assigns player.MaxPower from the highest mystic knowledge skill the player holds.
+        /// Checks all four knowledge paths: elemental, arcane, nature, divine.
+        /// Takes the highest power value across all paths at their respective levels.
+        /// Also clamps player.Power to [0, MaxPower] to prevent stale over-cap values.
+        ///
+        /// Power tiers are hardcoded from skill JSON files (static design data):
+        ///   Level 1: Elemental=10  Arcane=10  Nature=10  Divine=20
+        ///   Level 2: Elemental=20  Arcane=20  Nature=20  Divine=40
+        ///   Level 3: Elemental=40  Arcane=40  Nature=40  Divine=60
+        ///   Level 4: Elemental=80  Arcane=80  Nature=80  Divine=80
+        ///   Level 5: Elemental=160 Arcane=160 Nature=160 Divine=160
+        /// </summary>
+        public static void RefreshMaxPowerFromSkills(Player player, SqliteConnection conn)
+        {
+            if (player == null || conn == null) return;
+
+            try
+            {
+                // Power per level per skill path (index 0 = unused, 1-5 = level tiers)
+                var powerByLevel = new Dictionary<string, int[]>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "skill_elemental_knowledge", new[] { 0, 10, 20, 40, 80, 160 } },
+                    { "skill_arcane_knowledge",    new[] { 0, 10, 20, 40, 80, 160 } },
+                    { "skill_nature_knowledge",    new[] { 0, 10, 20, 40, 80, 160 } },
+                    { "skill_divine_knowledge",    new[] { 0, 20, 40, 60, 80, 160 } }
+                };
+
+                int highestPower = 0;
+
+                foreach (var kvp in powerByLevel)
+                {
+                    int level = player.GetSkillLevel(kvp.Key, conn);
+                    if (level <= 0) continue;
+
+                    int clampedLevel = Math.Clamp(level, 1, 5);
+                    int power = kvp.Value[clampedLevel];
+
+                    if (power > highestPower)
+                        highestPower = power;
+                }
+
+                player.MaxPower = highestPower;
+
+                // Clamp Power downward only — prevent over-cap but never force Power up to MaxPower.
+                // Power is gained through regen (1 per period in GameLoop), not on skill load.
+                if (player.Power > player.MaxPower)
+                    player.Power = player.MaxPower;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PlayerPersistence] RefreshMaxPowerFromSkills failed for {player?.Name}: {ex.Message}");
             }
         }
     }

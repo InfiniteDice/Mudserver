@@ -10,6 +10,6 @@
   "HandLoc": 1,
   "Flags": [],
   "Material": "Oak",
-  "DmgDiceMult": 2.0,
+  "DmgDiceMult": 1.0,
   "BaseACBonus": 10.0
 }

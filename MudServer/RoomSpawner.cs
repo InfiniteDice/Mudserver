@@ -1,10 +1,11 @@
-﻿using System;
-using System.Linq;
-using System.Collections.Generic;
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
+using MudCore.Entities;
 using MudCore.World;
-using MudPersistence;
 using MudNetworking;
+using MudPersistence;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace MudServer
@@ -37,6 +38,63 @@ namespace MudServer
         public static int SpawnCheckIntervalSeconds { get; set; } = 60; // Check every 60 seconds - Important, the room spawner sets SpawnDelayMinutes in minutes this must also be passed in order to work correctly.
 
         private static DateTime _lastSpawnCheckTime = DateTime.MinValue;
+
+        /// <summary>
+        /// Applies virtual (in-memory only) equipment to an NPC from its EquipmentTemplateIds.
+        /// Items are never persisted — ItemID = 0. They give stat bonuses via UpdateEffectiveStats
+        /// but do NOT drop on death (drop loot is handled by DropPool/DropChance in HandleNpcDeath).
+        /// Called both at spawn time (RoomSpawner) and on server restart (NpcPersistence.LoadNpcs).
+        /// </summary>
+        public static void ApplyVirtualEquipment(Npc npc, World world)
+        {
+            try
+            {
+                var equipTemplates = npc.Template?.EquipmentTemplateIds;
+                if (equipTemplates == null || equipTemplates.Count == 0 || world.ItemFactory == null)
+                    return;
+
+                // Clear any existing virtual items to avoid duplicates on reload
+                npc.Inventory.RemoveAll(i => i != null && i.ItemID == 0);
+
+                foreach (var equipTemplateId in equipTemplates)
+                {
+                    try
+                    {
+                        var item = world.ItemFactory.CreateItem(equipTemplateId, "NPC", npc.NpcID, npc.CurrentRoomID);
+                        if (item == null) continue;
+
+                        item.ItemID = 0;        // Virtual — not in DB
+                        item.OwnerType = "NPC";
+                        item.OwnerID = npc.NpcID;
+
+                        // Mark as held/worn so UpdateEffectiveStats picks it up.
+                        // CRITICAL: item.Flags is a computed property (deserializes FlagsJson on get).
+                        // Must get the list, mutate it, then SET it back — never call .Add() directly.
+                        var flags = item.Flags; // get → deserialize into a new list
+                        if (string.Equals(item.ItemCategory, "Weapon", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(item.ItemCategory, "Handheld", StringComparison.OrdinalIgnoreCase))
+                            flags.Add("Held");
+                        else if (string.Equals(item.ItemCategory, "Armor", StringComparison.OrdinalIgnoreCase))
+                            flags.Add("Worn");
+                        item.Flags = flags; // set → serializes back into FlagsJson
+
+                        npc.Inventory.Add(item);
+                        Console.WriteLine($"[VirtualEquip] '{equipTemplateId}' -> {npc.Name} (NpcID={npc.NpcID})");
+                    }
+                    catch (Exception iex)
+                    {
+                        Console.WriteLine($"[VirtualEquip] Failed '{equipTemplateId}' for {npc.Name}: {iex.Message}");
+                    }
+                }
+
+                // Recalculate stats with new equipment
+                MudCore.Actions.Combat.UpdateEffectiveStats(npc);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VirtualEquip] Error for {npc.Name}: {ex.Message}");
+            }
+        }
 
         public static void ProcessSpawns(World world, SqliteConnection conn)
         {
@@ -397,39 +455,10 @@ namespace MudServer
                         }
                         catch { /* best-effort */ }
 
-                        //// Equip from template and persist to NPC ownership  // OLD SPAWN WITH ITEMS
-                        //try
-                        //{
-                        //    var equipTemplates = npc.Template?.EquipmentTemplateIds;
-                        //    if (equipTemplates != null && equipTemplates.Count > 0 && world.ItemFactory != null)
-                        //    {
-                        //        foreach (var equipTemplateId in equipTemplates)
-                        //        {
-                        //            try
-                        //            {
-                        //                var item = world.ItemFactory.CreateItem(equipTemplateId, "NPC", npc.NpcID, room.RoomID);
-                        //                item.OwnerType = "NPC";
-                        //                item.OwnerID = npc.NpcID;
-                        //                item.RoomID = room.RoomID;
-                        //                item.OwnerAreaID = 0;
+                        //DEPRECATED// OLD SPAWN WITH ITEMS — replaced by ApplyVirtualEquipment helper
 
-                        //                // Ensure descriptor assigned for spawned/equipped items
-                        //                try { ItemDescriptorManager.AssignDescriptorIfApplicable(item); } catch { /* best-effort */ }
-
-                        //                ItemPersistence.SaveItem(conn, item);
-                        //                npc.Inventory.Add(item);
-                        //            }
-                        //            catch (Exception iex)
-                        //            {
-                        //                Console.WriteLine($"[Spawner][NPC] Failed to create/equip item '{equipTemplateId}' for NPC {npc.Name}: {iex.Message}");
-                        //            }
-                        //        }
-                        //    }
-                        //}
-                        //catch (Exception exEquip)
-                        //{
-                        //    Console.WriteLine($"[Spawner][NPC] Equipment assignment error for NPC {npc.Name}: {exEquip.Message}");
-                        //}
+                        // Apply virtual equipment and recalculate stats
+                        ApplyVirtualEquipment(npc, world);
 
                         if (!world.Npcs.Any(n => n.NpcID == npc.NpcID))
                         {

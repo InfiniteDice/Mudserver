@@ -1770,7 +1770,62 @@ namespace MudCore.Actions
             return null;
         }
 
-        // Add after HandleTeleport method (around line 1400)
+        public Message GetNpcStats(string args, Player admin)
+        {
+            if (!int.TryParse(args.Trim(), out int npcId))
+                return MessageHandler.System("Usage: npcstats <npcId>");
+
+            var npc = _world.Npcs?.FirstOrDefault(n => n != null && n.NpcID == npcId);
+            if (npc == null)
+                return MessageHandler.System($"No NPC with ID {npcId} found in world.");
+
+            var lines = new List<string>
+            {
+                $"=== NPC Stats: {npc.DisplayName} (ID: {npc.NpcID}) ===",
+                $"Template:        {npc.TemplateID ?? "unknown"}",
+                $"Room:            {npc.CurrentRoom?.Name ?? "unknown"} (RoomID: {npc.CurrentRoomID})",
+                $"Area:            {npc.CurrentAreaID}",
+                $"Alignment:       {npc.Alignment}",
+                $"Level:           {npc.Level ?? 0}",
+                $"Health:          {npc.Health}/{npc.HealthMax}",
+                $"Size (SizeEnum): {npc.SizeEnum ?? 4}",
+                $"Mass:            {npc.Mass ?? 0:F1} kg",
+                $"Eff Mass:        {npc.EffMass ?? 0:F1} kg",
+                $"CombatSkill:     {npc.CombatSkill ?? 0:F2}",
+                $"EffCombatSkill:  {npc.EffCombatSkill ?? 0:F2}",
+                $"BaseDmgDice:     {npc.BaseDmgDice:F2}",
+                $"EffDmgDice:      {npc.EffDmgDice:F2}",
+                $"BaseArmorClass:  {npc.BaseArmorClass:F2}",
+                $"EffArmorClass:   {npc.EffArmorClass:F2}",
+                $"IsFlying:        {npc.IsFlying}",
+                $"IsHumanoid:      {npc.IsHumanoid}",
+                $"IsPersistent:    {npc.IsPersistent}",
+                $"IsBeingLed:      {npc.IsBeingLed}",
+                $"IsHitched:       {npc.IsHitched}",
+                $"Hunger:          {npc.Hunger}",
+                $"WanderChance:    {npc.WanderChance:F2}",
+                $"Buffs:           {(npc.Buffs?.Count > 0 ? string.Join(", ", npc.Buffs) : "(none)")}",
+                $"Debuffs:         {(npc.Debuffs?.Count > 0 ? string.Join(", ", npc.Debuffs) : "(none)")}",
+                $"Flags:           {(npc.Flags?.Count > 0 ? string.Join(", ", npc.Flags) : "(none)")}",
+                $"TimedEffects:    {(npc.TimedEffectSeconds?.Count > 0 ? string.Join(", ", npc.TimedEffectSeconds.Select(kv => $"{kv.Key}:{kv.Value}s")) : "(none)")}",
+                $"Inventory:       {npc.Inventory?.Count ?? 0} item(s)",
+            };
+
+            // Show full detail for each inventory item
+            if (npc.Inventory != null && npc.Inventory.Count > 0)
+            {
+                lines.Add("--- Inventory Detail ---");
+                foreach (var item in npc.Inventory)
+                {
+                    if (item == null) { lines.Add("  [null item]"); continue; }
+                    lines.Add($"  [{item.ItemID}] {item.Name} | Cat:{item.ItemCategory} | DmgMult:{item.DmgDiceMult:F2} | ACBonus:{item.BaseACBonus:F2} | Cond:{item.Condition:F1} | Flags:{item.FlagsJson} | Material:{item.Material}");
+                }
+            }
+
+            lines.Add("=====================================");
+
+            return MessageHandler.System(string.Join("\n", lines));
+        }
 
         public Message? HandleShutdown(Player player, string command, Action onShutdown)
         {

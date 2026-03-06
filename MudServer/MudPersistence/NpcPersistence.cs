@@ -1,11 +1,12 @@
 ﻿using Microsoft.Data.Sqlite;
+using MudCore.Actions;
 using MudCore.Entities;
 using MudCore.World;
+using MudServer;
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
 using System.Data;
-using MudCore.Actions;
+using System.Text.Json;
 
 namespace MudPersistence
 {
@@ -1300,6 +1301,8 @@ namespace MudPersistence
 
                     Combat.InitializeSizeDefaults(npc);
                     Combat.UpdateEffectiveStats(npc);
+
+                    
 
                     // --- after parsing Move flags into npc.MoveSchedules (existing code) ---
                     // Add conditional debug output so we can confirm DB->runtime mapping for Move schedules.

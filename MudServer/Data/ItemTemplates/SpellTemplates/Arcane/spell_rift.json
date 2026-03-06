@@ -1,0 +1,54 @@
+{
+  "id": "Rift",
+  "castingComponents": [
+    {
+      "template": "eye",
+      "qty": 1
+    },
+    {
+      "template": "gem",
+      "qty": 1
+    }
+  ],
+  "container": [],
+  "requiredSkill": "skill_arcane_knowledge",
+  "minSkillLevel": 3,
+  "alignmentRestriction": "None",
+  "toolsRequired": [],
+  "powerCost": 40,
+  "roomFlags": [],
+  "areaClimate": [ null ],
+  "notRoomFlags": [ "NoMagic" ],
+  "deliveryMethod": null,
+  "canChain": false,
+  "chainChance": null,
+  "chainLimit": null,
+  "roomRange": null,
+  "spellEffects": [
+    {
+      "type": "TimedEffect",
+      "effectTarget": "Room",
+      "distantTarget": "Altar",
+      "distanceRooms": 50,
+      "baseValue": null,
+      "valuePerLevel": null,
+      "statModifier": "Intelligence",
+      "statModifies": "durationSeconds",
+      "durationSeconds": 120,
+      "damageType": null,
+      "hasChoicePrompt": true,
+      "choicePromptText": "Choose a room to create a portal to:",
+      "choiceOptions": [],
+      "choiceFieldName": "RoomChoice",
+      "note": "Casting the spell should return a list of viable rooms, or none available will cancel spell and power is lost. Choice options should populate from that returned list, the caster enters one."
+    }
+  ],
+  "castTimeSeconds": 120,
+  "ritualOnly": false,
+  "ritualParticipants": null,
+  "allowSubstitutions": false,
+  "substitutions": {
+    "gem": [ "crystal" ]
+  },
+  "notes": "The rift spell, creates a portal to another location for a limited duration."
+}

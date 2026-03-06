@@ -262,11 +262,11 @@ namespace MudCore.Actions
 
         /// <summary>
         /// Validate that a spell template exists by checking if the spell ID is known.
-        /// For now, just return the spell ID itself if it matches expected format.
+        /// Deserializes into SpellTemplate model — returns Name if present, falls back to Id.
         /// </summary>
-        /// <param name="spellId">The spell ID to validate (e.g., "SpellLightning")</param>
+        /// <param name="spellId">The spell ID to validate (e.g., "Lightning")</param>
         /// <param name="world">World instance (unused)</param>
-        /// <returns>Spell ID if valid, null if not found</returns>
+        /// <returns>Spell name if template found, null if not found</returns>
         public static string? GetSpellNameFromTemplate(string spellId, World.World world)
         {
             if (string.IsNullOrWhiteSpace(spellId))
@@ -300,20 +300,22 @@ namespace MudCore.Actions
                 if (files.Length == 0)
                     return null;
 
-                string spellFile = files[0];
-                var json = File.ReadAllText(spellFile);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
+                // Deserialize into SpellTemplate model — replaces manual JsonDocument parsing
+                var json = File.ReadAllText(files[0]);
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var template = System.Text.Json.JsonSerializer.Deserialize<SpellTemplate>(json, options);
 
-                // Try to get name from JSON, or fallback to spellId
-                if (root.TryGetProperty("name", out var nameProp))
-                {
-                    var name = nameProp.GetString();
-                    if (!string.IsNullOrWhiteSpace(name))
-                        return name;
-                }
+                if (template == null)
+                    return spellId; // Fallback
 
-                return spellId; // Fallback
+                // Prefer Name if present in JSON, otherwise use Id (e.g. "Lightning", "Heal")
+                if (!string.IsNullOrWhiteSpace(template.Name))
+                    return template.Name;
+
+                if (!string.IsNullOrWhiteSpace(template.Id))
+                    return template.Id;
+
+                return spellId; // Final fallback
             }
             catch
             {

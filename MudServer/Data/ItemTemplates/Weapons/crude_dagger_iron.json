@@ -1,0 +1,14 @@
+{
+  "Id": "crude_dagger_iron",
+  "Name": "Crude Iron Dagger",
+  "ItemCategory": "Weapon",
+  "Weight": 0.5,
+  "Value": 35,
+  "ShortDesc": "A crude iron dagger.",
+  "LongDesc": "A crude looking iron dagger, slightly worn but usable.",
+  "WearLoc": "Hand",
+  "HandLoc": 1,
+  "Flags": [ "SlashHit15T" ],
+  "Material": "Iron",
+  "DmgDiceMult": 2.5
+}

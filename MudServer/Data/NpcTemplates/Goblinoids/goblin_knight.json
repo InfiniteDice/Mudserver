@@ -28,7 +28,7 @@
   "BaseArmorClass": 12.0,
   "EffArmorClass": 12.0,
   "IsHumanoid": true,
-  "EquipmentTemplateIds": ["aventail_bronze", "coif_bronze", "chauss_bronze", "miton_bronze", "solleret_bronze","hauberk_bronze", "brasset_bronze"],
+  "EquipmentTemplateIds": ["aventail_bronze", "coif_bronze", "chauss_bronze", "miton_bronze", "solleret_bronze","hauberk_bronze", "brasset_bronze", "short_sword_iron"],
   "DropChance": 0.60,
   "DropCountMin": 1,
   "DropCountMax": 2,

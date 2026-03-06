@@ -13,22 +13,48 @@
   "container": [ "Pouch" ],
   "requiredSkill": "skill_elemental_knowledge",
   "minSkillLevel": 1,
+  "alignmentRestriction": "None",
   "toolsRequired": [],
   "powerCost": 10,
   "roomFlags": [],
+  "areaClimate": [ null ],
+  "notRoomFlags": [ "NoMagic" ],
+  "deliveryMethod": "Projectile",
+  "canChain": false,
+  "chainChance": null,
+  "chainLimit": null,
+  "roomRange": null,
   "spellEffects": [
     {
       "type": "Damage",
-      "target": "Target",
-      "dmgPerLevel": 15,
-      "effectDuration": 0,
-      "damageType": "Electric"
+      "effectTarget": "Single",
+      "distantTarget": null,
+      "distanceRooms": null,
+      "baseValue": 5,
+      "valuePerLevel": 5,
+      "statModifier": "Intelligence",
+      "statModifies": "valuePerLevel",
+      "durationSeconds": null,
+      "damageType": "Electric",
+      "hasChoicePrompt": false,
+      "choicePromptText": "",
+      "choiceOptions": [],
+      "choiceFieldName": null,
+      "note": "Add"
+    },
+    {
+      "type": "TimedEffect",
+      "flagEffect": "Stun",
+      "chance": 0.15,
+      "durationSeconds": 9
     }
   ],
-  "castTimeSeconds": 3, 
+  "castTimeSeconds": 3,
+  "ritualOnly": false,
+  "ritualParticipants": null,
   "allowSubstitutions": false,
   "substitutions": {
-    "dust_fairy": ["iron_oxide"]
+    "dust_fairy": [ "iron_oxide" ]
   },
   "notes": "The lightning spell, casts an arc of lightning from the casters hands to one defined target 'cast lightning at goblin' for example."
 }

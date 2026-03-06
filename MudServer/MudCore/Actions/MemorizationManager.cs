@@ -26,8 +26,8 @@ namespace MudCore.Actions
     public static class MemorizationManager
     {
         private const int MEMORIZATION_MINUTES = 10;
-        private const int STAMINA_COST = 60;
-        private const int STAMINA_REFUND_ON_INTERRUPT = 40;
+        private const int STAMINA_COST = 30;
+        private const int STAMINA_REFUND_ON_INTERRUPT = 20;
         private const string MEMORIZING_FLAG_PREFIX = "IsMemorizing:";
 
         /// <summary>
@@ -63,8 +63,16 @@ namespace MudCore.Actions
                 }
             };
 
-            // Apply timed effect flag
-            Effects.ApplyTimedEffect(player, "Memorizing", MEMORIZATION_MINUTES, conn, world);
+            // Apply timed effect flag (10 game minutes = 75 real seconds).
+            // Do NOT use ApplyTimedEffect here — it initializes seconds to 60 which would override our 75.
+            // Instead, manually add the flag and set the seconds directly.
+            var flags = player.Flags ?? new List<string>();
+            flags.RemoveAll(f => f.StartsWith("IsMemorizing:", StringComparison.OrdinalIgnoreCase));
+            flags.Add($"IsMemorizing:1");
+            player.Flags = flags;
+            player.TimedEffectSeconds["Memorizing"] = 75; // 10 game minutes = 75 real seconds (~25 ticks × 3s/tick)
+
+            try { PlayerPersistence.SavePlayer(conn, player); } catch { /* best-effort */ }
 
             string msg = $"You begin memorizing {spellId}... ({MEMORIZATION_MINUTES} game minutes required). Do not move or enter combat.";
             MessageHandler.SendSystem(player, msg);
@@ -163,10 +171,10 @@ namespace MudCore.Actions
                 var baseDir = AppContext.BaseDirectory;
                 var candidates = new[]
                 {
-            Path.Combine(baseDir, "Data", "SkillTemplates", $"{skillId}.json"),
-            Path.Combine(baseDir, "..", "Data", "SkillTemplates", $"{skillId}.json"),
-            Path.Combine(baseDir, "..", "..", "Data", "SkillTemplates", $"{skillId}.json")
-        };
+                    Path.Combine(baseDir, "Data", "SkillTemplates", $"{skillId}.json"),
+                    Path.Combine(baseDir, "..", "Data", "SkillTemplates", $"{skillId}.json"),
+                    Path.Combine(baseDir, "..", "..", "Data", "SkillTemplates", $"{skillId}.json")
+                };
 
                 string? found = candidates.FirstOrDefault(File.Exists);
                 if (string.IsNullOrWhiteSpace(found))
@@ -176,6 +184,8 @@ namespace MudCore.Actions
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
 
+                // Read "name" field from skill JSON — kept as JsonDocument since this reads
+                // skill templates (not spell templates), which have no dedicated model yet
                 if (root.TryGetProperty("name", out var nameProp))
                     return nameProp.GetString() ?? skillId;
             }
@@ -298,7 +308,7 @@ namespace MudCore.Actions
                 {
                     using var cmd = wConn.CreateCommand();
                     cmd.Transaction = wTx;
-                    cmd.CommandText = "DELETE FROM PlayerSpellMem WHERE PlayerID = @pid AND SpellId = @spell LIMIT 1;";
+                    cmd.CommandText = "DELETE FROM PlayerSpellMem WHERE PlayerID = @pid AND SpellId = @spell;";
                     cmd.Parameters.AddWithValue("@pid", player.DbPlayerID);
                     cmd.Parameters.AddWithValue("@spell", spellId);
                     cmd.ExecuteNonQuery();
@@ -309,7 +319,7 @@ namespace MudCore.Actions
             {
                 // Fallback
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "DELETE FROM PlayerSpellMem WHERE PlayerID = @pid AND SpellId = @spell LIMIT 1;";
+                cmd.CommandText = "DELETE FROM PlayerSpellMem WHERE PlayerID = @pid AND SpellId = @spell;";
                 cmd.Parameters.AddWithValue("@pid", player.DbPlayerID);
                 cmd.Parameters.AddWithValue("@spell", spellId);
                 cmd.ExecuteNonQuery();
@@ -372,13 +382,31 @@ namespace MudCore.Actions
 
         /// <summary>
         /// Get spell retention limit from skill tier.
+        /// Uses conn directly (not DbWriteQueue) so the read is on the same connection
+        /// as EnsureSkillExists, avoiding WAL visibility issues with the write queue connection.
         /// </summary>
         public static int GetSpellRetentionLimit(Player player, string skillId, SqliteConnection conn)
         {
-            if (player == null || string.IsNullOrWhiteSpace(skillId))
+            if (player == null || string.IsNullOrWhiteSpace(skillId) || conn == null)
                 return 0;
 
-            int skillLevel = player.GetSkillLevel(skillId, conn);
+            int skillLevel = 0;
+            try
+            {
+                using var sel = conn.CreateCommand();
+                sel.CommandText = "SELECT SkillLevel FROM PlayerSkills WHERE PlayerID = @pid AND SkillID = @skill;";
+                sel.Parameters.AddWithValue("@pid", player.DbPlayerID);
+                sel.Parameters.AddWithValue("@skill", skillId);
+                var result = sel.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                    int.TryParse(result.ToString(), out skillLevel);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MEMORIZATION] GetSpellRetentionLimit skill read failed: {ex.Message}");
+                return 0;
+            }
+
             if (skillLevel <= 0)
                 return 0;
 
@@ -387,33 +415,37 @@ namespace MudCore.Actions
 
         /// <summary>
         /// Load spell_retention value from skill JSON file.
+        /// Uses the same upward directory-walk as GetSkillForSpell to reliably find
+        /// the Data/SkillTemplates folder regardless of working directory.
         /// </summary>
         private static int GetRetentionFromSkillFile(string skillId, int level)
         {
             try
             {
-                var baseDir = AppContext.BaseDirectory;
-                var candidates = new[]
-                {
-                    Path.Combine(baseDir, "Data", "SkillTemplates", $"{skillId}.json"),
-                    Path.Combine(baseDir, "..", "Data", "SkillTemplates", $"{skillId}.json"),
-                    Path.Combine(baseDir, "..", "..", "Data", "SkillTemplates", $"{skillId}.json")
-                };
+                string fileName = $"{skillId}.json";
 
-                string? found = null;
-                foreach (var p in candidates)
+                // Walk upward from BaseDirectory until we find Data/SkillTemplates
+                var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
+                string? foundFile = null;
+
+                while (currentDir != null && currentDir.Parent != null)
                 {
-                    if (!string.IsNullOrWhiteSpace(p) && File.Exists(p))
+                    var candidate = Path.Combine(currentDir.FullName, "Data", "SkillTemplates", fileName);
+                    if (File.Exists(candidate))
                     {
-                        found = p;
+                        foundFile = candidate;
                         break;
                     }
+                    currentDir = currentDir.Parent;
                 }
 
-                if (string.IsNullOrWhiteSpace(found))
+                if (string.IsNullOrWhiteSpace(foundFile))
+                {
+                    Console.WriteLine($"[MEMORIZATION] GetRetentionFromSkillFile: skill file not found for '{skillId}'");
                     return 0;
+                }
 
-                var json = File.ReadAllText(found);
+                var json = File.ReadAllText(foundFile);
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
 
@@ -424,12 +456,21 @@ namespace MudCore.Actions
                         if (tier.TryGetProperty("level", out var tierLevel) && tierLevel.GetInt32() == level)
                         {
                             if (tier.TryGetProperty("spell_retention", out var retention))
-                                return retention.GetInt32();
+                            {
+                                int retVal = retention.GetInt32();
+                                Console.WriteLine($"[MEMORIZATION] GetRetentionFromSkillFile: {skillId} level {level} = retention {retVal}");
+                                return retVal;
+                            }
                         }
                     }
                 }
+
+                Console.WriteLine($"[MEMORIZATION] GetRetentionFromSkillFile: no tier matched for {skillId} level {level}");
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MEMORIZATION] GetRetentionFromSkillFile failed for '{skillId}': {ex.Message}");
+            }
 
             return 0;
         }
@@ -492,6 +533,7 @@ namespace MudCore.Actions
 
         /// <summary>
         /// Get skill ID and minimum level required for spell from spell template.
+        /// Deserializes directly into SpellTemplate model — source of truth for requiredSkill and minSkillLevel.
         /// </summary>
         private static (string skillId, int minLevel) GetSkillForSpell(string spellId, World.World world)
         {
@@ -533,26 +575,21 @@ namespace MudCore.Actions
                 string spellFile = files[0];
                 Console.WriteLine($"[MEMORIZE] FOUND: {spellFile}");
 
+                // Deserialize into SpellTemplate model — replaces manual JsonDocument parsing
                 var json = File.ReadAllText(spellFile);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var template = System.Text.Json.JsonSerializer.Deserialize<SpellTemplate>(json, options);
 
-                string skillId = "";
-                int minLevel = 1;
-
-                if (root.TryGetProperty("requiredSkill", out var skillProp))
+                if (template == null)
                 {
-                    skillId = skillProp.GetString() ?? "";
-                    Console.WriteLine($"[MEMORIZE] Found requiredSkill: '{skillId}'");
+                    Console.WriteLine($"[MEMORIZE] Failed to deserialize spell template: {fileName}");
+                    return ("", 0);
                 }
 
-                if (root.TryGetProperty("minSkillLevel", out var levelProp))
-                {
-                    minLevel = levelProp.GetInt32();
-                    Console.WriteLine($"[MEMORIZE] Found minSkillLevel: {minLevel}");
-                }
+                Console.WriteLine($"[MEMORIZE] Found requiredSkill: '{template.RequiredSkill}'");
+                Console.WriteLine($"[MEMORIZE] Found minSkillLevel: {template.MinSkillLevel}");
 
-                return (skillId, minLevel);
+                return (template.RequiredSkill ?? "", template.MinSkillLevel);
             }
             catch (Exception ex)
             {

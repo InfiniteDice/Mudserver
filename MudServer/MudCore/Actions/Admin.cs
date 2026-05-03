@@ -1838,7 +1838,7 @@ namespace MudCore.Actions
                 payload = payload.Substring(8).Trim();
 
             if (string.IsNullOrWhiteSpace(payload))
-                return MessageHandler.System("Usage: shutdown <minutes> <reason> <downtime> OR shutdown abort");
+                return MessageHandler.System("Usage: shutdown <inminutes> <onewordreason> <downtimemins> OR shutdown abort");
 
             // Check for abort command
             if (payload.Equals("abort", StringComparison.OrdinalIgnoreCase))

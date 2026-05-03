@@ -188,7 +188,7 @@ namespace MudPersistence
         // Internal worker implementation of SaveItem that accepts an external transaction.
         // This contains the original SaveItem logic but is callable from the writer queue without
         // starting nested transactions.
-        private static void SaveItemInternal(SqliteConnection conn, Item item, SqliteTransaction? tx = null)
+        internal static void SaveItemInternal(SqliteConnection conn, Item item, SqliteTransaction? tx = null)
         {
             if (conn == null) throw new ArgumentNullException(nameof(conn));
             if (item == null) throw new ArgumentNullException(nameof(item));

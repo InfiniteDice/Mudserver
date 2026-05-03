@@ -1,0 +1,14 @@
+{
+  "Id": "tool_shovel_iron",
+  "Name": "Iron Shovel",
+  "ItemCategory": "Handheld",
+  "Weight": 1.5,
+  "Value": 12,
+  "ShortDesc": "A simple shovel",
+  "LongDesc": "An iron shovel, you need to hold it to use it.",
+  "WearLoc": "Hand",
+  "HandLoc": 2,
+  "Flags": [],
+  "Material": "Iron",
+  "DmgDiceMult": 2.0
+}

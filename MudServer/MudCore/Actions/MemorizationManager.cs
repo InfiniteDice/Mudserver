@@ -430,12 +430,17 @@ namespace MudCore.Actions
 
                 while (currentDir != null && currentDir.Parent != null)
                 {
-                    var candidate = Path.Combine(currentDir.FullName, "Data", "SkillTemplates", fileName);
-                    if (File.Exists(candidate))
+                    var skillTemplatesDir = Path.Combine(currentDir.FullName, "Data", "SkillTemplates");
+                    if (Directory.Exists(skillTemplatesDir))
                     {
-                        foundFile = candidate;
-                        break;
+                        var matches = Directory.GetFiles(skillTemplatesDir, fileName, SearchOption.AllDirectories);
+                        if (matches.Length > 0)
+                        {
+                            foundFile = matches[0];
+                            break;
+                        }
                     }
+
                     currentDir = currentDir.Parent;
                 }
 

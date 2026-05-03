@@ -16,7 +16,7 @@
   "CurrentAiTask": null,
   "HealthMax": 120,
   "Health": 120,
-  "Flags": [ "Carnivore", "Chaotic", "Affiliation:NiceSnake" ],
+  "Flags": [ "Carnivore", "Chaotic", "Affiliation:Goblins" ],
   "Level": 2,
   "Mass": 480.0,
   "EffMass": 480.0,

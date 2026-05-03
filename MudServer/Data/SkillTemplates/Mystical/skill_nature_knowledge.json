@@ -11,7 +11,8 @@
       "spell_retention": 2
     },
     {
-      "level": "Grovekeeper",
+      "level": 2,
+      "title": "Grovekeeper",
       "power": 20,
       "spell_retention": 4
     },

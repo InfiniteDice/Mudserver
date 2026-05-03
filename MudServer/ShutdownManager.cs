@@ -99,11 +99,14 @@ namespace MudServer
                 {
                     try
                     {
-                        foreach (var p in _world.Players)
+                        // _world.Players is not populated at runtime; players live in room.Players across all rooms.
+                        foreach (var room in _world.Rooms)
                         {
-                            if (p != null && p.IsAuthenticated)
+                            if (room?.Players == null) continue;
+                            foreach (var p in room.Players)
                             {
-                                MessageHandler.SendSystem(p, "Server shutdown has been cancelled.");
+                                if (p != null && p.IsAuthenticated)
+                                    MessageHandler.SendSystem(p, "Server shutdown has been cancelled.");
                             }
                         }
                     }
@@ -154,11 +157,14 @@ namespace MudServer
 
             try
             {
-                foreach (var p in _world.Players)
+                // _world.Players is not populated at runtime; players live in room.Players across all rooms.
+                foreach (var room in _world.Rooms)
                 {
-                    if (p != null && p.IsAuthenticated)
+                    if (room?.Players == null) continue;
+                    foreach (var p in room.Players)
                     {
-                        MessageHandler.SendSystem(p, message);
+                        if (p != null && p.IsAuthenticated)
+                            MessageHandler.SendSystem(p, message);
                     }
                 }
 
@@ -178,11 +184,14 @@ namespace MudServer
 
             try
             {
-                foreach (var p in _world.Players)
+                // _world.Players is not populated at runtime; players live in room.Players across all rooms.
+                foreach (var room in _world.Rooms)
                 {
-                    if (p != null && p.IsAuthenticated)
+                    if (room?.Players == null) continue;
+                    foreach (var p in room.Players)
                     {
-                        MessageHandler.SendSystem(p, message);
+                        if (p != null && p.IsAuthenticated)
+                            MessageHandler.SendSystem(p, message);
                     }
                 }
 

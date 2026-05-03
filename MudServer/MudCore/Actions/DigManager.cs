@@ -104,46 +104,13 @@ namespace MudCore.Actions
                 if (!hasRock) return MessageHandler.System("This area does not look particularly rocky; a pickaxe is unnecessary here.");
             }
 
+            // Rock rooms require a pick — a shovel cannot break solid rock
+            bool roomIsRock = room.Flags != null && room.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && string.Equals(f, "Rock", StringComparison.OrdinalIgnoreCase));
+            if (roomIsRock && toolToken.Contains("shovel", StringComparison.OrdinalIgnoreCase))
+                return MessageHandler.System("You cannot dig through solid rock with a shovel. You need a pick.");
+
             // Validate held tool presence (must be held)
-            bool holding = false;
-            try
-            {
-                var inv = player.Inventory;
-                if (inv != null)
-                {
-                    var token = toolToken.ToLowerInvariant();
-                    foreach (var it in inv)
-                    {
-                        if (it == null) continue;
-
-                        bool isHeld = false;
-                        try
-                        {
-                            if (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase)))
-                                isHeld = true;
-                            else if (!string.IsNullOrWhiteSpace(it.FlagsJson) && it.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0)
-                                isHeld = true;
-                        }
-                        catch { /* best-effort per-item */ }
-
-                        if (!isHeld) continue;
-
-                        try
-                        {
-                            var name = it.Name ?? "";
-                            var tid = it.TemplateID ?? "";
-                            if ((!string.IsNullOrWhiteSpace(name) && name.ToLowerInvariant().Contains(token))
-                                || (!string.IsNullOrWhiteSpace(tid) && tid.ToLowerInvariant().Contains(token)))
-                            {
-                                holding = true;
-                                break;
-                            }
-                        }
-                        catch { /* best-effort per-item */ }
-                    }
-                }
-            }
-            catch { holding = false; }
+            bool holding = IsHoldingTool(player, toolToken);
 
             if (!holding)
                 return MessageHandler.System($"You must be holding a {toolToken} to {action} with it.");
@@ -176,8 +143,133 @@ namespace MudCore.Actions
             }
 
             // Clear player's pending action object so UI/handlers won't treat them as active
-            try { if (player.PendingAction != null && (player.PendingAction.Command == "Dig" || player.PendingAction.Command == "Mine")) player.PendingAction = null; } catch { }
+            try { if (player.PendingAction != null && (player.PendingAction.Command == "Dig" || player.PendingAction.Command == "Mine" || player.PendingAction.Command == "Bury")) player.PendingAction = null; } catch { }
         }
+
+        /// <summary>
+        /// Returns true when the player has an item matching <paramref name="toolToken"/> in a held state.
+        /// Extracted from StartDigging so both dig and bury flows share one implementation.
+        /// </summary>
+        private static bool IsHoldingTool(Player player, string toolToken)        {
+            if (player?.Inventory == null || string.IsNullOrWhiteSpace(toolToken)) return false;
+            var token = toolToken.Trim().ToLowerInvariant();
+            foreach (var it in player.Inventory)
+            {
+                if (it == null) continue;
+                bool isHeld = false;
+                try
+                {
+                    if (it.Flags != null && it.Flags.Any(f => string.Equals(f, "Held", StringComparison.OrdinalIgnoreCase)))
+                        isHeld = true;
+                    else if (!string.IsNullOrWhiteSpace(it.FlagsJson) && it.FlagsJson.IndexOf("\"Held\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                        isHeld = true;
+                }
+                catch { /* best-effort per-item */ }
+                if (!isHeld) continue;
+                try
+                {
+                    var name = it.Name ?? "";
+                    var tid = it.TemplateID ?? "";
+                    if ((!string.IsNullOrWhiteSpace(name) && name.ToLowerInvariant().Contains(token))
+                        || (!string.IsNullOrWhiteSpace(tid) && tid.ToLowerInvariant().Contains(token)))
+                        return true;
+                }
+                catch { /* best-effort per-item */ }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true when an item already carries a Buried* or StartsBuried* flag
+        /// (i.e. it is already underground and should not be a bury target).
+        /// </summary>
+        private static bool IsAlreadyBuried(Item item)
+        {
+            if (item?.Flags == null) return false;
+            return item.Flags.Any(f => !string.IsNullOrWhiteSpace(f) &&
+                (f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase) ||
+                 f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        /// <summary>
+        /// Entry point for the 'bury [itemname]' command.
+        /// Requires the player to hold a shovel and the current room to have a 'Dirt' flag.
+        /// Buries a carried item in the room after a 15-second timed action.
+        /// The resulting Buried# difficulty is clamped to [20, 90]: roll 20-40 + 1 per 2 player levels.
+        /// </summary>
+        public static Message? StartBurying(Player player, string itemExpr, World.World world, SqliteConnection db)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (player.CurrentRoom == null) return MessageHandler.System("You are not in a valid location.");
+
+            if (string.IsNullOrWhiteSpace(itemExpr))
+                return MessageHandler.System("Usage: bury <item>");
+
+            var key = KeyFor(player);
+            if (_pending.ContainsKey(key))
+                return MessageHandler.System("You are already digging or burying.");
+
+            var room = player.CurrentRoom;
+
+            // --- Shovel check (must be holding one) ---
+            if (!IsHoldingTool(player, "shovel"))
+                return MessageHandler.System("You will need a shovel to bury that here!");
+
+            // --- Resolve the item: inventory first, then room (for items too heavy to carry) ---
+            // Items already in the room (e.g. dragged heavy chest) can be buried in-place.
+            bool itemInRoom = false;
+
+            var target = player.Inventory?.FirstOrDefault(i =>
+                i != null &&
+                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)));
+
+            if (target == null)
+                target = player.Inventory?.FirstOrDefault(i =>
+                    i != null &&
+                    (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(itemExpr, StringComparison.OrdinalIgnoreCase) >= 0));
+
+            if (target == null)
+            {
+                // Not in inventory — check room for unburied items (heavy/dragged items)
+                target = room.Inventory?.FirstOrDefault(i =>
+                    i != null &&
+                    !IsAlreadyBuried(i) &&
+                    (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)));
+
+                if (target == null)
+                    target = room.Inventory?.FirstOrDefault(i =>
+                        i != null &&
+                        !IsAlreadyBuried(i) &&
+                        (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(itemExpr, StringComparison.OrdinalIgnoreCase) >= 0));
+
+                if (target != null)
+                    itemInRoom = true;
+            }
+
+            if (target == null)
+                return MessageHandler.System($"You are not carrying '{itemExpr}' and don't see it here to bury.");
+
+            // --- Dirt flag check ---
+            bool hasDirt = room.Flags != null &&
+                           room.Flags.Any(f => string.Equals(f, "Dirt", StringComparison.OrdinalIgnoreCase));
+            if (!hasDirt)
+                return MessageHandler.System($"You cannot bury the {target.Name} here, find a more suitable area!");
+
+            // --- Register pending action ---
+            player.PendingAction = new PendingAction
+            {
+                Command = "Bury",
+                Step = "bury",
+                Data = new { StartedAtUtc = DateTime.UtcNow, RoomID = room.RoomID, TargetItemId = target.ItemID, ItemInRoom = itemInRoom }
+            };
+
+            var cts = new CancellationTokenSource();
+            _pending[key] = cts;
+
+            _ = RunBuryTask(player, target.ItemID, world, db, cts.Token);
+
+            return MessageHandler.System($"You feel you can hide the {target.Name} here, you begin digging.");
+        } // end StartBurying
 
         private static async Task RunDigTask(Player player, string action, int itemId, string toolName, World.World world, SqliteConnection db, CancellationToken ct)
         {
@@ -239,9 +331,14 @@ namespace MudCore.Actions
                 // Parse BuriedN or StartsBuriedN flag
                 var buriedFlag = target.Flags?.FirstOrDefault(f => !string.IsNullOrWhiteSpace(f) && (f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase) || f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase)));
                 int chance = 0;
+                bool isPlayerBuried = false;
                 if (!string.IsNullOrWhiteSpace(buriedFlag))
                 {
-                    var num = buriedFlag.StartsWith("Buried", StringComparison.OrdinalIgnoreCase)
+                    // StartsBuried# = naturally occurring (ore etc): N is direct success %
+                    // Buried#       = player-buried item:            N is difficulty, success = 100 - N
+                    isPlayerBuried = buriedFlag.StartsWith("Buried", StringComparison.OrdinalIgnoreCase) &&
+                                     !buriedFlag.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase);
+                    var num = isPlayerBuried
                         ? buriedFlag.Substring("Buried".Length).Trim()
                         : buriedFlag.Substring("StartsBuried".Length).Trim();
                     if (!int.TryParse(num, out chance)) chance = 0;
@@ -250,26 +347,22 @@ namespace MudCore.Actions
                 // If no numeric chance found, default to 100 (safe)
                 if (chance <= 0) chance = 100;
 
+                // For player-buried items invert: Buried27 = difficulty 27 = 73% success to dig up
+                int successChance = isPlayerBuried ? (100 - chance) : chance;
+
                 var rng = new Random();
-                bool success = rng.Next(100) < Math.Clamp(chance, 0, 100);
+                bool success = rng.Next(100) < Math.Clamp(successChance, 0, 100);
 
                 if (success)
                 {
-                    // Remove buried markers (both BuriedN and StartsBuriedN) and update FlagsJson deterministically
+                    // Remove buried markers and write back through the setter so FlagsJson is updated
                     try
                     {
-                        if (target.Flags != null)
-                        {
-                            target.Flags.RemoveAll(f => !string.IsNullOrWhiteSpace(f) &&
-                                                        (f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase) || f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase)));
-                            var sorted = target.Flags.OrderBy(s => s ?? string.Empty, StringComparer.OrdinalIgnoreCase).ToList();
-                            target.FlagsJson = System.Text.Json.JsonSerializer.Serialize(sorted);
-                        }
-                        else
-                        {
-                            target.Flags = new System.Collections.Generic.List<string>();
-                            target.FlagsJson = "[]";
-                        }
+                        var flags = target.Flags;
+                        flags.RemoveAll(f => !string.IsNullOrWhiteSpace(f) &&
+                            (f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase) ||
+                             f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase)));
+                        target.Flags = flags;
                     }
                     catch { /* best-effort */ }
 
@@ -307,7 +400,7 @@ namespace MudCore.Actions
                 }
                 else
                 {
-                    MessageHandler.SendSystem(player, $"{(action == "mine" ? "Mining" : "Digging")} has not found anything of value.");
+                    MessageHandler.SendSystem(player, $"{(action == "mine" ? "Mining" : "Digging")} has not recovered anything of value.");
                 }
             }
             catch (Exception ex)
@@ -319,5 +412,139 @@ namespace MudCore.Actions
                 CancelPending(player);
             }
         }//End RunDigTask
+
+        private static async Task RunBuryTask(Player player, int itemId, World.World world, SqliteConnection db, CancellationToken ct)
+        {
+            var startRoom = player.CurrentRoom;
+            if (startRoom == null) { CancelPending(player); return; }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                try { MessageHandler.SendSystem(player, "Burying interrupted."); } catch { }
+                CancelPending(player);
+                return;
+            }
+            catch
+            {
+                CancelPending(player);
+                return;
+            }
+
+            try
+            {
+                // Confirm player is still in the same room
+                if (player.CurrentRoom == null || player.CurrentRoom.RoomID != startRoom.RoomID)
+                {
+                    MessageHandler.SendSystem(player, "Burying interrupted — you moved.");
+                    CancelPending(player);
+                    return;
+                }
+
+                // Confirm player is not in combat
+                try
+                {
+                    if (CombatManager.IsEntityInCombat(player))
+                    {
+                        MessageHandler.SendSystem(player, "Burying interrupted by combat.");
+                        CancelPending(player);
+                        return;
+                    }
+                }
+                catch { /* best-effort */ }
+
+                // Re-locate item — check inventory first, then room (item may have been room-sourced)
+                var target = player.Inventory?.FirstOrDefault(i => i != null && i.ItemID == itemId);
+                bool itemWasInRoom = false;
+                if (target == null)
+                {
+                    target = startRoom.Inventory?.FirstOrDefault(i => i != null && i.ItemID == itemId && !IsAlreadyBuried(i));
+                    if (target != null) itemWasInRoom = true;
+                }
+                if (target == null)
+                {
+                    MessageHandler.SendSystem(player, "The item is no longer here to bury.");
+                    CancelPending(player);
+                    return;
+                }
+
+                // --- Difficulty roll ---
+                // Base: random 20-40 inclusive; bonus: +1 per 2 player levels; cap: 90
+                int baseRoll = Random.Shared.Next(20, 41);
+                int levelBonus = Math.Max(0, player.Level / 2);
+                int difficulty = Math.Min(90, baseRoll + levelBonus);
+
+                // --- Apply Buried# flag to item ---
+                try
+                {
+                    var flags = target.Flags; // deserializes fresh copy from FlagsJson
+                    flags.RemoveAll(f => !string.IsNullOrWhiteSpace(f) &&
+                        (f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase) ||
+                         f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase)));
+                    flags.Add($"Buried{difficulty}");
+                    target.Flags = flags; // setter serializes back into FlagsJson
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DigManager][Bury] Failed to apply Buried flag: {ex.Message}");
+                }
+
+                // --- Transfer item to room ---
+                try
+                {
+                    if (!itemWasInRoom)
+                    {
+                        player.Inventory.Remove(target);
+                        target.OwnerType = "Room";
+                        target.OwnerID = startRoom.RoomID;
+                        target.RoomID = startRoom.RoomID;
+                        target.OwnerAreaID = startRoom.AreaID;
+                        startRoom.Inventory ??= new System.Collections.Generic.List<Item>();
+                        startRoom.Inventory.Add(target);
+                    }
+
+                    // Persist item change — same call as RunDigTask uses after digging up
+                    try { ItemPersistence.SaveItem(db, target); } catch (Exception ex) { Console.WriteLine($"[DigManager][Bury] SaveItem failed: {ex.Message}"); }
+
+                    // Notify digger (no difficulty revealed)
+                    MessageHandler.SendSystem(player, $"You bury the {target.Name} out of sight.");
+
+                    // Notify other players in room
+                    foreach (var p in startRoom.Players.Where(pl => pl != null && pl != player))
+                    {
+                        MessageHandler.SendSystem(p, $"{player.Name} finishes burying something.");
+                        // Authoritative room refresh (item now hidden)
+                        p.PendingMessageQueue.Add(MessageHandler.Room(
+                            startRoom,
+                            startRoom.Npcs?.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList() ?? new System.Collections.Generic.List<string>(),
+                            startRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                            world, db));
+                    }
+
+                    // Also refresh room for the burying player so the item disappears from their client view
+                    player.PendingMessageQueue.Add(MessageHandler.Room(
+                        startRoom,
+                        startRoom.Npcs?.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList() ?? new System.Collections.Generic.List<string>(),
+                        startRoom.Players.Where(pl => pl != null && pl != player).Select(pl => pl.Name).ToList(),
+                        world, db));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DigManager][Bury] Transfer failed: {ex.Message}");
+                    MessageHandler.SendSystem(player, "Something went wrong while burying the item.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DigManager][Bury] RunBuryTask error: {ex.Message}");
+            }
+            finally
+            {
+                CancelPending(player);
+            }
+        } // end RunBuryTask
     }
 }

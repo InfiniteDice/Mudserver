@@ -131,6 +131,44 @@
         </div>
     </div>
 
+    <!-- Skills Modal -->
+    <div id="skillModal" class="modal-backdrop" aria-hidden="true" style="display:none;">
+        <div class="modal">
+            <header class="modal-header">
+                <h3>Skills</h3>
+                <button id="skillClose" class="close">×</button>
+            </header>
+
+            <div id="skillSummary">
+                <div>Skill Points Available: <span id="skillPtsAvail">0</span></div>
+                <div>Skill Points at Next Level: <span id="skillPtsNext">0</span></div>
+            </div>
+
+            <div class="modal-body">
+                <table id="skillTable" class="inv-table">
+                    <thead>
+                        <tr>
+                            <th>Skill</th>
+                            <th>Type</th>
+                            <th>Current Skill</th>
+                            <th>Current Title</th>
+                            <th>Show Title</th>
+                            <th>Buy Skill</th>
+                        </tr>
+                    </thead>
+                    <tbody id="skillTableBody">
+                        <!-- populated dynamically -->
+                    </tbody>
+                </table>
+            </div>
+
+            <footer class="modal-footer">
+                <button id="skillSave" style="display:none;">Save Changes</button>
+                <button id="skillClose2">Close</button>
+            </footer>
+        </div>
+    </div>
+
     <script>
         //const host = location.hostname || 'localhost';
         //const port = 9250;
@@ -287,15 +325,15 @@
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                                                          <td>${displayName}</td>
-                                                          <td>${descriptor}</td>
-                                                          <td>${material}</td>
-                                                          <td>${escapeHtml(String(it.weight ?? ''))}</td>
-                                                          <td>${escapeHtml(String(it.condition ?? ''))}</td>
-                                                          <td>${escapeHtml(it.itemCategory ?? '')}</td>
-                                                          <td>${escapeHtml(it.shortDesc ?? '')}</td>
-                                                          <td>${escapeHtml(status)}</td>
-                                                        `;
+                                                              <td>${displayName}</td>
+                                                              <td>${descriptor}</td>
+                                                              <td>${material}</td>
+                                                              <td>${escapeHtml(String(it.weight ?? ''))}</td>
+                                                              <td>${escapeHtml(String(it.condition ?? ''))}</td>
+                                                              <td>${escapeHtml(it.itemCategory ?? '')}</td>
+                                                              <td>${escapeHtml(it.shortDesc ?? '')}</td>
+                                                              <td>${escapeHtml(status)}</td>
+                                                            `;
                 invTableBody.appendChild(tr);
             });
         }
@@ -520,6 +558,12 @@
                     return;
                 }
 
+                if (msg.type === 'skilllist') {
+                    // Render skill list into the already-open modal
+                    renderSkillList(msg);
+                    return;
+                }
+
                 if (msg.type === 'system') {
                     // NEW: Check if this is the auth menu prompt
                     const text = msg.text || '';
@@ -593,6 +637,13 @@
             if (!text) return;
             recordCommand(text);
 
+            // Intercept skilllist to open the overlay locally
+            if (text.toLowerCase() === 'skilllist') {
+                cmdInput.value = '';
+                openSkillList();
+                return;
+            }
+
             // NEW: Check if the last system message was a password prompt
             const lastLogLine = logEl.lastElementChild?.textContent || '';
             const isPasswordPrompt = lastLogLine.includes('password') || lastLogLine.includes('Password');
@@ -600,6 +651,7 @@
             sendCommand(text, isPasswordPrompt);
             cmdInput.value = '';
         });
+            
 
         cmdInput.addEventListener('keydown', e => {
             if (e.key === 'ArrowUp') { e.preventDefault(); historyPrev(); }
@@ -629,6 +681,211 @@
 
         invModal.style.display = 'none';
         authModal.style.display = 'none';
+
+        // ── Skill overlay ────────────────────────────────────────────────────────
+
+        // Pending state — cleared on open and on close without saving
+        let _skillPendingBuys = [];       // [{ skillId, buyingToLevel, cost }]
+        let _skillPendingShowTitle = null; // { skillId, level } | null
+        let _skillPayloadCache = null;    // last received payload for re-render after a buy
+        let _skillDirty = false;          // true when any buy or show-title change is pending
+
+        const skillModal = document.getElementById('skillModal');
+        const skillClose = document.getElementById('skillClose');
+        const skillClose2 = document.getElementById('skillClose2');
+        const skillSave = document.getElementById('skillSave');
+        const skillPtsAvail = document.getElementById('skillPtsAvail');
+        const skillPtsNext = document.getElementById('skillPtsNext');
+        const skillTableBody = document.getElementById('skillTableBody');
+
+        function openSkillList() {
+            // Reset pending state on every open
+            _skillPendingBuys = [];
+            _skillPendingShowTitle = null;
+            _skillPayloadCache = null;
+            _skillDirty = false;
+            skillSave.style.display = 'none';
+
+            skillModal.setAttribute('aria-hidden', 'false');
+            skillModal.style.display = 'flex';
+
+            // Request fresh data from server
+            sendCommand('skilllist');
+        }
+
+        function closeSkillList() {
+            // Discard all pending changes — no save
+            _skillPendingBuys = [];
+            _skillPendingShowTitle = null;
+            _skillPayloadCache = null;
+            _skillDirty = false;
+
+            skillModal.setAttribute('aria-hidden', 'true');
+            skillModal.style.display = 'none';
+        }
+
+        function markSkillDirty() {
+            _skillDirty = true;
+            skillSave.style.display = '';
+        }
+
+        function renderSkillList(payload) {
+            if (!payload) return;
+            _skillPayloadCache = payload;
+
+            // Compute available points accounting for any pending buys already queued
+            const pendingCost = _skillPendingBuys.reduce((sum, b) => sum + b.cost, 0);
+            const displayAvail = (payload.skillPointsAvailable || 0) - pendingCost;
+
+            skillPtsAvail.textContent = String(displayAvail);
+            skillPtsNext.textContent = String(payload.nextLevelSkillPoints || 0);
+
+            skillTableBody.innerHTML = '';
+
+            const skills = payload.skills || [];
+            if (skills.length === 0) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="6" class="muted" style="padding:12px;">No skills available.</td>';
+                skillTableBody.appendChild(tr);
+                return;
+            }
+
+            // Group order matches server: Mundane -> Trade -> Mystical
+            const groups = ['Mundane', 'Trade', 'Mystical'];
+
+            groups.forEach(groupName => {
+                const groupSkills = skills
+                    .filter(s => s.skillType === groupName)
+                    .sort((a, b) => a.name.localeCompare(b.name));
+
+                if (groupSkills.length === 0) return;
+
+                // Group header row
+                const headerTr = document.createElement('tr');
+                headerTr.className = 'skill-group-header';
+                headerTr.innerHTML = `<td colspan="6">${escapeHtml(groupName)}</td>`;
+                skillTableBody.appendChild(headerTr);
+
+                groupSkills.forEach(skill => {
+                    // Merge any pending buy for this skill into the displayed level
+                    const pendingBuy = _skillPendingBuys.find(b => b.skillId === skill.skillId);
+                    const displayLevel = pendingBuy ? pendingBuy.buyingToLevel : skill.currentLevel;
+                    const isPurchased = displayLevel > 0;
+
+                    // Current title: use pending level's title if a buy is pending
+                    let currentTitle = skill.currentTitle || '—';
+                    if (pendingBuy) {
+                        // Find the tier title for the pending level from the original tiers
+                        // We don't have tiers on the client, so derive from skill name — server
+                        // will authorise; show a placeholder until save confirms
+                        currentTitle = '(pending)';
+                    }
+
+                    // Next cost after accounting for any pending purchase
+                    const effectiveCurrentLevel = displayLevel;
+                    let nextCost = 0;
+                    if (effectiveCurrentLevel < skill.maxLevel) {
+                        // Re-derive from original payload cost if no pending buy yet,
+                        // else it's already maxed or further buying not shown until save
+                        nextCost = pendingBuy ? 0 : (skill.nextCost || 0);
+                    }
+
+                    const canAfford = nextCost > 0 && (displayAvail - nextCost) >= 0;
+                    const isMaxed = effectiveCurrentLevel >= skill.maxLevel;
+
+                    // ShowTitle: use pending state if set, else server state
+                    let showTitleChecked = false;
+                    if (_skillPendingShowTitle) {
+                        showTitleChecked = _skillPendingShowTitle.skillId === skill.skillId;
+                    } else {
+                        showTitleChecked = !!skill.showTitle;
+                    }
+
+                    const tr = document.createElement('tr');
+                    tr.className = isPurchased ? 'skill-row-purchased' : 'skill-row-unpurchased';
+
+                    // Show Title radio — disabled if not purchased
+                    const radioDisabled = !isPurchased ? 'disabled' : '';
+                    const radioChecked = showTitleChecked ? 'checked' : '';
+
+                    // Buy button — hidden when maxed, disabled when can't afford
+                    let buyCell = '';
+                    if (isMaxed) {
+                        buyCell = '<span style="color:var(--muted);font-size:0.8rem;">Maxed</span>';
+                    } else {
+                        const btnDisabled = (!canAfford || pendingBuy) ? 'disabled' : '';
+                        buyCell = `<button class="skill-buy-btn"
+                                    data-skillid="${escapeHtml(skill.skillId)}"
+                                    data-tolevel="${effectiveCurrentLevel + 1}"
+                                    data-cost="${nextCost}"
+                                    ${btnDisabled}>Buy ${nextCost}</button>`;
+                    }
+
+                    tr.innerHTML = `
+                        <td>${escapeHtml(skill.name)}</td>
+                        <td>${escapeHtml(skill.skillType)}</td>
+                        <td>${displayLevel} of ${skill.maxLevel}</td>
+                        <td>${escapeHtml(currentTitle)}</td>
+                        <td><input type="radio" name="skillShowTitle"
+                                   value="${escapeHtml(skill.skillId)}"
+                                   data-level="${displayLevel}"
+                                   ${radioChecked} ${radioDisabled}></td>
+                        <td>${buyCell}</td>
+                    `;
+                    skillTableBody.appendChild(tr);
+                });
+            });
+
+            // Attach buy button listeners
+            skillTableBody.querySelectorAll('.skill-buy-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const skillId = btn.getAttribute('data-skillid');
+                    const toLevel = parseInt(btn.getAttribute('data-tolevel'), 10);
+                    const cost = parseInt(btn.getAttribute('data-cost'), 10);
+
+                    // Guard: don't double-buy same skill before saving
+                    if (_skillPendingBuys.find(b => b.skillId === skillId)) return;
+
+                    _skillPendingBuys.push({ skillId, buyingToLevel: toLevel, cost });
+                    markSkillDirty();
+
+                    // Re-render with updated pending state applied to the cached payload
+                    renderSkillList(_skillPayloadCache);
+                });
+            });
+
+            // Attach show-title radio listeners
+            skillTableBody.querySelectorAll('input[name="skillShowTitle"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    if (!radio.checked) return;
+                    const skillId = radio.value;
+                    const level = parseInt(radio.getAttribute('data-level'), 10);
+                    _skillPendingShowTitle = { skillId, level };
+                    markSkillDirty();
+                });
+            });
+        }
+
+        // Save Changes — serialise pending state and send to server
+        skillSave.addEventListener('click', () => {
+            if (!_skillDirty) return;
+
+            const payload = JSON.stringify({
+                buys: _skillPendingBuys,
+                showTitle: _skillPendingShowTitle
+            });
+
+            // Send silently — isSensitive=true suppresses the echo to the log
+            sendCommand('skillsave ' + payload, true);
+            closeSkillList();
+        });
+
+        skillClose.addEventListener('click', closeSkillList);
+        skillClose2.addEventListener('click', closeSkillList);
+
+        window.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && skillModal.style.display === 'flex') closeSkillList();
+        });
     </script>
     <script>
         // Client-side critical-hit formatter and renderer.

@@ -16,7 +16,7 @@
   "CurrentAiTask": null,
   "HealthMax": 50,
   "Health": 50,
-  "Flags": [ "CallHelp:Goblin", "SlashHit25T" , "AvoidDaylight" , "ReportDeath"],
+  "Flags": [ "CallHelp:Goblin", "SlashHit25T", "AvoidDaylight", "ReportDeath", "Affiliation:Goblins" ],
   "Level": 3,
   "Mass": 35.0,
   "EffMass": 35.0,

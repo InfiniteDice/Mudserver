@@ -1,0 +1,15 @@
+{
+  "Id": "boulder_granite",
+  "Name": "Granite Boulder",
+  "ItemCategory": "Component",
+  "Weight": 100.0,
+  "Value": 1,
+  "ShortDesc": "A granite boulder",
+  "LongDesc": "A large granite boulder, this boulder can be broken down into smaller pieces.",
+  "WearLoc": "",
+  "HandLoc": 0,
+  "Flags": [],
+  "BaseACBonus": 0.0,
+  "Material": "Granite",
+  "Stackable": "false"
+}

@@ -66,14 +66,15 @@ namespace MudCore.Actions
             if (!holding)
                 return MessageHandler.System($"You must be holding a {toolName} to prospect with it.");
 
-            // If pickaxe, prefer Rock rooms (non-fatal guidance)
+            // Tool-terrain validation:
+            // Rock room → pick required; shovel cannot prospect through solid rock
+            // Non-rock room → shovel required; a pick is unnecessary in soft ground
             var toolTok = toolName.Trim().ToLowerInvariant();
-            if (toolTok.Contains("pick"))
-            {
-                var hasRock = player.CurrentRoom.Flags != null && player.CurrentRoom.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && string.Equals(f, "Rock", StringComparison.OrdinalIgnoreCase));
-                if (!hasRock)
-                    return MessageHandler.System("This area does not look particularly rocky; a pickaxe is unnecessary here.");
-            }
+            bool prospectRoomIsRock = player.CurrentRoom.Flags != null && player.CurrentRoom.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && string.Equals(f, "Rock", StringComparison.OrdinalIgnoreCase));
+            if (prospectRoomIsRock && toolTok.Contains("shovel"))
+                return MessageHandler.System("You cannot prospect through solid rock with a shovel. You need a pick.");
+            if (!prospectRoomIsRock && toolTok.Contains("pick"))
+                return MessageHandler.System("This area does not look particularly rocky; a pickaxe is unnecessary here.");
 
             // Register pending and start async 15s task
             player.PendingAction = new PendingAction { Command = "Prospect", Step = "InProgress", Data = new { StartedAtUtc = DateTime.UtcNow, RoomID = player.CurrentRoom.RoomID, Tool = toolName.Trim() } };
@@ -145,8 +146,11 @@ namespace MudCore.Actions
                 }
                 catch { /* best-effort */ }
 
-                // Enumerate buried items (read-only)
-                var buried = startRoom.Inventory?.Where(i => i != null && i.Flags != null && i.Flags.Any(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase))).ToList()
+                // Enumerate buried items — both StartsBuried# (natural deposits) and Buried# (player-buried)
+                var buried = startRoom.Inventory?.Where(i => i != null && i.Flags != null && i.Flags.Any(f =>
+                    !string.IsNullOrWhiteSpace(f) &&
+                    (f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase) ||
+                     f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase)))).ToList()
                              ?? new System.Collections.Generic.List<Item>();
 
                 if (buried.Count == 0)
@@ -167,11 +171,24 @@ namespace MudCore.Actions
                 {
                     try
                     {
-                        var flag = it.Flags.FirstOrDefault(f => !string.IsNullOrWhiteSpace(f) && f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase));
+                        // Match StartsBuried# first (more specific), then Buried#
+                        var flag = it.Flags.FirstOrDefault(f => !string.IsNullOrWhiteSpace(f) &&
+                            f.StartsWith("StartsBuried", StringComparison.OrdinalIgnoreCase));
+                        bool isStartsBuried = flag != null;
+                        flag ??= it.Flags.FirstOrDefault(f => !string.IsNullOrWhiteSpace(f) &&
+                            f.StartsWith("Buried", StringComparison.OrdinalIgnoreCase));
                         if (flag == null) continue;
-                        var numText = flag.Substring("Buried".Length).Trim();
+
+                        var numText = isStartsBuried
+                            ? flag.Substring("StartsBuried".Length).Trim()
+                            : flag.Substring("Buried".Length).Trim();
                         if (!int.TryParse(numText, out int n)) n = 0;
-                        int chance = Math.Clamp(2 * n, 0, 100);
+
+                        // StartsBuried#: natural deposit, N is direct detect % (original formula: 2 * N)
+                        // Buried#:       player-buried,  N is difficulty so detect chance = 100 - N
+                        int chance = isStartsBuried
+                            ? Math.Clamp(2 * n, 0, 100)
+                            : Math.Clamp(100 - n, 0, 100);
                         if (roll < chance)
                         {
                             // Resolve a friendly display name (prefer template display)

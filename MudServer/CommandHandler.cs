@@ -485,7 +485,7 @@ namespace MudServer
             }
             // --- END give handling ---
 
-            
+
             // --- NEW: ItemTrader / Barkeep command routing ---
             // Support:
             //  - trade <npc> [list|buy <id>|sell <item>|convert <amount>]
@@ -1327,6 +1327,49 @@ namespace MudServer
             }
 
 
+            // follow <name> | follow none — follow a player or NPC in the same room
+            if (command.StartsWith("follow", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    return MudCore.Actions.Movement.HandleFollowCommand(player, command, _world, _dbConnection);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][FOLLOW] {ex}");
+                    return MessageHandler.System("Failed to follow target due to a server error.");
+                }
+            }
+
+            // drag <item> <direction> — drag a room item into an adjacent room
+            if (command.StartsWith("drag", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    return DragItem(player, command);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][DRAG] {ex}");
+                    return MessageHandler.System("Failed to drag item due to a server error.");
+                }
+            }
+
+            // bury <item> — bury a carried item in a Dirt room using a held shovel
+            if (command.StartsWith("bury", StringComparison.OrdinalIgnoreCase))
+            {
+                var itemExpr = command.Substring(4).Trim();
+                try
+                {
+                    return MudCore.Actions.DigManager.StartBurying(player, itemExpr, _world, _dbConnection);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD][BURY] {ex}");
+                    return MessageHandler.System("Failed to bury item due to a server error.");
+                }
+            }
+
             // NEW: dig / dig with <tool> requiring a target: "dig <item> with <tool>"
             if (command.StartsWith("dig", StringComparison.OrdinalIgnoreCase))
             {
@@ -1710,7 +1753,7 @@ namespace MudServer
                 case "move": return Move(player, command);
 
                 case "attack":
-                 case "kill":
+                case "kill":
                 case "fight":
                     {
                         var attackParts = command.Split(' ', 2);
@@ -2045,6 +2088,38 @@ namespace MudServer
                         {
                             Console.WriteLine($"[CMD][LISTSKILLS] Failed for {player.Name}: {ex.Message}");
                             return MessageHandler.System("Failed to retrieve skills.");
+                        }
+                    }
+
+                case "skilllist":
+                    {
+                        if (player.DbPlayerID <= 0)
+                            return MessageHandler.System("Your account is not yet saved.");
+
+                        try
+                        {
+                            return MudCore.Services.SkillManager.HandleSkillListCommand(player, _dbConnection);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][SKILLLIST] Failed for {player.Name}: {ex.Message}");
+                            return MessageHandler.System("Failed to load skills due to a server error.");
+                        }
+                    }
+
+                case "skillsave":
+                    {
+                        if (player.DbPlayerID <= 0)
+                            return MessageHandler.System("Your account is not yet saved.");
+
+                        try
+                        {
+                            return MudCore.Services.SkillManager.HandleSkillSaveCommand(player, command, _dbConnection);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[CMD][SKILLSAVE] Failed for {player.Name}: {ex.Message}");
+                            return MessageHandler.System("Failed to save skills due to a server error.");
                         }
                     }
 
@@ -2593,6 +2668,85 @@ namespace MudServer
                         return MessageHandler.System($"{header}\n{body}\n{footer}");
                     }
 
+                case string s when s.Equals("help", StringComparison.OrdinalIgnoreCase):
+                    {
+                        var helpCommands = new List<string>
+        {
+            "add - Add page to book",
+            "attack/fight/kill - Attack target",
+            "assist - Join combat",
+            "autoflee - Auto flee threshold",
+            "block - Block opponent",
+            "buy - Buy from trader",
+            "bury - Bury a carried item in a dirt area (requires shovel)",
+            "cast - Cast a spell",
+            "close - Close a door",
+            "cook - Start cooking",
+            "consider - Assess target",
+            "convert - Convert currency",
+            "descend - Go downward",
+            "dig - Start digging",
+            "drag - Drag item direction",
+            "drink - Drink liquid",
+            "drop - Drop item",
+            "eat - Eat food",
+            "emote - Custom emote",
+            "fill - Fill container",
+            "forget - Forget spell",
+            "follow - Follow player or npc",
+            "get - Take item",
+            "give - Give item",
+            "help - Show all commands",
+            "hold - Hold item",
+            "inspect - Inspect container",
+            "inv - Show inventory",
+            "inventory - Show inventory",
+            "land - Descend safely",
+            "lead - Lead NPC",
+            "listskills - List skills",
+            "listhitched - List hitched",
+            "look - Look around",
+            "lock - Lock container",
+            "memlist - List memorized",
+            "memorize - Memorize spell",
+            "menu - Show Npc buy menu",
+            "mill - Start milling",
+            "mine - Start mining",
+            "n,e,s,w,ne,nw,se,sw,u,d - Move",
+            "open - Open a door",
+            "put - Put item away",
+            "read - Read a book",
+            "release - Release NPC",
+            "repair - Repair item",
+            "remove - Remove page",
+            "say - Speak locally",
+            "scribe - Write spell",
+            "sell - Sell to trader",
+            "skilllist - Show skills",
+            "skillsave - Save skills",
+            "smelt - Start smelting",
+            "stats - Show stats",
+            "take - Take item",
+            "talk - Talk to NPC",
+            "trade - Trade with npc",
+            "unhold - Unhold item",
+            "unhitch - Unhitch NPC",
+            "unlock - Unlock container",
+            "unwear - Remove worn item",
+            "wear - Wear item",
+            "who - Show online players",
+            "yell - Shout nearby"
+        };
+
+                        helpCommands.Sort(StringComparer.OrdinalIgnoreCase);
+
+                        var header = "=== Commands ===";
+                        var footer = "=================";
+                        var body = string.Join("\n", helpCommands);
+
+                        return MessageHandler.System($"{header}\n{body}\n{footer}");
+                    }
+
                 case string s when s.StartsWith("kill", StringComparison.OrdinalIgnoreCase):
                     if (!player.IsAdmin) return MessageHandler.System("Permission denied. Admins only.");
                     try
@@ -2910,7 +3064,7 @@ namespace MudServer
         {
             var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList(); if (tokens.Count < 2) return MessageHandler.System("Usage: get <item> [container] OR get <n|all> <item> <container>");
             var (quantity, explicitQuantity, itemExpr, containerName, getErr) = ParseQuantityItemContainer(tokens, 1);
-            
+
 
             if (getErr != null) return MessageHandler.System(getErr);
 
@@ -3585,6 +3739,15 @@ namespace MudServer
             if (matches == null || matches.Count == 0)
                 return MessageHandler.System($"No '{requested}' found in this room.");
 
+            // Mass gate: block pickup if the item's unit weight >= player's base body mass.
+            // Uses Encumbrance.CanLiftItem which compares item.Weight against player.Mass.
+            // Applied once here; covers all quantity paths below (single, explicit, all).
+            {
+                var massCheckItem = matches.First();
+                if (!Encumbrance.CanLiftItem(player, massCheckItem, out var liftErr))
+                    return MessageHandler.System(liftErr);
+            }
+
             // If explicit quantity requested, distribute across matching rows (no menu).
             if (requestedQuantity != 0)
             {
@@ -3638,6 +3801,228 @@ namespace MudServer
 
             return InventoryManager.TransferToPlayer(_world, _dbConnection, player, candidate, 1);
         } // end GetItem
+
+        // Drag logic: allows a player to drag a non-anchored room item into an adjacent room.
+        // Syntax: drag <item> <direction>
+        // Stamina cost = normal move cost + Round((item.Weight / player.Mass) * 10), minimum 1.
+        // Player AND item both move to the target room on success.
+        private Message? DragItem(Player player, string command)
+        {
+            // Validate player state
+            if (player == null) return MessageHandler.System("Invalid player.");
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            // Parse "drag <itemExpr> <direction>" — last token is direction, everything before is item name
+            var payload = command.Trim();
+            if (payload.StartsWith("drag", StringComparison.OrdinalIgnoreCase))
+                payload = payload.Substring(4).Trim();
+
+            if (string.IsNullOrWhiteSpace(payload))
+                return MessageHandler.System("Usage: drag <item> <direction>  Example: drag boulder e");
+
+            var tokens = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2)
+                return MessageHandler.System("Usage: drag <item> <direction>  Example: drag boulder e");
+
+            // Last token is the direction; everything before it is the item expression
+            string dirRaw = tokens[^1].Trim();
+            string itemExpr = string.Join(" ", tokens.Take(tokens.Length - 1)).Trim();
+
+            if (string.IsNullOrWhiteSpace(itemExpr))
+                return MessageHandler.System("Usage: drag <item> <direction>  Example: drag boulder e");
+
+            // Resolve direction using the same alias normalizer used by Move()
+            string dir = NormalizeCommandAlias(dirRaw).ToUpperInvariant();
+            if (!IsValidDirection(dir))
+                return MessageHandler.System($"'{dirRaw}' is not a valid direction.");
+
+            // Resolve item from room inventory using ItemParser (same options as HandleGetCommand)
+            var opts = new ItemParserOptions
+            {
+                IncludeDescriptorTokens = true,
+                IncludeMaterialTokens = true,
+                AllowStartsWith = true
+            };
+
+            ItemResolutionResult pres;
+            try
+            {
+                pres = ItemParser.ResolveForGet(player, itemExpr, opts);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DRAG] ItemParser failed: {ex.Message}");
+                pres = new ItemResolutionResult { Reason = "Parser failure." };
+            }
+
+            if (pres.Winner == null)
+            {
+                if (pres.Candidates != null && pres.Candidates.Count > 1)
+                {
+                    var list = string.Join(", ", pres.Candidates.Select(i => i.Name));
+                    return MessageHandler.System($"Multiple items match '{itemExpr}': {list}. Be more specific.");
+                }
+                return MessageHandler.System($"You see no '{itemExpr}' here to drag.");
+            }
+
+            var item = pres.Winner;
+
+            // Confirm the resolved item is actually on the room floor (OwnerType=Room, OwnerID=this room)
+            if (!string.Equals(item.OwnerType ?? "", "Room", StringComparison.OrdinalIgnoreCase) ||
+                item.OwnerID != room.RoomID)
+            {
+                // Attempt to locate by ItemID or Name in room.Inventory as a fallback
+                var found = room.Inventory?.FirstOrDefault(i =>
+                    i != null && (i.ItemID == item.ItemID ||
+                    string.Equals(i.Name, item.Name, StringComparison.OrdinalIgnoreCase)));
+                if (found == null)
+                    return MessageHandler.System($"You see no '{itemExpr}' here to drag.");
+                item = found;
+            }
+
+            // Guard: anchored items cannot be dragged
+            bool isAnchored = (item.Flags != null && item.Flags.Any(f => string.Equals(f, "Anchored", StringComparison.OrdinalIgnoreCase)))
+                              || (!string.IsNullOrEmpty(item.FlagsJson) && item.FlagsJson.IndexOf("\"Anchored\"", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (isAnchored)
+                return MessageHandler.System($"{item.Name} is fixed in place and cannot be dragged.");
+
+            // Resolve exit
+            var exit = room.Exits?.FirstOrDefault(e =>
+                MudCore.Actions.Movement.NormalizeDirection(e.Direction) ==
+                MudCore.Actions.Movement.NormalizeDirection(dir));
+
+            if (exit == null)
+            {
+                var available = string.Join(", ", room.Exits?.Select(e => e.Direction) ?? Enumerable.Empty<string>());
+                return MessageHandler.System($"No exit in direction '{dirRaw}'. Available: {available}");
+            }
+
+            // Door check: closed doors block dragging (same as normal movement)
+            try
+            {
+                if (exit.DoorId.HasValue)
+                {
+                    using var cmd = _dbConnection.CreateCommand();
+                    cmd.CommandText = "SELECT IsOpen FROM Doors WHERE DoorId = @did";
+                    cmd.Parameters.AddWithValue("@did", exit.DoorId.Value);
+                    var obj = cmd.ExecuteScalar();
+                    if (obj != null && obj is not DBNull)
+                    {
+                        var isOpen = Convert.ToInt32(obj) != 0;
+                        if (!isOpen)
+                            return MessageHandler.System($"The door to the {exit.Direction} is closed. You cannot drag anything through it.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DRAG] Door check failed: {ex.Message}");
+                // best-effort: allow drag on door check failure
+            }
+
+            // Resolve target room
+            var targetRoom = _world.Rooms?.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+            if (targetRoom == null)
+                return MessageHandler.System($"The exit '{dirRaw}' leads nowhere.");
+
+            // Size check: player must fit in the target room
+            if (!targetRoom.CanEntityFitBySize(player.SizeEnum))
+                return MessageHandler.System("You simply can't fit there!");
+
+            // Calculate drag stamina cost: base move cost + drag modifier
+            // Drag modifier = Round((item.Weight / player.Mass) * 10), minimum 1
+            int totalStaminaCost;
+            try
+            {
+                double baseMass = MudCore.Actions.Encumbrance.GetBaseMass(player);
+                double itemWeight = item.Weight;
+                int dragModifier = (int)Math.Max(1, Math.Round((itemWeight / baseMass) * 10.0));
+                int moveCost = MudCore.Actions.Movement.DetermineMoveStaminaCost(player, dir, _world);
+                totalStaminaCost = moveCost + dragModifier;
+                Console.WriteLine($"[DRAG] {player.Name} dragging {item.Name} ({itemWeight:F1}kg), baseMass={baseMass:F1}kg, dragMod={dragModifier}, moveCost={moveCost}, total={totalStaminaCost}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DRAG] Stamina cost calculation failed: {ex.Message}");
+                totalStaminaCost = 5; // safe fallback
+            }
+
+            // Stamina check
+            if (player.Stamina < totalStaminaCost)
+                return MessageHandler.System($"You are too exhausted to drag {item.Name} that way. (Need {totalStaminaCost} stamina, have {player.Stamina}.)");
+
+            // Deduct stamina
+            player.DecreaseStamina(totalStaminaCost, "drag");
+
+            // Broadcast departure to old room occupants (before player is moved)
+            foreach (var p in room.Players.Where(p => p != player))
+                MessageHandler.SendSystem(p, $"{player.Name} strains as they drag {item.Name} toward the {exit.Direction}.");
+
+            // Move item to target room:
+            // TransferToRoom uses player.CurrentRoom as the destination, so we temporarily
+            // move the player to targetRoom first, then call TransferToRoom.
+            // The item will be persisted with OwnerType='Room', OwnerID=targetRoom.RoomID.
+            // Must explicitly remove from the old room's in-memory inventory first —
+            // TransferToRoom only removes from player.Inventory, not room.Inventory.
+            room.Inventory?.Remove(item);
+
+            room.Players.Remove(player);
+            targetRoom.Players.Add(player);
+            player.CurrentRoom = targetRoom;
+            player.LastAreaID = targetRoom.AreaID;
+
+            try
+            {
+                InventoryManager.TransferToRoom(_world, _dbConnection, player, item, item.Quantity);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DRAG] TransferToRoom failed for item {item.Name}: {ex.Message}");
+                // Roll back player position and restore item to old room on failure
+                room.Inventory?.Add(item);
+                targetRoom.Players.Remove(player);
+                room.Players.Add(player);
+                player.CurrentRoom = room;
+                player.LastAreaID = room.AreaID;
+                return MessageHandler.System("Failed to drag item due to a server error.");
+            }
+
+            // Persist player
+            try
+            {
+                MudPersistence.PlayerPersistence.SavePlayer(_dbConnection, player);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DRAG] Player persist failed: {ex.Message}");
+            }
+
+            // Broadcast arrival to target room occupants
+            foreach (var p in targetRoom.Players.Where(p => p != player))
+                MessageHandler.SendSystem(p, $"{player.Name} arrives from the {MudCore.Actions.Movement.OppositeDirection(dir)}, dragging {item.Name} behind them.");
+
+            // Refresh old room for remaining occupants
+            try
+            {
+                var oldNpcs = room.Npcs?.Select(n => MudNetworking.MessageHandler.GetNpcDisplayName(n)).ToList() ?? new List<string>();
+                foreach (var p in room.Players.ToList())
+                {
+                    p.PendingMessageQueue.Add(MudNetworking.MessageHandler.Room(
+                        room, oldNpcs,
+                        room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                        _world));
+                }
+            }
+            catch { /* best-effort */ }
+
+            // Send updated room view to the dragging player
+            var newNpcs = targetRoom.Npcs?.Select(n => MudNetworking.MessageHandler.GetNpcDisplayName(n)).ToList() ?? new List<string>();
+            var newPlayers = targetRoom.Players.Where(p => p != player).Select(p => p.Name).ToList();
+            player.PendingMessageQueue.Add(MudNetworking.MessageHandler.Room(targetRoom, newNpcs, newPlayers, _world));
+
+            return MudNetworking.MessageHandler.System($"You drag {item.Name} into the {exit.Direction}. (Stamina cost: {totalStaminaCost})");
+        } // end DragItem
 
         // New eat logic
         private Message? EatItem(Player player, string requested, bool isDrink = false)
@@ -4096,7 +4481,7 @@ namespace MudServer
                     }
                 }
 
-                
+
 
                 // Build response text
                 string verb = isDrink ? "drink" : "eat";
@@ -4124,8 +4509,8 @@ namespace MudServer
                 return MessageHandler.System("Failed to eat/drink due to a server error.");
             }
         } // end EatItem
-        
-        
+
+
         // Add this helper method inside the CommandHandler class (near other private helpers)
         private (int quantity, bool explicitQuantity, string itemExpr, string containerName, string? error) ParseQuantityItemContainer(List<string> tokens, int startIdx)
         {

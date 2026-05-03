@@ -170,6 +170,44 @@ namespace MudCore.Actions
         }
 
         /// <summary>
+        /// Checks whether a player is physically capable of lifting a single item.
+        /// Rule: if the item's unit weight >= the player's base mass (body mass),
+        /// the item is considered too heavy to pick up regardless of current load.
+        /// Called by HandleGetCommand before any pickup transfer is performed.
+        /// </summary>
+        /// <param name="player">The player attempting the pickup.</param>
+        /// <param name="item">The item being picked up.</param>
+        /// <param name="reason">Human-readable rejection message, or null on success.</param>
+        /// <returns>True if the player can lift the item; false otherwise.</returns>
+        public static bool CanLiftItem(Player player, Item item, out string reason)
+        {
+            reason = null;
+
+            if (player == null || item == null)
+                return true; // fail-open: don't block on null
+
+            try
+            {
+                double baseMass = GetBaseMass(player);
+                double itemWeight = item.Weight; // unit weight (per-item, not stack total)
+
+                if (itemWeight >= baseMass)
+                {
+                    reason = $"{item.Name} is too heavy for you to lift. (Item: {itemWeight:F1} kg, Your body mass: {baseMass:F1} kg)";
+                    Console.WriteLine($"[Encumbrance] CanLiftItem BLOCKED: player={player.Name} baseMass={baseMass:F1} itemWeight={itemWeight:F1} item={item.Name}");
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Encumbrance] CanLiftItem failed for {player?.Name}/{item?.Name}: {ex.Message}");
+                return true; // fail-open: don't block pickup on unexpected error
+            }
+        }
+
+        /// <summary>
         /// Calculate total loaded mass (base + inventory).
         /// </summary>
         public static double GetTotalLoadedMass(object entity)
@@ -177,7 +215,7 @@ namespace MudCore.Actions
             double baseMass = GetBaseMass(entity);
             double inventoryMass = GetInventoryMass(entity);
             return baseMass + inventoryMass;
-        }
+        } // end GetTotalLoadedMass
 
         /// <summary>
         /// Calculate load percentage (0-100+).

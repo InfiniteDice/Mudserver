@@ -215,35 +215,30 @@ namespace MudCore.Actions
             if (!IsHoldingTool(player, "shovel"))
                 return MessageHandler.System("You will need a shovel to bury that here!");
 
-            // --- Resolve the item: inventory first, then room (for items too heavy to carry) ---
-            // Items already in the room (e.g. dragged heavy chest) can be buried in-place.
+            // --- Resolve the item: inventory first (full parser), then room for heavy/dragged items ---
             bool itemInRoom = false;
 
-            var target = player.Inventory?.FirstOrDefault(i =>
-                i != null &&
-                (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)));
-
-            if (target == null)
-                target = player.Inventory?.FirstOrDefault(i =>
-                    i != null &&
-                    (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(itemExpr, StringComparison.OrdinalIgnoreCase) >= 0));
+            // Use the same ItemParser that drop/inspect use — resolves by name, descriptor, material
+            var parseRes = MudUtils.ItemParser.ResolveForInventoryCommand(player, itemExpr);
+            var target = parseRes.Winner;
 
             if (target == null)
             {
-                // Not in inventory — check room for unburied items (heavy/dragged items)
-                target = room.Inventory?.FirstOrDefault(i =>
-                    i != null &&
-                    !IsAlreadyBuried(i) &&
-                    (!string.IsNullOrWhiteSpace(i.Name) && i.Name.StartsWith(itemExpr, StringComparison.OrdinalIgnoreCase)));
-
-                if (target == null)
-                    target = room.Inventory?.FirstOrDefault(i =>
-                        i != null &&
-                        !IsAlreadyBuried(i) &&
-                        (!string.IsNullOrWhiteSpace(i.Name) && i.Name.IndexOf(itemExpr, StringComparison.OrdinalIgnoreCase) >= 0));
-
-                if (target != null)
+                // Not in inventory — check room for unburied visible items (e.g. dragged heavy chest)
+                var opts = new MudUtils.ItemParserOptions
+                {
+                    IncludeDescriptorTokens = true,
+                    IncludeMaterialTokens = true,
+                    AllowStartsWith = true,
+                    IncludeBuried = false
+                };
+                var roomRes = MudUtils.ItemParser.ResolveForGet(player, itemExpr, opts);
+                if (roomRes.Winner != null && room.Inventory != null &&
+                    room.Inventory.Any(i => i != null && i.ItemID == roomRes.Winner.ItemID && !IsAlreadyBuried(i)))
+                {
+                    target = roomRes.Winner;
                     itemInRoom = true;
+                }
             }
 
             if (target == null)

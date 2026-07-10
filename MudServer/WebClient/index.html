@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MUD — Client</title>
-    <link rel="stylesheet" href="styles.css?v=2" />
+    <link rel="stylesheet" href="styles.css?v=3" />
     <!-- NEW: Font for auth modal heading -->
     <style>
         @font-face {
@@ -437,13 +437,15 @@
                             // Door badge (only when server indicates door present)
                             const hasDoor = e.hasDoor ?? e.HasDoor ?? false;
                             const doorState = (e.doorState ?? e.DoorState ?? '').toString();
+                            const isLocked = e.isLocked ?? e.IsLocked ?? false;
+                            const finalDoorState = (isLocked && doorState.toLowerCase() !== 'open') ? 'Locked' : doorState;
 
                             if (hasDoor) {
                                 const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
-                                const stateLower = doorState.toLowerCase();
-                                const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
-                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
-                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
+                                const stateLower = finalDoorState.toLowerCase();
+                                const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'locked' ? 'door-locked' : (stateLower === 'broken' ? 'door-broken' : 'door-closed'));
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(finalDoorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(finalDoorState)}</span>`;
                             }
 
                             html += `</span>`;
@@ -501,13 +503,15 @@
 
                             const hasDoor = e.hasDoor ?? e.HasDoor ?? false;
                             const doorState = (e.doorState ?? e.DoorState ?? '').toString();
+                            const isLocked = e.isLocked ?? e.IsLocked ?? false;
+                            const finalDoorState = (isLocked && doorState.toLowerCase() !== 'open') ? 'Locked' : doorState;
 
                             if (hasDoor) {
                                 const doorType = (e.doorType ?? e.DoorType ?? 'Door').toString();
-                                const stateLower = doorState.toLowerCase();
-                                const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'broken' ? 'door-broken' : 'door-closed');
-                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(doorState)}`;
-                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(doorState)}</span>`;
+                                const stateLower = finalDoorState.toLowerCase();
+                                const cls = stateLower === 'open' ? 'door-open' : (stateLower === 'locked' ? 'door-locked' : (stateLower === 'broken' ? 'door-broken' : 'door-closed'));
+                                const titleAttr = `${escapeHtml(doorType)} to the ${dirFullName || shortDir}, ${escapeHtml(finalDoorState)}`;
+                                html += ` <span class="door-badge ${cls}" title="${escapeHtml(titleAttr)}" aria-label="${escapeHtml(titleAttr)}">${escapeHtml(doorType)}: ${escapeHtml(finalDoorState)}</span>`;
                             }
 
                             html += `</span>`;

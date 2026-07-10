@@ -112,6 +112,13 @@ namespace MudCore.Actions
                     }
                 }
 
+                // NPC path: refuse to open key-locked doors (NPC must wait)
+                if (IsDoorLockedByKey(doorId, db))
+                {
+                    Console.WriteLine($"[DOOR] OpenDoorById: DoorId={doorId} is key-locked; NPC cannot open.");
+                    return false;
+                }
+
                 // Update door to open state
                 using var u = db.CreateCommand();
                 u.CommandText = "UPDATE Doors SET IsOpen = 1 WHERE DoorId = @did";
@@ -238,6 +245,15 @@ namespace MudCore.Actions
                 var isOpen = Convert.ToInt32(val) != 0;
                 if (isOpen)
                     return MessageHandler.System($"The door to the {exit.Direction} is already open.");
+
+                // Check for key-lock before opening (mirrors KeyLocks.EnsureAccessible)
+                var lockedKeyId = GetDoorLockedKeyId(exit.DoorId.Value, _db);
+                if (lockedKeyId.HasValue)
+                {
+                    var hasKey = player.Inventory?.Any(i => i != null && i.ItemID == lockedKeyId.Value) ?? false;
+                    if (!hasKey)
+                        return MessageHandler.System($"The {exit.DoorType} to the {exit.Direction} is locked. You need the correct key.");
+                }
 
                 // Update door row
                 using var u = _db.CreateCommand();
@@ -435,5 +451,381 @@ namespace MudCore.Actions
             return MessageHandler.System($"You close the door to the {exit.Direction}.");
         }
         // REPLACE TO: public Message CloseDoor(Player player, string dir)
+
+        // ----------------------------------------------------------------
+        // Door lock helpers - mirrors KeyLocks container-lock pattern
+        // ----------------------------------------------------------------
+
+        // Flag prefix used to bind a key instance to a door (matches KeyLocks.LockedByKeyPrefix)
+        private const string DoorLockedByKeyPrefix = "LockedByKey:";
+
+        /// <summary>
+        /// Returns the ItemID of the bound key if the door's Flags column contains a LockedByKey:<ID> entry,
+        /// otherwise null. Reads directly from Doors table; safe to call on any connection state.
+        /// </summary>
+        public static int? GetDoorLockedKeyId(int doorId, SqliteConnection conn)
+        {
+            if (conn == null) return null;
+            try
+            {
+                if (conn.State != System.Data.ConnectionState.Open) conn.Open();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                cmd.Parameters.AddWithValue("@did", doorId);
+                var obj = cmd.ExecuteScalar();
+                if (obj == null || obj is DBNull) return null;
+                var flagsJson = obj.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(flagsJson)) return null;
+
+                var flags = System.Text.Json.JsonSerializer.Deserialize<List<string>>(flagsJson) ?? new List<string>();
+                foreach (var f in flags)
+                {
+                    if (!string.IsNullOrWhiteSpace(f) && f.StartsWith(DoorLockedByKeyPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rest = f.Substring(DoorLockedByKeyPrefix.Length);
+                        if (int.TryParse(rest, out var id)) return id;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DOOR] GetDoorLockedKeyId failed for DoorId={doorId}: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Returns true when the door has a LockedByKey:<ID> flag, i.e. is key-locked.
+        /// </summary>
+        public static bool IsDoorLockedByKey(int doorId, SqliteConnection conn)
+            => GetDoorLockedKeyId(doorId, conn).HasValue;
+
+        /// <summary>
+        /// Returns true if the player is the owner of the area that contains the given room.
+        /// Ownership is checked case-insensitively against Area.Owner.
+        /// </summary>
+        private static bool IsAreaOwnerForRoom(Player player, Room room, World.World world)
+        {
+            if (player == null || room == null || world == null) return false;
+            var area = world.Areas?.FirstOrDefault(a => a != null && a.AreaID == room.AreaID);
+            if (area == null) return false;
+            return string.Equals(area.Owner, player.Name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Updates the in-memory DoorFlags cache on both sides of a door so that subsequent
+        /// in-memory checks (EnsureExitPassableForNpc, Pathfinder) see the current flags without
+        /// needing a DB round-trip.
+        /// </summary>
+        private void UpdateDoorFlagsCache(Room.RoomExit exit, Room room, List<string> newFlags)
+        {
+            try
+            {
+                exit.DoorFlags = new List<string>(newFlags);
+
+                // update mate exit
+                var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                if (mateRoom != null)
+                {
+                    string opp = OppositeDirection(Movement.NormalizeDirection(exit.Direction));
+                    var mateExit = mateRoom.Exits.FirstOrDefault(e =>
+                        e.ToRoomID == room.RoomID &&
+                        string.Equals(Movement.NormalizeDirection(e.Direction), opp, StringComparison.OrdinalIgnoreCase))
+                        ?? mateRoom.Exits.FirstOrDefault(e => e.ToRoomID == room.RoomID);
+                    if (mateExit != null)
+                        mateExit.DoorFlags = new List<string>(newFlags);
+                }
+            }
+            catch { /* best-effort */ }
+        }
+
+        // ----------------------------------------------------------------
+        // LockDoor - owner places a key lock on a door exit
+        // Syntax: lockdoor <direction>  (then prompted for key label)
+        // ----------------------------------------------------------------
+
+        // Pending data for the key-label prompt step (mirrors KeyLocks.LockPendingData)
+        public class DoorLockPendingData
+        {
+            public int DoorId { get; set; }
+            public Room.RoomExit Exit { get; set; } = null!;
+            public Room Room { get; set; } = null!;
+            public Item Key { get; set; } = null!;
+        }
+
+        /// <summary>
+        /// Phase 1 of LockDoor: validate area ownership, door existence, and key possession.
+        /// Returns a DoorLockPendingData to store on the player's PendingAction so CommandHandler
+        /// can prompt for a label, then call LockDoorCommit.
+        /// On error, returns null and sets errorMessage.
+        /// </summary>
+        public bool TryBeginLockDoor(Player player, string dir, out DoorLockPendingData? pending, out string errorMessage)
+        {
+            pending = null;
+            errorMessage = "";
+
+            if (player == null) { errorMessage = "Invalid player."; return false; }
+            var room = player.CurrentRoom;
+            if (room == null) { errorMessage = "You are not in a valid room."; return false; }
+
+            // Diagnostic: log ownership check details so server console shows why it failed if needed
+            var area = _world.Areas?.FirstOrDefault(a => a != null && a.AreaID == room.AreaID);
+            Console.WriteLine($"[LOCKDOOR] Player={player.Name} Room={room.RoomID} AreaID={room.AreaID} AreaOwner={(area?.Owner ?? "null")}");
+
+            if (!IsAreaOwnerForRoom(player, room, _world))
+            {
+                errorMessage = $"You do not own this area (owner: {area?.Owner ?? "unknown"}) and cannot lock its doors.";
+                return false;
+            }
+
+            var targetDir = Movement.NormalizeDirection(dir);
+            var exit = room.Exits.FirstOrDefault(e => Movement.NormalizeDirection(e.Direction) == targetDir);
+            if (exit == null)
+            {
+                // Report what exits the room actually has so the player knows valid directions
+                var validExits = room.Exits.Count > 0
+                    ? string.Join(", ", room.Exits.Select(e => e.Direction))
+                    : "none";
+                errorMessage = $"You don't see an exit to the {dir}. Available exits: {validExits}";
+                return false;
+            }
+            if (!exit.DoorId.HasValue) { errorMessage = $"There is no door on the {exit.Direction} exit (it is an open passage)."; return false; }
+
+            // Already locked?
+            if (IsDoorLockedByKey(exit.DoorId.Value, _db))
+            {
+                errorMessage = $"The {exit.DoorType} to the {dir} is already locked.";
+                return false;
+            }
+
+            // Player must hold a Key item
+            var key = player.Inventory?.FirstOrDefault(i =>
+                i != null && string.Equals(i.ItemCategory ?? "", "Key", StringComparison.OrdinalIgnoreCase));
+            if (key == null)
+            {
+                errorMessage = "You need to be carrying a key item to lock this door.";
+                return false;
+            }
+
+            pending = new DoorLockPendingData
+            {
+                DoorId = exit.DoorId.Value,
+                Exit = exit,
+                Room = room,
+                Key = key
+            };
+            return true;
+        }
+
+        /// <summary>
+        /// Phase 2 of LockDoor: apply the label, write LockedByKey:<KeyItemID> to Doors.Flags,
+        /// label the key, and update in-memory caches. Mirrors KeyLocks.LockContainer.
+        /// </summary>
+        public Message LockDoorCommit(Player player, DoorLockPendingData pending, string label)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (pending == null) return MessageHandler.System("Invalid lock data.");
+            if (string.IsNullOrWhiteSpace(label)) return MessageHandler.System("Key label cannot be empty.");
+
+            var key = pending.Key;
+            if (key == null) return MessageHandler.System("Invalid key.");
+
+            // Re-verify door still unlocked (race guard)
+            if (IsDoorLockedByKey(pending.DoorId, _db))
+                return MessageHandler.System($"The {pending.Exit.DoorType} is already locked.");
+
+            SqliteTransaction? tx = null;
+            try
+            {
+                if (_db.State != System.Data.ConnectionState.Open) _db.Open();
+                tx = _db.BeginTransaction();
+
+                // Read current Doors.Flags
+                List<string> flags;
+                using (var readCmd = _db.CreateCommand())
+                {
+                    readCmd.CommandText = "SELECT Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                    readCmd.Parameters.AddWithValue("@did", pending.DoorId);
+                    var obj = readCmd.ExecuteScalar();
+                    flags = (obj != null && obj is not DBNull)
+                        ? System.Text.Json.JsonSerializer.Deserialize<List<string>>(obj.ToString()!) ?? new List<string>()
+                        : new List<string>();
+                }
+
+                // Remove any stale LockedByKey entries and add the new binding
+                flags.RemoveAll(f => f != null && f.StartsWith(DoorLockedByKeyPrefix, StringComparison.OrdinalIgnoreCase));
+                flags.Add($"{DoorLockedByKeyPrefix}{key.ItemID}");
+                var newFlagsJson = System.Text.Json.JsonSerializer.Serialize(flags);
+
+                // Persist Doors.Flags
+                using (var updCmd = _db.CreateCommand())
+                {
+                    updCmd.CommandText = "UPDATE Doors SET Flags = @flags WHERE DoorId = @did;";
+                    updCmd.Parameters.AddWithValue("@flags", newFlagsJson);
+                    updCmd.Parameters.AddWithValue("@did", pending.DoorId);
+                    updCmd.ExecuteNonQuery();
+                }
+
+                // Label the key (mirrors KeyLocks.LockContainer naming logic)
+                var trimmed = label.Trim();
+                key.Name = trimmed.EndsWith("key", StringComparison.OrdinalIgnoreCase) ? trimmed : $"{trimmed} Key";
+                MudPersistence.ItemPersistence.SaveItem(_db, key, tx);
+
+                tx.Commit();
+
+                // Update in-memory DoorFlags cache on both sides
+                UpdateDoorFlagsCache(pending.Exit, pending.Room, flags);
+
+                // Broadcast updated room to all occupants on both sides of the door
+                try
+                {
+                    Console.WriteLine($"[DOOR-LOCK-BROADCAST] Sending room refresh to {pending.Room.Players.Count} player(s) in room {pending.Room.RoomID}");
+                    foreach (var p in pending.Room.Players)
+                    {
+                        p.PendingMessageQueue.Add(MessageHandler.Room(
+                            pending.Room,
+                            pending.Room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
+                            pending.Room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                            _world, _db));
+                    }
+                    var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == pending.Exit.ToRoomID);
+                    if (mateRoom != null)
+                    {
+                        foreach (var p in mateRoom.Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(
+                                mateRoom,
+                                mateRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
+                                mateRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world, _db));
+                        }
+                    }
+                }
+                catch { /* best-effort */ }
+
+                Console.WriteLine($"[DOOR] DoorId={pending.DoorId} locked by player={player.Name} KeyItemID={key.ItemID}");
+                return MessageHandler.System($"You lock the {pending.Exit.DoorType} to the {pending.Exit.Direction} with '{key.Name}'.");
+            }
+            catch (Exception ex)
+            {
+                try { tx?.Rollback(); } catch { /* best-effort */ }
+                Console.WriteLine($"[DOOR] LockDoorCommit failed DoorId={pending.DoorId}: {ex}");
+                return MessageHandler.System("Failed to lock the door due to a server error.");
+            }
+            finally
+            {
+                try { tx?.Dispose(); } catch { /* best-effort */ }
+            }
+        } // end LockDoorCommit
+
+        // ----------------------------------------------------------------
+        // UnlockDoor - player with the bound key removes the lock
+        // Syntax: unlockdoor <direction> with <keyname>
+        // ----------------------------------------------------------------
+
+        /// <summary>
+        /// Remove the LockedByKey binding from a door exit. Player must carry the bound key.
+        /// Reverts key name to "Key" if it matches the generated label pattern (mirrors KeyLocks.UnlockContainer).
+        /// </summary>
+        public Message UnlockDoor(Player player, string dir, Item key)
+        {
+            if (player == null) return MessageHandler.System("Invalid player.");
+            if (key == null) return MessageHandler.System("Invalid key.");
+
+            var room = player.CurrentRoom;
+            if (room == null) return MessageHandler.System("You are not in a valid room.");
+
+            var targetDir = Movement.NormalizeDirection(dir);
+            var exit = room.Exits.FirstOrDefault(e => Movement.NormalizeDirection(e.Direction) == targetDir);
+            if (exit == null) return MessageHandler.System($"You don't see an exit to the {dir}.");
+            if (!exit.DoorId.HasValue) return MessageHandler.System($"There is no door to the {dir}.");
+
+            var lockedKeyId = GetDoorLockedKeyId(exit.DoorId.Value, _db);
+            if (!lockedKeyId.HasValue)
+                return MessageHandler.System($"The {exit.DoorType} to the {dir} is not locked.");
+
+            if (lockedKeyId.Value != key.ItemID)
+                return MessageHandler.System("That key does not match this lock.");
+
+            SqliteTransaction? tx = null;
+            try
+            {
+                if (_db.State != System.Data.ConnectionState.Open) _db.Open();
+                tx = _db.BeginTransaction();
+
+                // Read flags, remove LockedByKey entry
+                List<string> flags;
+                using (var readCmd = _db.CreateCommand())
+                {
+                    readCmd.CommandText = "SELECT Flags FROM Doors WHERE DoorId = @did LIMIT 1;";
+                    readCmd.Parameters.AddWithValue("@did", exit.DoorId.Value);
+                    var obj = readCmd.ExecuteScalar();
+                    flags = (obj != null && obj is not DBNull)
+                        ? System.Text.Json.JsonSerializer.Deserialize<List<string>>(obj.ToString()!) ?? new List<string>()
+                        : new List<string>();
+                }
+                flags.RemoveAll(f => f != null && f.StartsWith(DoorLockedByKeyPrefix, StringComparison.OrdinalIgnoreCase));
+                var newFlagsJson = System.Text.Json.JsonSerializer.Serialize(flags);
+
+                using (var updCmd = _db.CreateCommand())
+                {
+                    updCmd.CommandText = "UPDATE Doors SET Flags = @flags WHERE DoorId = @did;";
+                    updCmd.Parameters.AddWithValue("@flags", newFlagsJson);
+                    updCmd.Parameters.AddWithValue("@did", exit.DoorId.Value);
+                    updCmd.ExecuteNonQuery();
+                }
+
+                // Revert key name if it was generated as "<label> Key"
+                if (key.Name != null && key.Name.EndsWith(" Key", StringComparison.OrdinalIgnoreCase))
+                {
+                    key.Name = "Key";
+                    MudPersistence.ItemPersistence.SaveItem(_db, key, tx);
+                }
+
+                tx.Commit();
+
+                // Update in-memory DoorFlags cache on both sides
+                UpdateDoorFlagsCache(exit, room, flags);
+
+                // Broadcast updated room to all occupants on both sides of the door
+                try
+                {
+                    foreach (var p in room.Players)
+                    {
+                        p.PendingMessageQueue.Add(MessageHandler.Room(
+                            room,
+                            room.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
+                            room.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                            _world, _db));
+                    }
+                    var mateRoom = _world.Rooms.FirstOrDefault(r => r.RoomID == exit.ToRoomID);
+                    if (mateRoom != null)
+                    {
+                        foreach (var p in mateRoom.Players)
+                        {
+                            p.PendingMessageQueue.Add(MessageHandler.Room(
+                                mateRoom,
+                                mateRoom.Npcs.Select(n => MessageHandler.GetNpcDisplayName(n)).ToList(),
+                                mateRoom.Players.Where(pl => pl != p).Select(pl => pl.Name).ToList(),
+                                _world, _db));
+                        }
+                    }
+                }
+                catch { /* best-effort */ }
+
+                Console.WriteLine($"[DOOR] DoorId={exit.DoorId.Value} unlocked by player={player.Name}");
+                return MessageHandler.System($"You unlock the {exit.DoorType} to the {dir}.");
+            }
+            catch (Exception ex)
+            {
+                try { tx?.Rollback(); } catch { /* best-effort */ }
+                Console.WriteLine($"[DOOR] UnlockDoor failed DoorId={exit.DoorId}: {ex}");
+                return MessageHandler.System("Failed to unlock the door due to a server error.");
+            }
+            finally
+            {
+                try { tx?.Dispose(); } catch { /* best-effort */ }
+            }
+        } // end UnlockDoor
     }
 }

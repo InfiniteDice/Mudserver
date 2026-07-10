@@ -121,7 +121,10 @@ namespace MudCore.AI
                 var obj = cmd.ExecuteScalar();
                 if (obj == null || obj is DBNull) return false;
                 var flags = obj.ToString() ?? "";
+                // Locked by admin "locked" marker OR by player key-lock binding
                 if (flags.IndexOf("locked", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+                if (flags.IndexOf("LockedByKey:", StringComparison.OrdinalIgnoreCase) >= 0)
                     return true;
             }
             catch (Exception ex)

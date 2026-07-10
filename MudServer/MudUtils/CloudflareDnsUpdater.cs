@@ -8,7 +8,7 @@ public class CloudflareDnsUpdater
 {
     private static readonly string ApiToken = "xvaHxaT-nPRUt495qJ4-izW3wq5cUU-8vGnTVOta";
     private static readonly string ZoneId = "440abee883ddbf2f4670cd22db45e10b";
-    private static readonly string RecordName = "mythmud.com";
+    private static readonly string[] RecordNames = { "mythmud.com", "www.mythmud.com" };
 
     private static readonly HttpClient client = new HttpClient();
 
@@ -17,51 +17,61 @@ public class CloudflareDnsUpdater
         try
         {
             string currentIp = await GetPublicIp();
-            var record = await GetDnsRecord();
 
-            if (record == null)
+            foreach (var recordName in RecordNames)
             {
-                Console.WriteLine("DNS record not found.");
-                return;
+                try
+                {
+                    var record = await GetDnsRecord(recordName);
+
+                    if (record == null)
+                    {
+                        Console.WriteLine($"[DNS] Record not found for {recordName}.");
+                        continue;
+                    }
+
+                    string dnsIp = record.Value.ip;
+                    string recordId = record.Value.id;
+
+                    if (currentIp == dnsIp)
+                    {
+                        Console.WriteLine($"[DNS] {recordName} IP unchanged ({dnsIp}).");
+                        continue;
+                    }
+
+                    Console.WriteLine($"[DNS] Updating {recordName} from {dnsIp} → {currentIp}");
+
+                    var body = new
+                    {
+                        type = "A",
+                        name = recordName,
+                        content = currentIp,
+                        ttl = 1,
+                        proxied = true
+                    };
+
+                    string json = JsonSerializer.Serialize(body);
+
+                    var request = new HttpRequestMessage(
+                        HttpMethod.Put,
+                        $"https://api.cloudflare.com/client/v4/zones/{ZoneId}/dns_records/{recordId}"
+                    );
+
+                    request.Headers.Add("Authorization", $"Bearer {ApiToken}");
+                    request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                    var response = await client.SendAsync(request);
+                    Console.WriteLine($"[DNS] {recordName} update response: {await response.Content.ReadAsStringAsync()}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DNS] Failed to update {recordName}: {ex.Message}");
+                }
             }
-
-            string dnsIp = record.Value.ip;
-            string recordId = record.Value.id;
-
-            if (currentIp == dnsIp)
-            {
-                Console.WriteLine("IP unchanged.");
-                return;
-            }
-
-            Console.WriteLine($"Updating DNS from {dnsIp} → {currentIp}");
-
-            var body = new
-            {
-                type = "A",
-                name = RecordName,
-                content = currentIp,
-                ttl = 1,
-                proxied = true
-            };
-
-            string json = JsonSerializer.Serialize(body);
-
-            var request = new HttpRequestMessage(
-                HttpMethod.Put,
-                $"https://api.cloudflare.com/client/v4/zones/{ZoneId}/dns_records/{recordId}"
-            );
-
-            request.Headers.Add("Authorization", $"Bearer {ApiToken}");
-            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            var response = await client.SendAsync(request);
-            Console.WriteLine(await response.Content.ReadAsStringAsync());
         }
         catch (Exception ex)
         {
-            Console.WriteLine("DNS update failed:");
-            Console.WriteLine(ex.Message);
+            Console.WriteLine($"[DNS] Update failed: {ex.Message}");
         }
     }
 
@@ -70,11 +80,11 @@ public class CloudflareDnsUpdater
         return (await client.GetStringAsync("https://api.ipify.org")).Trim();
     }
 
-    private static async Task<(string id, string ip)?> GetDnsRecord()
+    private static async Task<(string id, string ip)?> GetDnsRecord(string recordName)
     {
         var request = new HttpRequestMessage(
             HttpMethod.Get,
-            $"https://api.cloudflare.com/client/v4/zones/{ZoneId}/dns_records?type=A&name={RecordName}"
+            $"https://api.cloudflare.com/client/v4/zones/{ZoneId}/dns_records?type=A&name={recordName}"
         );
 
         request.Headers.Add("Authorization", $"Bearer {ApiToken}");
@@ -95,3 +105,4 @@ public class CloudflareDnsUpdater
         );
     }
 }
+

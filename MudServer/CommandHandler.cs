@@ -730,6 +730,58 @@ namespace MudServer
                 }
             }
 
+            // LOCKDOOR command: lock a door exit with a key (area owner only)
+            // Syntax: lockdoor <direction>  (extra tokens after direction are ignored)
+            if (command.StartsWith("lockdoor ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Take only the first token after "lockdoor" as the direction; ignore anything else the player appended
+                var arg = command.Substring(9).Trim().Split(' ')[0];
+                if (string.IsNullOrWhiteSpace(arg)) return MessageHandler.System("Usage: lockdoor <direction>");
+                try
+                {
+                    if (_doorService.TryBeginLockDoor(player, arg, out var pending, out var errMsg))
+                    {
+                        player.PendingAction = new PendingAction
+                        {
+                            Command = "LockDoor",
+                            Step = "NameKey",
+                            Data = pending
+                        };
+                        return MessageHandler.System($"Enter a label for the key to lock the door to the {arg.ToUpper()}:");
+                    }
+                    return MessageHandler.System(errMsg);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD] lockdoor failed: {ex}");
+                    return MessageHandler.System("Failed to lock the door due to a server error.");
+                }
+            }
+            // UNLOCKDOOR command: unlock a door exit with the bound key
+            // Syntax: unlockdoor <direction> with <keyname>
+            if (command.StartsWith("unlockdoor ", StringComparison.OrdinalIgnoreCase))
+            {
+                var udParts = command.Substring(11).Trim();
+                var udWith = udParts.IndexOf(" with ", StringComparison.OrdinalIgnoreCase);
+                if (udWith < 0) return MessageHandler.System("Usage: unlockdoor <direction> with <keyname>");
+                var udDir = udParts.Substring(0, udWith).Trim();
+                var udKey = udParts.Substring(udWith + 6).Trim();
+                if (string.IsNullOrWhiteSpace(udDir) || string.IsNullOrWhiteSpace(udKey))
+                    return MessageHandler.System("Usage: unlockdoor <direction> with <keyname>");
+                var keyItem = player.Inventory?.FirstOrDefault(i =>
+                    i != null && string.Equals(i.Name, udKey, StringComparison.OrdinalIgnoreCase));
+                if (keyItem == null) return MessageHandler.System($"You are not carrying a key named '{udKey}'.");
+                try
+                {
+                    return _doorService.UnlockDoor(player, udDir, keyItem);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CMD] unlockdoor failed: {ex}");
+                    return MessageHandler.System("Failed to unlock the door due to a server error.");
+                }
+            }
+
             // EAT command - supports "eat <item>" and "eat <item> from <container>"
             if (command.StartsWith("eat", StringComparison.OrdinalIgnoreCase))
             {
@@ -2678,7 +2730,7 @@ namespace MudServer
             "autoflee - Auto flee threshold",
             "block - Block opponent",
             "buy - Buy from trader",
-            "bury - Bury a carried item in a dirt area (requires shovel)",
+            "bury - Bury an item in a dirt area.",
             "cast - Cast a spell",
             "close - Close a door",
             "cook - Start cooking",
@@ -2707,6 +2759,7 @@ namespace MudServer
             "listhitched - List hitched",
             "look - Look around",
             "lock - Lock container",
+            "lockdoor - <dir> with key",
             "memlist - List memorized",
             "memorize - Memorize spell",
             "menu - Show Npc buy menu",
@@ -2732,6 +2785,7 @@ namespace MudServer
             "unhold - Unhold item",
             "unhitch - Unhitch NPC",
             "unlock - Unlock container",
+            "unlockdoor - <dir> with <keyname>",
             "unwear - Remove worn item",
             "wear - Wear item",
             "who - Show online players",
@@ -4951,6 +5005,27 @@ namespace MudServer
 
                     player.PendingAction = null!;
                     return KeyLocks.LockContainer(_dbConnection, player, data.Container, data.Key, label.Trim());
+                }
+            }
+
+            // Handle LockDoor pending action (area door lock label step)
+            if (pa.Command == "LockDoor")
+            {
+                var data = pa.Data as DoorService.DoorLockPendingData;
+                if (data == null)
+                {
+                    player.PendingAction = null!;
+                    return MessageHandler.System("Pending door lock data missing.");
+                }
+
+                if (pa.Step == "NameKey")
+                {
+                    string label = input;
+                    if (string.IsNullOrWhiteSpace(label) || label.Length > 100)
+                        return MessageHandler.System("Invalid label. Enter a non-empty label up to 100 characters.");
+
+                    player.PendingAction = null!;
+                    return _doorService.LockDoorCommit(player, data, label.Trim());
                 }
             }
 

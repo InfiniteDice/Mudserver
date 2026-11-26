@@ -1,0 +1,108 @@
+{
+  "age_newborn": [
+    {
+      "level_mod": 0.1,
+      "xp_mod": 0.1,
+      "enumsize_adj": -3,
+      "mass_mod": 0.1,
+      "procreate_chance": 0,
+      "combatskill_mod": 0.1,
+      "wanderchance_mod": 0.1
+    }
+  ],
+  "age_young": [
+    {
+      "level_mod": 0.25,
+      "xp_mod": 0.2,
+      "enumsize_adj": -2,
+      "mass_mod": 0.25,
+      "procreate_chance": 0,
+      "combatskill_mod": 0.2,
+      "wanderchance_mod": 0.5
+    }
+  ],
+  "age_adolescent": [
+    {
+      "level_mod": 0.5,
+      "xp_mod": 0.45,
+      "enumsize_adj": -1,
+      "mass_mod": 0.5,
+      "maxhealth_mod": 0,
+      "procreate_chance": 20,
+      "combatskill_mod": 0.5,
+      "wanderchance_mod": 1.25
+    }
+  ],
+  "age_youngadult": [
+    {
+      "level_mod": 0.75,
+      "xp_mod": 0.7,
+      "enumsize_adj": 0,
+      "mass_mod": 0.9,
+      "maxhealth_mod": 0,
+      "procreate_chance": 90,
+      "combatskill_mod": 1,
+      "wanderchance_mod": 1.5
+    }
+  ],
+  "age_adult": [
+    {
+      "level_mod": 1,
+      "xp_mod": 1,
+      "enumsize_adj": 0,
+      "mass_mod": 1,
+      "maxhealth_mod": 1,
+      "procreate_chance": 90,
+      "combatskill_mod": 1,
+      "wanderchance_mod": 1
+    }
+  ],
+  "age_midadult": [
+    {
+      "level_mod": 1.5,
+      "xp_mod": 1,
+      "enumsize_adj": 0,
+      "mass_mod": 1.25,
+      "maxhealth_mod": 0,
+      "procreate_chance": 30,
+      "combatskill_mod": 1,
+      "wanderchance_mod": 1
+    }
+  ],
+  "age_oldadult": [
+    {
+      "level_mod": 2,
+      "xp_mod": 1,
+      "enumsize_adj": 0,
+      "mass_mod": 1,
+      "maxhealth_mod": 0,
+      "procreate_chance": 5,
+      "combatskill_mod": 0.9,
+      "wanderchance_mod": 0.5
+    }
+  ],
+  "age_venerable": [
+    {
+      "level_mod": 2,
+      "xp_mod": 0.9,
+      "enumsize_adj": -1,
+      "mass_mod": 0.85,
+      "maxhealth_mod": 0,
+      "procreate_chance": 0,
+      "combatskill_mod": 0.5,
+      "wanderchance_mod": 0.2
+    }
+  ],
+  "age_ageless": [
+    {
+      "level_mod": 1,
+      "xp_mod": 1,
+      "enumsize_adj": 1,
+      "mass_mod": 1,
+      "maxhealth_mod": 1,
+      "procreate_chance": 0,
+      "combatskill_mod": 1,
+      "wanderchance_mod": 1
+    }
+  ]
+}
